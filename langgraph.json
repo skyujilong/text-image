@@ -3,5 +3,5 @@
   "graphs": {
     "novel2media": "./src/novel2media/graph.py:graph"
   },
-  "env": ".env"
+  "env": ".env.local"
 }
