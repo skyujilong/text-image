@@ -1,7 +1,7 @@
 # 小说转多媒体系统 设计文档
 
 **日期：** 2026-06-11  
-**状态：** 设计确认中  
+**状态：** 设计已确认
 
 ---
 
@@ -22,12 +22,12 @@
 | 主流程编排 | LangGraph（串行子图嵌套） | Mac Mini M4 |
 | 状态持久化 | SqliteSaver（本地 SQLite） | Mac Mini M4 |
 | 日志 | structlog（结构化日志，含节点名/章节/耗时/状态） | Mac Mini M4 |
-| 角色试音 | ChatTTS | Mac Mini M4（CPU） |
-| 大规模 TTS 合成 | 局域网自部署服务（AMD 9070 GRE） | 局域网另一台机器 |
+| TTS 试音 + 大规模合成 | 局域网自部署 TTS 服务（AMD 9070 GRE） | 局域网另一台机器 |
 | 图片生成 | ComfyUI | 局域网另一台机器 |
 | 视频导出 | 剪映（带时间轴格式导入） | 手动 |
 
-所有外部服务地址通过配置文件统一管理，不硬编码。
+所有外部服务地址通过全局配置文件统一管理，不硬编码。  
+Mac Mini 本地**不运行任何 AI 推理服务**，只跑 LangGraph 主流程。
 
 ---
 
@@ -36,9 +36,11 @@
 ```
 {novel_dir}/
 ├── config.json          # 角色信息、世界观、题材等基础设定
-├── chapters/            # 各章节原文（如 chapter_01.txt ...）
+├── chapters/            # 各章节原文（如 chapter_01.txt ...）章节持续增加
 └── summaries/           # 各章节摘要（如 summary_01.txt ...）
 ```
+
+章节文件会随时间持续新增，系统每次运行时动态发现，不在初始化时锁定章节列表。
 
 ### config.json 结构（示例）
 
@@ -71,13 +73,13 @@ output/{小说名}/
 │   │   ├── reference_images/       # 角色参考图候选 + 选定图
 │   │   └── voice_samples/          # 音色候选样本 + 选定标记
 │   └── ...
-├── chapters_status.json            # 各章节处理状态（已处理/已提交剪映）
+├── chapters_status.json            # 只读视图，供人工查看，不参与流程读取
 └── chapter_01/
     ├── script.json                 # 改编后口播剧本
     ├── storyboard.json             # 分镜稿
-    ├── audio.wav                   # 合成音频
-    ├── subtitles.srt               # 字幕文件
-    ├── timeline.json               # 内部时间轴（text/start/end/image_path）
+    ├── audio.wav                   # 合成音频（多段拼接）
+    ├── subtitles.srt               # 字幕文件（整句粒度）
+    ├── timeline.json               # 内部时间轴（storyboard_id/text/speaker/start_time/end_time/image_path）
     ├── images/                     # 场景图序列
     └── export/                     # 剪映导出文件
 ```
@@ -103,22 +105,22 @@ output/{小说名}/
 ```
 load_config
   ↓ 读取 config.json（角色列表、世界观、题材）
-  ↓ 不索引章节，章节由章节子图动态发现
+  ↓ 初始化 LangGraph State，不索引章节
 
 image_card_draw
-  ↓ ComfyUI 给每个角色生成 N 张候选参考图
+  ↓ ComfyUI 给每个角色生成 N 张候选参考图（N 由 services.json 配置）
   ↓ [interrupt] 人工选图确认
 
 fix_character_visual
-  ↓ 将选定图 + ComfyUI prompt（发色/体型/服装/LoRA 权重）写入档案
+  ↓ 将选定图 + ComfyUI prompt（发色/体型/服装/LoRA 权重）写入 State
 
 voice_card_draw
-  ↓ ChatTTS 给每个角色生成 N 个候选音色样本
+  ↓ 局域网 TTS 服务给每个角色生成 N 个候选音色样本
   ↓ [interrupt] 人工听选确认
 
 fix_character_profile
-  ↓ 合并视觉特征 + 音色 ID
-  ↓ 写入 output/{小说名}/characters/characters_profile.json
+  ↓ 合并视觉特征 + 音色参数，写入 State
+  ↓ 持久化至 output/{小说名}/characters/characters_profile.json
 ```
 
 **interrupt 点：** 2 个（image_card_draw 后、voice_card_draw 后）
@@ -128,7 +130,7 @@ fix_character_profile
 ```
 load_chapter
   ↓ 动态扫描 chapters/ 目录
-  ↓ 对比 chapters_status.json，找出 status=pending 的章节
+  ↓ 从 LangGraph State 读取 chapters_status，找出 status=pending 的章节
   ↓ 无 pending 章节 → 退出循环（等待新章节写入后再次运行）
   ↓ 有 → 读取当前章节原文 + 摘要，进入后续节点
 
@@ -137,64 +139,92 @@ adapt_script
 
 review_script_llm
   ↓ 检查连贯性/角色口吻/篇幅
-  ↓ 不通过 → 回退 adapt_script
+  ↓ 不通过 → 回退 adapt_script 重新生成
 
 review_script_human
-  ↓ [interrupt] 人工确认或打回
+  ↓ [interrupt] 人工确认或打回（通过 LangGraph Studio UI 操作）
   ↓ 打回 → 回退 adapt_script
 
 generate_storyboard
   ↓ LLM 根据剧本生成分镜稿
-  ↓ 每条分镜包含：对应台词文本 / ComfyUI 场景 prompt / scene_change / 情绪构图说明
+  ↓ 每条分镜包含：text / speaker / scene_change / ComfyUI 场景 prompt / emotion / composition
 
 review_storyboard_llm
   ↓ 检查场景覆盖完整性 / prompt 合法性
   ↓ 不通过 → 回退 generate_storyboard
 
 review_storyboard_human
-  ↓ [interrupt] 人工确认或打回
+  ↓ [interrupt] 人工确认或打回（通过 LangGraph Studio UI 操作）
   ↓ 打回 → 回退 generate_storyboard
 
 synthesize_audio
   ↓ 按角色逐段调用局域网 TTS 服务
-  ↓ 输出：audio.wav + timestamps JSON
-  ↓ 生成：subtitles.srt
+  ↓ 输出：audio.wav（多段拼接）+ timestamps JSON
+  ↓ 生成：subtitles.srt（整句粒度，每条 timestamp 对应一条 SRT 条目）
 
 generate_images
   ↓ 【简化版，后续专项细化】
-  ↓ 遍历分镜条目（scene_change: true 才出新图）
-  ↓ 注入 characters_profile.json 固定角色特征
-  ↓ ComfyUI 抽卡生成 N 张候选图
-  ↓ [interrupt] 人工选图，可修改 prompt 重新生成
-  ↓ 记录最终 prompt 版本 + 图片路径
+  ↓ 遍历分镜条目：
+    - scene_change: false → 直接标记复用上一张图，跳过生成
+    - scene_change: true → ComfyUI 抽卡生成 N 张候选图
+      ↓ [interrupt] 人工选图，可修改 prompt 重新生成
+      ↓ 记录最终选定图片路径（scene_change: false 条目记录复用路径）
 
 build_timeline
-  ↓ timestamps → 匹配分镜条目 → 对齐图片路径
-  ↓ 输出 timeline.json（text/start_time/end_time/image_path）
+  ↓ timestamps → 匹配分镜条目（按 text 对应）→ 对齐图片路径
+  ↓ 输出 timeline.json
 
 human_export_decision
-  ↓ [interrupt] 询问：已完成 N 章，是否现在导入剪映？
-  ↓ 否 → 继续下一章节
+  ↓ [interrupt] 询问：当前已完成 N 章（status=done），是否现在导入剪映？
+  ↓ N 为实时统计 LangGraph State 中 status=done 的章节数
+  ↓ 否 → 更新当前章节 status=done，继续下一章节
   ↓ 是 → export_to_jianying
 
 export_to_jianying
-  ↓ 音频轨 + 图片轨 + 字幕轨 → 带时间轴导出格式
-  ↓ 更新 chapters_status.json 标记已提交章节
+  ↓ 将所有 status=done 章节的音频轨 + 图片轨 + 字幕轨 → 带时间轴导出格式
+  ↓ 在 LangGraph State 中更新这些章节 status=exported
+  ↓ 导出只读视图 chapters_status.json 供人工查看
 ```
 
-**interrupt 点：** 4 个（2 个人工审核 + generate_images 内选图 + 导出决策）
+**interrupt 点：** 4 个（2 个人工审核 + generate_images 内选图 + 导出决策）  
+**人工介入方式：** 统一通过 LangGraph Studio UI 在 interrupt 节点操作（resume / 输入反馈）
 
 ---
 
 ## 6. 核心数据结构
 
-### characters_profile.json
+### LangGraph GraphState（唯一状态真相）
+
+```python
+class ChapterStatus(str, Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    EXPORTED = "exported"
+
+class GraphState(TypedDict):
+    novel_title: str
+    characters_profile: dict          # 角色完整档案
+    chapters_status: dict[str, ChapterStatus]  # 各章节状态
+    current_chapter_id: str
+    current_script: dict              # 当前章节剧本
+    current_storyboard: list          # 当前章节分镜稿
+    # ...其他节点间传递的字段
+```
+
+SqliteSaver 自动持久化全部 State，崩溃后 resume 状态完全一致。
+
+### characters_profile.json（持久化视图）
 
 ```json
 {
   "char_001": {
     "name": "角色名",
-    "voice_id": "chattts_seed_12345",
+    "voice_params": {
+      "speaker_id": "speaker_female_01",
+      "speed": 1.0,
+      "pitch": 0.0
+    },
     "visual": {
       "reference_image": "characters/char_001/selected.png",
       "comfyui_prompt": "1girl, long black hair, ...",
@@ -205,6 +235,8 @@ export_to_jianying
   }
 }
 ```
+
+`voice_params` 存储局域网 TTS 服务的音色参数，试音和正式合成使用同一套参数，音色完全一致。
 
 ### storyboard.json（分镜稿）
 
@@ -259,7 +291,7 @@ export_to_jianying
 
 ## 7. 外部服务配置
 
-所有外部服务地址通过 `config/services.json` 统一配置：
+全局配置文件位于项目根目录 `config/services.json`（与小说目录无关，跨项目复用）：
 
 ```json
 {
@@ -274,19 +306,25 @@ export_to_jianying
   "card_draw": {
     "image_candidates": 4,
     "voice_candidates": 3
+  },
+  "retry": {
+    "max_attempts": 3,
+    "backoff_seconds": 5
   }
 }
 ```
 
-`image_candidates` 和 `voice_candidates` 控制抽卡时每个角色生成的候选数量，可按需调整。
+- `image_candidates` / `voice_candidates`：每个角色抽卡候选数量
+- `retry`：TTS / ComfyUI 调用失败时的重试策略（最多 3 次，指数退避）
+- 小说级 `config.json` 只存角色/世界观，不包含服务配置
 
 ---
 
 ## 8. 图片切换策略
 
 - 以**分镜稿**为唯一真相来源
-- `scene_change: true` 的分镜条目触发新图生成
-- `scene_change: false` 的条目复用上一张图
+- `scene_change: true` → 生成新图，人工选定后记录路径
+- `scene_change: false` → 直接复用上一个 `scene_change: true` 条目的图片路径
 - 图片切入时间点 = 对应台词的 `start_time`
 - 高潮/关键场景由 LLM 写分镜时标注 `scene_change: true`
 
@@ -294,28 +332,30 @@ export_to_jianying
 
 ## 9. 状态追踪
 
-**唯一真相来源：LangGraph State**
-
-章节状态直接存储在 LangGraph 的 State TypedDict 中，由 SqliteSaver 随 checkpoint 自动持久化，保证崩溃恢复后状态一致：
-
-```python
-class GraphState(TypedDict):
-    chapters_status: dict[str, ChapterStatus]
-    # ChapterStatus: pending / processing / done / exported
-    # ...其他字段
-```
+**唯一真相来源：LangGraph State（由 SqliteSaver 持久化）**
 
 - `load_chapter` 从 LangGraph State 读取 `chapters_status`，找 pending 章节
-- `export_to_jianying` 更新 LangGraph State 中对应章节为 exported
-- SqliteSaver 保证写入原子性，不存在两边不一致的风险
+- `export_to_jianying` 在 LangGraph State 中更新章节状态为 exported
+- SqliteSaver 保证写入原子性，崩溃后 resume 状态完全正确
 
-**`chapters_status.json` 仅作为只读视图**，在每章结束时导出一次供人工查看，不是数据源，不参与流程读取。
+**`chapters_status.json`** 是只读视图，在每章结束时导出一次供人工查看，不参与流程读取。
 
 ---
 
-## 10. 日志规范
+## 10. 错误处理
 
-使用 structlog，每个节点统一打印：
+| 场景 | 处理方式 |
+|------|---------|
+| TTS 服务调用失败 | 按 services.json 配置重试，超过上限记录错误日志，节点标记 error |
+| ComfyUI 调用失败 | 同上 |
+| LLM 审核连续不通过 | 最多回退重试 3 次，超过后 interrupt 通知人工介入 |
+| 节点崩溃 | SqliteSaver checkpoint 自动恢复，从最近节点 resume |
+
+---
+
+## 11. 日志规范
+
+使用 structlog，每个节点入口/出口统一打印：
 
 ```
 {timestamp} {level} node={node_name} chapter={chapter_id} status={start|end|error} duration_ms={N} msg="..."
@@ -323,13 +363,13 @@ class GraphState(TypedDict):
 
 ---
 
-## 11. 遗留专项
+## 12. 遗留专项
 
 - **generate_images 深度设计**：批量生成策略、prompt 版本管理、风格一致性控制、局域网并发调用 — 后续单独出计划
 
 ---
 
-## 12. 开发策略
+## 13. 开发策略
 
 - 开发阶段：使用 `langgraph dev` 启动本地开发服务器，配合 LangGraph Studio 桌面 App 连接
   - 无需 Docker，无需 Postgres，使用 SqliteSaver 做本地 checkpoint
