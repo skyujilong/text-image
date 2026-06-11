@@ -1,0 +1,26 @@
+{
+  "comfyui": {
+    "base_url": "http://*:8188",
+    "timeout": 120
+  },
+  "tts_remote": {
+    "base_url": "http://*:9000",
+    "timeout": 60
+  },
+  "card_draw": {
+    "image_candidates": 4,
+    "voice_candidates": 3
+  },
+  "retry": {
+    "max_attempts": 3,
+    "backoff_seconds": 5
+  },
+  "audio": {
+    "silence_between_speakers_ms": 200,
+    "target_loudness_lufs": -16
+  },
+  "llm_context": {
+    "prev_chapters_for_script": 3
+  },
+  "default_preview_text": "春风十里，不如你。今日天气甚好，出门走走。这江山如此多娇，引无数英雄竞折腰。"
+}
