@@ -77,30 +77,46 @@ text-image/
 
 ### graph_runner.py 核心逻辑
 
+checkpointer 在 FastAPI `lifespan` 启动时创建单个长生命周期实例，graph 编译一次全局复用，避免每次请求开/关 SQLite 连接导致后台任务使用已关闭的连接。
+
 ```python
+from contextlib import asynccontextmanager
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.types import Command
+from fastapi import FastAPI
 import uuid, asyncio
 
 CHECKPOINT_DB = "checkpoints.db"
+_compiled_graph = None  # 应用级单例
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _compiled_graph
+    async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB) as checkpointer:
+        _compiled_graph = graph.compile(checkpointer=checkpointer)
+        yield  # 应用运行期间 checkpointer 持续存活
+
+app = FastAPI(lifespan=lifespan)
 
 async def start_run(params: dict) -> str:
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
-    async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB) as checkpointer:
-        compiled = graph.compile(checkpointer=checkpointer)
-        asyncio.create_task(_run_graph(compiled, params, config, thread_id))
+    asyncio.create_task(_run_graph(_compiled_graph, params, config, thread_id))
     return thread_id
 
-async def resume_run(thread_id: str, human_input: dict):
+async def resume_run(thread_id: str, resume_value):
+    # interrupt() 必须通过 Command(resume=value) 恢复，不能用 ainvoke(dict)
+    # resume_value 类型依节点而定：
+    #   portrait_selector / fullbody_selector → int（候选图索引）
+    #   voice_card_draw → int 或特殊标记
+    #   其他人工节点 → 视具体 interrupt 返回值类型
     config = {"configurable": {"thread_id": thread_id}}
-    async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB) as checkpointer:
-        compiled = graph.compile(checkpointer=checkpointer)
-        await compiled.ainvoke(human_input, config=config)
+    await _compiled_graph.ainvoke(Command(resume=resume_value), config=config)
 ```
 
 - `thread_id` 即 `run_id`，前端用同一个 ID 做 SSE 订阅和 resume，无额外映射
 - SQLite `checkpoints.db` 存于项目根目录，进程重启后 interrupt 状态可恢复
-- ComfyUI 地址从 `.env.local` 读取（`COMFYUI_URL`、`COMFYUI_TIMEOUT`），FastAPI 启动时注入 `ServicesConfig`
+- ComfyUI 地址计划从 `.env.local` 读取（`COMFYUI_URL`、`COMFYUI_TIMEOUT`），需同步改造现有节点的 `_load_config` 从环境变量读取，而非当前的 `services.json`
 
 ### SSE 事件格式
 
@@ -118,12 +134,15 @@ async def resume_run(thread_id: str, human_input: dict):
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/runs` | 启动新 Run，返回 `{ run_id }` |
-| GET | `/runs` | 列出所有历史 Run（从 checkpointer 读） |
+| GET | `/runs` | 列出所有历史 Run（从独立 runs 元信息表读，见下注） |
 | GET | `/runs/{id}/stream` | SSE 节点状态流 |
 | POST | `/runs/{id}/resume` | 人工节点 resume，传入选择结果 |
 | GET | `/novels/config` | 读取指定目录的小说配置 |
+| GET | `/novels/list` | 列出最近使用的小说目录 |
 | GET | `/validate/path` | 校验目录是否存在 |
-| GET | `/files/{path}` | serve 本地图片/音频文件 |
+| GET | `/files/{file_path:path}` | serve 本地图片/音频（`:path` 转换器支持含斜杠的路径，需做路径越界校验） |
+
+> **注：** `AsyncSqliteSaver` 无"列出所有 thread_id"的便捷 API。需在 `checkpoints.db`（或独立 `runs.db`）中维护一张轻量 `runs` 元信息表，字段：`run_id, novel_title, novel_dir, status, created_at`，在 `start_run` 时写入，状态变更时更新。
 
 ---
 
@@ -173,9 +192,13 @@ async def resume_run(thread_id: str, human_input: dict):
 | `fullbody_selector` | 候选全身立绘网格 | 点选 + 确认 / 重新生成 |
 | `voice_card_draw` | 候选语音卡片（可试听） | 点选 + 试听 + 确认 |
 | `voice_params_manual` | 语音参数表单（zod 验证） | 填写 + 确认 |
-| `pending_new_characters` | 新角色决策列表 | 每角色：保留 / 忽略 |
+| `detect_new_characters` | 新角色决策列表（对应 state 字段 `pending_new_characters`） | 每角色：保留 / 忽略 |
 
-"重新生成"→ resume 传 `action: regenerate`，SSE 推送新候选，抽屉内容刷新。
+**图片"重新生成"说明：** `portrait_selector` / `fullbody_selector` 当前在图中是直连边，无 regenerate 回路。前端"重新生成"按钮依赖后端先为这两个节点补充条件边（全部拒绝 → 重回生成节点），此为**前置后端改造任务**，实现前该按钮置灰。`voice_card_draw` 已有"全部拒绝→重抽"的回路，可直接支持。
+
+resume 值约定：
+- `portrait_selector` / `fullbody_selector` → `Command(resume=selected_index: int)`
+- `voice_card_draw` → `Command(resume=selected_index: int)`，全部拒绝时 resume 特殊标记（由后端节点定义）
 
 **弹窗场景（AlertDialog / Dialog）：**
 - 确认忽略角色
@@ -215,7 +238,9 @@ interface RunStore {
     payload: unknown
   } | null
   currentRunId: string | null
-  drillTarget: string | null             // null=顶层, subgraph名=下钻视图
+  drillPath: string[]  // 下钻路径栈，[] = 顶层，["chapter_loop_subgraph"] = 第一层下钻
+                       // ["chapter_loop_subgraph", "character_setup_subgraph"] = 第二层
+                       // v1 仅支持展开一层，子子图作为普通节点显示，路径栈保留扩展能力
 }
 ```
 
@@ -234,3 +259,22 @@ npm run dev   # Vite HMR，代理 /api → :8000
 ```
 
 生产态：`npm run build` 后让 FastAPI `StaticFiles` mount `web/dist`，只起一个进程。
+
+---
+
+## 前置后端任务（前端依赖，需先完成）
+
+以下后端节点当前为占位实现（`return {}`），前端对应交互组件实现后无可对接，需优先补全：
+
+| 节点 | 状态 | 前端依赖 |
+|---|---|---|
+| `voice_params_choice` | 占位 | `VoiceParamsManual` / `VoiceCardDraw` 抽屉 |
+| `voice_params_manual` | 占位 | `VoiceParamsManual` 抽屉 |
+| `voice_card_draw` | 占位 | `VoiceCardDraw` 抽屉 |
+| `detect_new_characters` | 占位 | `NewCharacterDecision` 抽屉 |
+| `adapt_script` | 占位 | 章节脚本流程 |
+| `review_script_human` | 占位 | 人工审核脚本抽屉 |
+| `generate_storyboard` | 占位 | 分镜生成流程 |
+| `synthesize_audio` | 占位 | 音频合成流程 |
+
+此外，`portrait_selector` / `fullbody_selector` 的"重新生成"功能需先为这两个节点在 `setup.py` 中补充条件回路（全部拒绝 → 重回生成节点）。
