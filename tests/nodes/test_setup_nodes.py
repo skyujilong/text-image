@@ -56,20 +56,18 @@ def test_check_needs_visual_without_appearance():
 
 # --- fix_character_visual ---
 
-def test_fix_character_visual_stores_visual_data():
+def test_fix_character_visual_is_confirmation_noop():
+    """fix_character_visual 现在只记录日志，portrait 信息已由 image_card_draw 写入 state。"""
     state = _base_state(
-        setup_current_character={"id": "char_001", "name": "主角"},
-        setup_image_candidates=["path/to/img.png"],
+        setup_current_character={
+            "id": "char_001",
+            "name": "主角",
+            "portrait_path": "/tmp/portrait.png",
+            "portrait_comfyui": "portrait.png",
+        },
     )
-    state["_selected_image"] = "path/to/img.png"
-    state["_comfyui_prompt"] = "1boy, white hair"
-    state["_lora"] = "char001.safetensors"
-    state["_lora_weight"] = 0.8
-    state["_negative_prompt"] = "bad quality"
     result = fix_character_visual(state)
-    char = result["setup_current_character"]
-    assert char["visual"]["reference_image"] == "path/to/img.png"
-    assert char["visual"]["comfyui_prompt"] == "1boy, white hair"
+    assert result == {}
 
 
 # --- fix_character_profile ---

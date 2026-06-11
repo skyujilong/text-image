@@ -8,6 +8,7 @@ from novel2media.nodes.chapter_nodes import (
     build_timeline,
     export_to_jianying,
 )
+from novel2media.nodes.image_nodes import generate_images
 from novel2media.subgraphs.setup import build_character_setup_subgraph
 
 
@@ -74,7 +75,7 @@ def build_chapter_subgraph():
     builder.add_node("review_storyboard_human", _placeholder_node("review_storyboard_human"))
     builder.add_node("review_storyboard_llm_interrupt", _placeholder_node("review_storyboard_llm_interrupt"))
     builder.add_node("synthesize_audio", _placeholder_node("synthesize_audio"))
-    builder.add_node("generate_images", _placeholder_node("generate_images"))
+    builder.add_node("generate_images", generate_images)
     builder.add_node("build_timeline", build_timeline)
     builder.add_node("human_export_decision", _placeholder_node("human_export_decision"))
     builder.add_node("export_to_jianying", export_to_jianying)

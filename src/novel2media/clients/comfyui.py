@@ -69,6 +69,20 @@ class ComfyUIClient:
                     return images
             time.sleep(self._poll_interval)
 
+    def upload_image(self, local_path: Path, subfolder: str = "") -> str:
+        """上传本地图片到 ComfyUI input 目录，返回 ComfyUI 中的文件名。"""
+        url = f"{self._base}/upload/image"
+        with open(local_path, "rb") as f:
+            files = {"image": (local_path.name, f, "image/png")}
+            data: dict[str, str] = {"overwrite": "true"}
+            if subfolder:
+                data["subfolder"] = subfolder
+            resp = httpx.post(url, files=files, data=data, timeout=30)
+        resp.raise_for_status()
+        result = resp.json()
+        log.info("ComfyUI 上传图片成功", filename=result["name"])
+        return result["name"]
+
     def _download_image(self, filename: str, subfolder: str) -> bytes:
         resp = httpx.get(
             f"{self._base}/view",

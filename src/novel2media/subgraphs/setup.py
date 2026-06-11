@@ -6,6 +6,7 @@ from novel2media.nodes.setup_nodes import (
     check_needs_visual,
     image_card_draw,
     fix_character_visual,
+    fullbody_card_draw,
     voice_params_choice,
     voice_params_manual,
     voice_card_draw,
@@ -49,6 +50,7 @@ def build_character_setup_subgraph():
     builder.add_node("check_needs_visual", check_needs_visual)
     builder.add_node("image_card_draw", image_card_draw)
     builder.add_node("fix_character_visual", fix_character_visual)
+    builder.add_node("fullbody_card_draw", fullbody_card_draw)
     builder.add_node("voice_params_choice", voice_params_choice)
     builder.add_node("voice_params_manual", voice_params_manual)
     builder.add_node("voice_card_draw", voice_card_draw)
@@ -61,8 +63,11 @@ def build_character_setup_subgraph():
     builder.add_conditional_edges("check_needs_visual", _route_after_check_visual,
                                   {"image_card_draw": "image_card_draw",
                                    "voice_params_choice": "voice_params_choice"})
+    # 大头照 → 确认 → 全身立绘 → 语音参数
     builder.add_edge("image_card_draw", "fix_character_visual")
-    builder.add_edge("fix_character_visual", "voice_params_choice")
+    builder.add_edge("fix_character_visual", "fullbody_card_draw")
+    builder.add_edge("fullbody_card_draw", "voice_params_choice")
+
     builder.add_conditional_edges("voice_params_choice", _route_after_voice_choice,
                                   {"voice_params_manual": "voice_params_manual",
                                    "voice_card_draw": "voice_card_draw"})

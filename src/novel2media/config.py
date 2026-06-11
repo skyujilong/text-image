@@ -17,6 +17,8 @@ class ServicesConfig:
     silence_ms: int
     lufs: int
     prev_chapters: int
+    pose_images: dict
+    standing_pose_image: str
     default_preview_text: str
 
     @classmethod
@@ -36,5 +38,7 @@ class ServicesConfig:
             silence_ms=data["audio"]["silence_between_speakers_ms"],
             lufs=data["audio"]["target_loudness_lufs"],
             prev_chapters=data["llm_context"]["prev_chapters_for_script"],
+            pose_images=data.get("pose_images", {}),
+            standing_pose_image=data.get("standing_pose_image", "poses/standing_512x768.png"),
             default_preview_text=data["default_preview_text"],
         )

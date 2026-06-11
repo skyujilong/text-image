@@ -42,3 +42,27 @@ def test_generate_raises_on_prompt_failure():
     with pytest.raises(RuntimeError, match="ComfyUI prompt 提交失败"):
         from pathlib import Path
         client.generate(workflow_prompt={}, output_dir=Path("/tmp"), count=1)
+
+
+@respx.mock
+def test_upload_image_returns_name(tmp_path):
+    img = tmp_path / "face.png"
+    img.write_bytes(b"fake_png_bytes")
+    respx.post(f"{BASE}/upload/image").mock(
+        return_value=httpx.Response(200, json={"name": "face.png", "subfolder": ""})
+    )
+    client = ComfyUIClient(base_url=BASE)
+    name = client.upload_image(img)
+    assert name == "face.png"
+
+
+@respx.mock
+def test_upload_image_with_subfolder(tmp_path):
+    img = tmp_path / "portrait.png"
+    img.write_bytes(b"fake_png_bytes")
+    respx.post(f"{BASE}/upload/image").mock(
+        return_value=httpx.Response(200, json={"name": "portrait.png", "subfolder": "characters"})
+    )
+    client = ComfyUIClient(base_url=BASE)
+    name = client.upload_image(img, subfolder="characters")
+    assert name == "portrait.png"

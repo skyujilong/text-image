@@ -22,5 +22,11 @@
   "llm_context": {
     "prev_chapters_for_script": 3
   },
+  "pose_images": {
+    "standing": "poses/standing_512x768.png",
+    "sitting": "poses/sitting_512x768.png",
+    "closeup": "poses/closeup_512x512.png"
+  },
+  "standing_pose_image": "poses/standing_512x768.png",
   "default_preview_text": "春风十里，不如你。今日天气甚好，出门走走。这江山如此多娇，引无数英雄竞折腰。"
 }
