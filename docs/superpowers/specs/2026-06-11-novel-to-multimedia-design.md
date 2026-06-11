@@ -102,8 +102,9 @@ output/{小说名}/
 
 ```
 load_config
-  ↓ 读取 config.json，索引 chapters/ + summaries/
-  
+  ↓ 读取 config.json（角色列表、世界观、题材）
+  ↓ 不索引章节，章节由章节子图动态发现
+
 image_card_draw
   ↓ ComfyUI 给每个角色生成 N 张候选参考图
   ↓ [interrupt] 人工选图确认
@@ -126,7 +127,10 @@ fix_character_profile
 
 ```
 load_chapter
-  ↓ 读取当前章节原文 + 摘要
+  ↓ 动态扫描 chapters/ 目录
+  ↓ 对比 chapters_status.json，找出 status=pending 的章节
+  ↓ 无 pending 章节 → 退出循环（等待新章节写入后再次运行）
+  ↓ 有 → 读取当前章节原文 + 摘要，进入后续节点
 
 adapt_script
   ↓ LLM 改编为多角色口播剧本（旁白 + 各角色台词，标注说话人）
