@@ -1,6 +1,8 @@
 from __future__ import annotations
 import json
 from pathlib import Path
+from novel2media.clients.comfyui import ComfyUIClient
+from novel2media.workflows import build_workflow
 from novel2media.logger import get_logger
 
 log = get_logger("setup_nodes")
@@ -33,7 +35,7 @@ def check_needs_visual(state: dict) -> dict:
 
 
 def fix_character_visual(state: dict) -> dict:
-    """大头照选定后的确认节点，portrait_path/portrait_comfyui 已由 image_card_draw 写入。"""
+    """大头照选定后的确认节点，portrait_path/portrait_comfyui 已由 portrait_selector 写入。"""
     char = state.get("setup_current_character", {})
     log.info("fix_character_visual: 大头照已确认",
              char=char.get("name", char.get("id")),
@@ -41,47 +43,49 @@ def fix_character_visual(state: dict) -> dict:
     return {}
 
 
-def image_card_draw(state: dict) -> dict:
-    """生成大头照候选（无FaceID/ControlNet），interrupt 等待人工选择，上传所选图至 ComfyUI。
+# ─── 大头照阶段（2个节点）────────────────────────────────────────────
 
-    使用角色名 hash 作为 seed，确保 interrupt resume 后重新生成的图片一致。
-    若候选目录已存在文件（resume 场景），直接复用，跳过 ComfyUI 调用。
+def generate_portrait_candidates(state: dict) -> dict:
+    """调用 ComfyUI 生成大头照候选图（无FaceID/ControlNet），写磁盘，返回路径列表。
+
+    纯生成，不含任何 interrupt 或选择逻辑。
     """
-    from langgraph.types import interrupt
-    from novel2media.clients.comfyui import ComfyUIClient
-    from novel2media.workflows import build_workflow
-
     char = state["setup_current_character"]
     char_name = char.get("name", char.get("id", "unknown"))
     cfg = _load_config(state)
     client = ComfyUIClient(cfg.comfyui_url, cfg.comfyui_timeout)
 
     output_dir = Path(state["novel_dir"]) / "characters" / char_name / "portrait_candidates"
+    seed = abs(hash(char_name)) % (2 ** 32)
+    wf = build_workflow("wf_portrait_init", {
+        "positive_prompt": char.get("appearance_prompt", char.get("appearance", "")),
+        "batch_size": cfg.image_candidates,
+        "seed": seed,
+        "filename_prefix": f"portrait_{char_name}",
+    })
+    paths = client.generate(wf, output_dir, cfg.image_candidates)
+    candidates = [str(p) for p in paths]
+    log.info("generate_portrait_candidates: 完成", count=len(candidates))
+    return {"setup_image_candidates": candidates}
 
-    # resume 场景：候选图已下载到磁盘，直接读取，跳过 ComfyUI 生成
-    existing = sorted(output_dir.glob("candidate_*.png")) if output_dir.exists() else []
-    if existing:
-        candidates = [str(p) for p in existing]
-        log.info("image_card_draw: 复用已有候选图（resume）", count=len(candidates))
-    else:
-        seed = abs(hash(char_name)) % (2 ** 32)
-        wf = build_workflow("wf_portrait_init", {
-            "positive_prompt": char.get("appearance_prompt", char.get("appearance", "")),
-            "batch_size": cfg.image_candidates,
-            "seed": seed,
-            "filename_prefix": f"portrait_{char_name}",
-        })
-        paths = client.generate(wf, output_dir, cfg.image_candidates)
-        candidates = [str(p) for p in paths]
-        log.info("image_card_draw: 大头照候选生成完成", count=len(candidates))
+
+def portrait_selector(state: dict) -> dict:
+    """interrupt：等待用户选大头照 index，上传所选图到 ComfyUI input 目录。
+
+    resume 时 LangGraph 直接传入 selected_index（int），跳过生成。
+    """
+    from langgraph.types import interrupt
+
+    candidates = state.get("setup_image_candidates", [])
+    cfg = _load_config(state)
+    client = ComfyUIClient(cfg.comfyui_url, cfg.comfyui_timeout)
 
     selected_index = interrupt({"candidates": candidates, "type": "portrait_selection"})
-
     selected_path = Path(candidates[int(selected_index)])
     comfyui_name = client.upload_image(selected_path, subfolder="characters")
-    log.info("image_card_draw: 大头照已选定并上传", comfyui_name=comfyui_name)
-
+    log.info("portrait_selector: 已选定并上传", comfyui_name=comfyui_name)
     return {
+        "setup_image_candidates": [],
         "setup_current_character": {
             **state["setup_current_character"],
             "portrait_path": str(selected_path),
@@ -90,49 +94,50 @@ def image_card_draw(state: dict) -> dict:
     }
 
 
-def fullbody_card_draw(state: dict) -> dict:
-    """以大头照 FaceID 生成全身立绘候选（512×768），interrupt 等待人工选择，上传所选图。
+# ─── 全身立绘阶段（2个节点）──────────────────────────────────────────
 
-    与 image_card_draw 相同的 resume 安全机制：候选图已存在时跳过 ComfyUI。
+def generate_fullbody_candidates(state: dict) -> dict:
+    """以大头照 FaceID 生成全身立绘候选（512×768），写磁盘，返回路径列表。
+
+    纯生成，不含任何 interrupt 或选择逻辑。
     """
-    from langgraph.types import interrupt
-    from novel2media.clients.comfyui import ComfyUIClient
-    from novel2media.workflows import build_workflow
-
     char = state["setup_current_character"]
     char_name = char.get("name", char.get("id", "unknown"))
     cfg = _load_config(state)
     client = ComfyUIClient(cfg.comfyui_url, cfg.comfyui_timeout)
 
     output_dir = Path(state["novel_dir"]) / "characters" / char_name / "fullbody_candidates"
+    seed = (abs(hash(char_name)) + 1) % (2 ** 32)
+    wf = build_workflow("wf_fullbody_with_face", {
+        "positive_prompt": char.get("appearance_prompt", char.get("appearance", "")),
+        "face_image": char["portrait_comfyui"],
+        "pose_image": cfg.standing_pose_image,
+        "width": 512,
+        "height": 768,
+        "batch_size": cfg.image_candidates,
+        "seed": seed,
+        "filename_prefix": f"fullbody_{char_name}",
+    })
+    paths = client.generate(wf, output_dir, cfg.image_candidates)
+    candidates = [str(p) for p in paths]
+    log.info("generate_fullbody_candidates: 完成", count=len(candidates))
+    return {"setup_image_candidates": candidates}
 
-    existing = sorted(output_dir.glob("candidate_*.png")) if output_dir.exists() else []
-    if existing:
-        candidates = [str(p) for p in existing]
-        log.info("fullbody_card_draw: 复用已有候选图（resume）", count=len(candidates))
-    else:
-        seed = (abs(hash(char_name)) + 1) % (2 ** 32)
-        wf = build_workflow("wf_fullbody_with_face", {
-            "positive_prompt": char.get("appearance_prompt", char.get("appearance", "")),
-            "face_image": char["portrait_comfyui"],
-            "pose_image": cfg.standing_pose_image,
-            "width": 512,
-            "height": 768,
-            "batch_size": cfg.image_candidates,
-            "seed": seed,
-            "filename_prefix": f"fullbody_{char_name}",
-        })
-        paths = client.generate(wf, output_dir, cfg.image_candidates)
-        candidates = [str(p) for p in paths]
-        log.info("fullbody_card_draw: 全身立绘候选生成完成", count=len(candidates))
+
+def fullbody_selector(state: dict) -> dict:
+    """interrupt：等待用户选全身立绘 index，上传所选图到 ComfyUI input 目录。"""
+    from langgraph.types import interrupt
+
+    candidates = state.get("setup_image_candidates", [])
+    cfg = _load_config(state)
+    client = ComfyUIClient(cfg.comfyui_url, cfg.comfyui_timeout)
 
     selected_index = interrupt({"candidates": candidates, "type": "fullbody_selection"})
-
     selected_path = Path(candidates[int(selected_index)])
     comfyui_name = client.upload_image(selected_path, subfolder="characters")
-    log.info("fullbody_card_draw: 全身立绘已选定并上传", comfyui_name=comfyui_name)
-
+    log.info("fullbody_selector: 已选定并上传", comfyui_name=comfyui_name)
     return {
+        "setup_image_candidates": [],
         "setup_current_character": {
             **state["setup_current_character"],
             "fullbody_path": str(selected_path),
@@ -140,6 +145,8 @@ def fullbody_card_draw(state: dict) -> dict:
         },
     }
 
+
+# ─── 语音参数阶段（占位节点）────────────────────────────────────────
 
 def fix_character_profile(state: dict) -> dict:
     char = state.get("setup_current_character", {})
