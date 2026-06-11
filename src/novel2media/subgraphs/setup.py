@@ -4,9 +4,11 @@ from novel2media.state import GraphState
 from novel2media.nodes.setup_nodes import (
     setup_dispatcher,
     check_needs_visual,
-    image_card_draw,
+    generate_portrait_candidates,
+    portrait_selector,
     fix_character_visual,
-    fullbody_card_draw,
+    generate_fullbody_candidates,
+    fullbody_selector,
     voice_params_choice,
     voice_params_manual,
     voice_card_draw,
@@ -22,7 +24,16 @@ def _route_after_dispatcher(state: GraphState) -> str:
 
 
 def _route_after_check_visual(state: GraphState) -> str:
-    return state.get("_route", "voice_params_choice")
+    route = state.get("_route", "voice_params_choice")
+    if route != "image_card_draw":
+        return "voice_params_choice"
+    # resume 场景：候选图已存在，直接跳到 selector
+    return "portrait_selector" if state.get("setup_image_candidates") else "generate_portrait_candidates"
+
+
+def _route_after_fix_character_visual(state: GraphState) -> str:
+    # resume 场景：全身候选图已存在，跳过生成
+    return "fullbody_selector" if state.get("setup_image_candidates") else "generate_fullbody_candidates"
 
 
 def _route_after_voice_choice(state: GraphState) -> str:
@@ -48,9 +59,14 @@ def build_character_setup_subgraph():
 
     builder.add_node("setup_dispatcher", setup_dispatcher)
     builder.add_node("check_needs_visual", check_needs_visual)
-    builder.add_node("image_card_draw", image_card_draw)
+    # 大头照阶段
+    builder.add_node("generate_portrait_candidates", generate_portrait_candidates)
+    builder.add_node("portrait_selector", portrait_selector)
     builder.add_node("fix_character_visual", fix_character_visual)
-    builder.add_node("fullbody_card_draw", fullbody_card_draw)
+    # 全身立绘阶段
+    builder.add_node("generate_fullbody_candidates", generate_fullbody_candidates)
+    builder.add_node("fullbody_selector", fullbody_selector)
+    # 语音参数阶段
     builder.add_node("voice_params_choice", voice_params_choice)
     builder.add_node("voice_params_manual", voice_params_manual)
     builder.add_node("voice_card_draw", voice_card_draw)
@@ -61,13 +77,22 @@ def build_character_setup_subgraph():
     builder.add_conditional_edges("setup_dispatcher", _route_after_dispatcher,
                                   {"check_needs_visual": "check_needs_visual", END: END})
     builder.add_conditional_edges("check_needs_visual", _route_after_check_visual,
-                                  {"image_card_draw": "image_card_draw",
+                                  {"generate_portrait_candidates": "generate_portrait_candidates",
+                                   "portrait_selector": "portrait_selector",
                                    "voice_params_choice": "voice_params_choice"})
-    # 大头照 → 确认 → 全身立绘 → 语音参数
-    builder.add_edge("image_card_draw", "fix_character_visual")
-    builder.add_edge("fix_character_visual", "fullbody_card_draw")
-    builder.add_edge("fullbody_card_draw", "voice_params_choice")
 
+    # 大头照：生成 → 选择 → 确认
+    builder.add_edge("generate_portrait_candidates", "portrait_selector")
+    builder.add_edge("portrait_selector", "fix_character_visual")
+    builder.add_conditional_edges("fix_character_visual", _route_after_fix_character_visual,
+                                  {"generate_fullbody_candidates": "generate_fullbody_candidates",
+                                   "fullbody_selector": "fullbody_selector"})
+
+    # 全身立绘：生成 → 选择 → 语音参数
+    builder.add_edge("generate_fullbody_candidates", "fullbody_selector")
+    builder.add_edge("fullbody_selector", "voice_params_choice")
+
+    # 语音参数阶段
     builder.add_conditional_edges("voice_params_choice", _route_after_voice_choice,
                                   {"voice_params_manual": "voice_params_manual",
                                    "voice_card_draw": "voice_card_draw"})
