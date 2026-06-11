@@ -294,19 +294,22 @@ export_to_jianying
 
 ## 9. 状态追踪
 
-`chapters_status.json` 记录每章处理进度：
+**唯一真相来源：LangGraph State**
 
-```json
-{
-  "chapter_01": {
-    "status": "exported",       // pending / processing / done / exported
-    "exported_at": "2026-06-11T10:00:00"
-  },
-  "chapter_02": {
-    "status": "done"
-  }
-}
+章节状态直接存储在 LangGraph 的 State TypedDict 中，由 SqliteSaver 随 checkpoint 自动持久化，保证崩溃恢复后状态一致：
+
+```python
+class GraphState(TypedDict):
+    chapters_status: dict[str, ChapterStatus]
+    # ChapterStatus: pending / processing / done / exported
+    # ...其他字段
 ```
+
+- `load_chapter` 从 LangGraph State 读取 `chapters_status`，找 pending 章节
+- `export_to_jianying` 更新 LangGraph State 中对应章节为 exported
+- SqliteSaver 保证写入原子性，不存在两边不一致的风险
+
+**`chapters_status.json` 仅作为只读视图**，在每章结束时导出一次供人工查看，不是数据源，不参与流程读取。
 
 ---
 
