@@ -324,6 +324,9 @@ export_to_jianying
 
 ## 12. 开发策略
 
-- 开发阶段：直接 `python main.py` 运行，使用 SqliteSaver 做 checkpoint
-- 不引入 LangGraph Studio / LangGraph Up（避免 Docker + Postgres 资源占用）
-- 流程稳定后再考虑 UI 可视化接入
+- 开发阶段：使用 `langgraph dev` 启动本地开发服务器，配合 LangGraph Studio 桌面 App 连接
+  - 无需 Docker，无需 Postgres，使用 SqliteSaver 做本地 checkpoint
+  - Studio UI 提供节点可视化、interrupt 暂停点交互、状态查看和手动 resume
+- **不使用** `langgraph up`（需要 Docker + Postgres，16G 内存机器资源压力大）
+- 需要提供 `langgraph.json` 配置文件声明图入口
+- 流程稳定后可按需接入生产部署
