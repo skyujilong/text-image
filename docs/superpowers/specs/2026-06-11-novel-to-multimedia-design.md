@@ -22,7 +22,7 @@
 | 主流程编排 | LangGraph（串行子图嵌套） | Mac Mini M4 |
 | 状态持久化 | SqliteSaver（本地 SQLite） | Mac Mini M4 |
 | 日志 | structlog（结构化日志，含节点名/章节/耗时/状态） | Mac Mini M4 |
-| TTS 试音 + 大规模合成 | 局域网自部署 TTS 服务（AMD 9070 GRE） | 局域网另一台机器 |
+| TTS 试音 + 大规模合成 | 局域网自部署 ChatTTS 服务（AMD 9070 GRE） | 局域网另一台机器 |
 | 图片生成 | ComfyUI | 局域网另一台机器 |
 | 视频导出 | 剪映（带时间轴格式导入） | 手动 |
 
@@ -156,11 +156,12 @@ review_script_human
 
 detect_new_characters
   ↓ LLM 分析已确认剧本，识别本章出现的重要角色
-  ↓ 对比全局 characters_profile，找出尚未固化的新角色
+  ↓ 对比全局 characters_profile，过滤掉已固化角色和 ignored_characters 中的角色
   ↓ 无新角色 ──────────────────────────────→ generate_storyboard
   ↓ 有新角色 → [interrupt] 告知人工，确认是否需要固化
                ↓ 确认 → 调用 character_setup_subgraph（处理新角色）→ generate_storyboard
-               ↓ 跳过 → generate_storyboard（新角色本章以通用方式处理）
+               ↓ 跳过 → 将该角色加入 State.ignored_characters → generate_storyboard
+                         （后续章节检测时自动过滤，不再重复触发）
 
 generate_storyboard
   ↓ LLM 根据剧本生成分镜稿
@@ -175,9 +176,13 @@ review_storyboard_human
   ↓ 打回 → 回退 generate_storyboard
 
 synthesize_audio
-  ↓ 按角色逐段调用局域网 TTS 服务
-  ↓ 输出：audio.wav（多段拼接）+ timestamps JSON
-  ↓ 生成：subtitles.srt（整句粒度，每条 timestamp 对应一条 SRT 条目）
+  ↓ 按分镜条目顺序逐条调用局域网 ChatTTS 服务（每次只传一条台词 + 对应角色 voice_params）
+  ↓ 响应直接与 storyboard_id 对应，不依赖 text 匹配，避免重复台词歧义
+  ↓ 各段 timestamps 从 0 开始，代码侧累加全局偏移量合并为完整时间轴
+  ↓ 段间插入静音间隔（默认 200ms，可配置）防止片段粘连
+  ↓ 所有段拼接后统一做音量归一化（-16 LUFS）消除不同 seed 间音量差异
+  ↓ 输出：audio.wav（多段拼接）+ timestamps JSON（含全局偏移后时间戳）
+  ↓ 生成：subtitles.srt（每个 storyboard 条目对应一条 SRT 字幕，不按自然句拆分）
 
 generate_images
   ↓ 【简化版，后续专项细化】
@@ -188,7 +193,7 @@ generate_images
       ↓ 记录最终选定图片路径（scene_change: false 条目记录复用路径）
 
 build_timeline
-  ↓ timestamps → 匹配分镜条目（按 text 对应）→ 对齐图片路径
+  ↓ timestamps → 按 storyboard_id 直接对应分镜条目（不依赖 text 匹配）→ 对齐图片路径
   ↓ 输出 timeline.json
 
 human_export_decision
@@ -221,11 +226,12 @@ class ChapterStatus(str, Enum):
 
 class GraphState(TypedDict):
     novel_title: str
-    characters_profile: dict          # 角色完整档案
+    characters_profile: dict           # 角色完整档案
+    ignored_characters: set[str]       # 已明确跳过的角色名，不再重复触发检测
     chapters_status: dict[str, ChapterStatus]  # 各章节状态
     current_chapter_id: str
-    current_script: dict              # 当前章节剧本
-    current_storyboard: list          # 当前章节分镜稿
+    current_script: dict               # 当前章节剧本
+    current_storyboard: list           # 当前章节分镜稿
     # ...其他节点间传递的字段
 ```
 
@@ -238,9 +244,14 @@ SqliteSaver 自动持久化全部 State，崩溃后 resume 状态完全一致。
   "char_001": {
     "name": "角色名",
     "voice_params": {
-      "speaker_id": "speaker_female_01",
+      "seed": 12345,
       "speed": 1.0,
-      "pitch": 0.0
+      "oral": 2,
+      "laugh": 0,
+      "break": 3,
+      "temperature": 0.3,
+      "top_p": 0.7,
+      "top_k": 20
     },
     "visual": {
       "reference_image": "characters/char_001/selected.png",
@@ -249,11 +260,18 @@ SqliteSaver 自动持久化全部 State，崩溃后 resume 状态完全一致。
       "lora_weight": 0.8,
       "negative_prompt": "..."
     }
+  },
+  "ignored_char_002": {
+    "name": "路人甲",
+    "ignored": true
   }
 }
 ```
 
-`voice_params` 存储局域网 TTS 服务的音色参数，试音和正式合成使用同一套参数，音色完全一致。
+- `seed` 是 ChatTTS 控制音色的核心参数，试音阶段抽卡即抽取不同 seed，人工听选后固化
+- `oral/laugh/break` 控制角色说话风格（口语化/笑声/停顿）
+- `ignored: true` 表示人工明确跳过固化，`detect_new_characters` 后续不再对此角色触发 interrupt
+- 试音和正式合成使用同一套 ChatTTS 参数，音色完全可复现
 
 ### storyboard.json（分镜稿）
 
