@@ -100,13 +100,12 @@ output/{小说名}/
 [END]
 ```
 
-### 5.2 初始化子图（只运行一次）
+### 5.2 角色设定子图 character_setup_subgraph（可复用）
+
+**独立子图，两处调用：初始化阶段 + 章节阶段发现新角色时。**  
+每次调用传入待处理的角色列表，处理完成后结果合并回全局 `characters_profile`。
 
 ```
-load_config
-  ↓ 读取 config.json（角色列表、世界观、题材）
-  ↓ 初始化 LangGraph State，不索引章节
-
 image_card_draw
   ↓ ComfyUI 给每个角色生成 N 张候选参考图（N 由 services.json 配置）
   ↓ [interrupt] 人工选图确认
@@ -125,7 +124,17 @@ fix_character_profile
 
 **interrupt 点：** 2 个（image_card_draw 后、voice_card_draw 后）
 
-### 5.3 章节子图（每章循环）
+### 5.3 初始化子图（只运行一次）
+
+```
+load_config
+  ↓ 读取 config.json（角色列表、世界观、题材）
+  ↓ 初始化 LangGraph State，不索引章节
+
+→ 调用 character_setup_subgraph（处理 config.json 中预定义的主要角色）
+```
+
+### 5.4 章节子图（每章循环）
 
 ```
 load_chapter
@@ -144,6 +153,14 @@ review_script_llm
 review_script_human
   ↓ [interrupt] 人工确认或打回（通过 LangGraph Studio UI 操作）
   ↓ 打回 → 回退 adapt_script
+
+detect_new_characters
+  ↓ LLM 分析已确认剧本，识别本章出现的重要角色
+  ↓ 对比全局 characters_profile，找出尚未固化的新角色
+  ↓ 无新角色 ──────────────────────────────→ generate_storyboard
+  ↓ 有新角色 → [interrupt] 告知人工，确认是否需要固化
+               ↓ 确认 → 调用 character_setup_subgraph（处理新角色）→ generate_storyboard
+               ↓ 跳过 → generate_storyboard（新角色本章以通用方式处理）
 
 generate_storyboard
   ↓ LLM 根据剧本生成分镜稿
@@ -186,7 +203,7 @@ export_to_jianying
   ↓ 导出只读视图 chapters_status.json 供人工查看
 ```
 
-**interrupt 点：** 4 个（2 个人工审核 + generate_images 内选图 + 导出决策）  
+**interrupt 点：** 5 个（2 个人工审核剧本/分镜 + detect_new_characters 确认 + generate_images 内选图 + 导出决策）  
 **人工介入方式：** 统一通过 LangGraph Studio UI 在 interrupt 节点操作（resume / 输入反馈）
 
 ---
