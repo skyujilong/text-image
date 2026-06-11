@@ -110,13 +110,17 @@ output/{小说名}/
 [END]
 ```
 
-### 5.2 角色设定子图 character_setup_subgraph（可复用，单角色）
+### 5.2 角色设定子图 character_setup_subgraph（可复用，队列自驱动）
 
-**每次调用只处理一个角色**，由调用方（init_subgraph / detect_new_characters）负责循环遍历角色列表逐个调用。处理结果合并回全局 `characters_profile`。
+**子图内部自驱动循环**，由调用方（`init_subgraph` / `detect_new_characters`）在进入子图前一次性将所有待处理角色填入 `State.setup_queue`，子图通过 `setup_dispatcher` 逐个弹出消费，队列清空后退出到父图下一条边。调用方无需外层循环。
 
 **条件边：** `setup_current_character.appearance == ""` → 跳过 `image_card_draw` + `fix_character_visual`，直接进入 `voice_params_choice`（适用于 narrator 及无外貌描述的角色）。
 
 ```
+[setup_dispatcher]  子图入口，条件边
+  ↓ setup_queue 非空 → 弹出队首赋给 setup_current_character → check_needs_visual
+  ↓ setup_queue 为空 → END（退出子图，父图继续后续节点）
+
 [check_needs_visual]  条件边
   ↓ appearance 不为空 → image_card_draw
   ↓ appearance 为空   → voice_params_choice（跳过出图流程）
@@ -154,6 +158,7 @@ voice_params_choice
 fix_character_profile
   ↓ 将当前角色视觉特征 + 音色参数合并写入 State.characters_profile
   ↓ 派生输出 characters_profile.json（只读视图，每次覆盖写）
+  ↓ 无条件边 → 回到 setup_dispatcher（处理下一个角色）
 ```
 
 > **技术风险：** 嵌套子图 + interrupt + SqliteSaver 的 resume 行为需在开发初期验证，确认 LangGraph 版本支持后再依赖此模式。
@@ -169,9 +174,10 @@ load_config
     - ignored_characters = []
     - script_review_attempts = 0
     - storyboard_review_attempts = 0
+    - setup_queue = config.characters（全部预定义角色，含 narrator）
 
-→ 遍历 config.characters，逐个调用 character_setup_subgraph
-  （每次设置 setup_current_character = 当前角色，完成后继续下一个）
+→ character_setup_subgraph
+  （子图通过 setup_dispatcher 自行消费 setup_queue，队列清空后退出到 init_end）
 ```
 
 ### 5.4 章节子图（循环，条件边闭合）
@@ -209,17 +215,20 @@ review_script_llm
 review_script_human
   ↓ [interrupt] 人工确认或打回（LangGraph Studio UI）
   ↓ 通过 → script_review_attempts = 0 → detect_new_characters
-  ↓ 打回 → adapt_script（人工打回不计入 attempts，无次数限制）
+  ↓ 打回 → script_review_attempts = 0 → adapt_script（无次数限制）
 
 detect_new_characters
   ↓ LLM 分析已确认剧本，识别本章出现的重要角色
   ↓ 过滤：已在 characters_profile 中固化的 + ignored_characters 中的
   ↓ 无新角色 → generate_storyboard
-  ↓ 有新角色 → [interrupt] 批量展示所有新角色，人工为每个标记：固化 / 忽略
-    ↓ 顺序执行（非并列分支）：
-      1. 将标记为"忽略"的角色加入 State.ignored_characters
-      2. 遍历标记为"固化"的角色，逐个调用 character_setup_subgraph
-    ↓ 全部处理完 → generate_storyboard
+  ↓ 有新角色 → 写入 State.pending_new_characters
+    ↓ [interrupt] 批量展示所有新角色，人工为每个标记：固化 / 忽略
+    ↓ 将标记"忽略"的角色写入 State.ignored_characters
+    ↓ 将标记"固化"的角色写入 State.setup_queue
+    ↓ 条件边：
+      - setup_queue 非空 → character_setup_subgraph
+        （子图消费完队列后，父图继续到 generate_storyboard）
+      - setup_queue 为空（全部忽略）→ generate_storyboard
 
 generate_storyboard
   ↓ LLM 根据剧本生成分镜稿
@@ -239,7 +248,7 @@ review_storyboard_llm
 review_storyboard_human
   ↓ [interrupt] 人工确认或打回（LangGraph Studio UI）
   ↓ 通过 → storyboard_review_attempts = 0 → synthesize_audio
-  ↓ 打回 → generate_storyboard（不计入 attempts，无次数限制）
+  ↓ 打回 → storyboard_review_attempts = 0 → generate_storyboard（无次数限制）
 
 synthesize_audio
   ↓ 按分镜条目顺序逐条调用局域网 ChatTTS 服务
@@ -261,10 +270,11 @@ generate_images
   ↓ 写入 State：current_image_map（storyboard_id → image_path）
 
 build_timeline
-  ↓ 按 storyboard_id 直接对应 timestamps 和 image_map（不依赖 text 匹配）
-  ↓ 输出 timeline.json，写入 State：current_timeline_path
+  ↓ 按 storyboard_id 直接对应 timestamps 和 current_image_map（不依赖 text 匹配）
+  ↓ 每条 timeline 记录内嵌 image_path，输出 timeline.json，写入 State：current_timeline_path
   ↓ 将本章产物路径写入 State.chapters_artifacts[current_chapter_id]：
-    { audio_path, subtitles_path, timeline_path, image_map }
+    { audio_path, subtitles_path, timeline_path }
+    （image_path 可从 timeline.json 各条目读取，不重复存储）
 
 human_export_decision
   ↓ 当前章节 status → done
@@ -275,8 +285,9 @@ human_export_decision
 
 export_to_jianying
   ↓ 从 State.chapters_artifacts 中读取所有 status=done 章节的产物路径
+    （status=exported 的章节已在上次导出时处理，本次跳过，实现增量导出）
   ↓ 音频轨 + 图片轨 + 字幕轨 → 带时间轴导出格式
-  ↓ 在 State 中更新这些章节 status=exported
+  ↓ 在 State 中更新这些章节 status=exported（作为"上次导出节点"标记）
   ↓ 派生导出只读视图 chapters_status.json
   ↓ 条件边 → 回到 load_chapter
 ```
@@ -303,7 +314,7 @@ class ChapterArtifacts(TypedDict):
     audio_path: str
     subtitles_path: str
     timeline_path: str
-    image_map: dict[str, str]           # storyboard_id → image_path
+    # image_path 已含于 timeline.json 每条记录中，此处不重复存储
 
 class GraphState(TypedDict):
     # 全局配置
@@ -334,8 +345,9 @@ class GraphState(TypedDict):
     script_review_attempts: int
     storyboard_review_attempts: int
 
-    # character_setup_subgraph 当前处理角色（单角色，调用方循环）
-    setup_current_character: dict       # 当前待处理的单个角色信息
+    # character_setup_subgraph 内部状态（子图自驱动队列循环）
+    setup_queue: list[dict]             # 待设定角色队列，进入子图前一次性填好，dispatcher 逐个弹出
+    setup_current_character: dict       # 当前待处理的单个角色信息（dispatcher 从队列弹出后设置）
     setup_image_candidates: list[str]   # 当前角色的候选图片路径列表
     setup_voice_candidates: list[dict]  # 当前角色的候选音色列表（seed + 样本路径）
 
