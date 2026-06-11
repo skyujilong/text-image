@@ -1,0 +1,82 @@
+<h2>小说转多媒体系统 — 整体架构概览</h2>
+<p class="subtitle">基于 LangChain + LangGraph 的自动化流水线，请确认这是否符合你的设想</p>
+
+<div style="font-family: monospace; font-size: 13px; line-height: 1.8; background: #1a1a2e; color: #e0e0e0; border-radius: 12px; padding: 24px; margin: 0 0 24px 0;">
+
+<div style="color: #7ec8e3; font-weight: bold; margin-bottom: 12px;">【入口】 指定目录</div>
+<div style="padding-left: 16px; color: #ccc;">
+  📄 config.json &nbsp;&nbsp;← 角色信息 / 世界观 / 题材<br>
+  📁 chapters/ &nbsp;&nbsp;&nbsp;&nbsp;← 各章节小说原文<br>
+  📁 summaries/ &nbsp;&nbsp;← 各章节摘要
+</div>
+
+<div style="color: #888; margin: 12px 0 4px 0;">↓</div>
+
+<div style="border: 1px solid #7ec8e3; border-radius: 8px; padding: 12px 16px; margin: 4px 0; background: #0d2137;">
+  <span style="color: #7ec8e3; font-weight: bold;">Phase 1 — 角色初始化</span>
+  <div style="color: #ccc; margin-top: 6px; font-size: 12px;">
+    解析 JSON → 角色音色抽卡（本地TTS试音）→ 角色图片抽卡 → ComfyUI生成角色参考图<br>
+    <span style="color: #ffd166;">⚠ 固定角色特征参数（发色/体型/服装 LoRA等），防止人物崩坏</span><br>
+    产物保存至 &nbsp;<code style="color:#90ee90;">output/{小说名}/characters/</code>
+  </div>
+</div>
+
+<div style="color: #888; margin: 12px 0 4px 0;">↓ 循环每一章节</div>
+
+<div style="border: 1px solid #a8dadc; border-radius: 8px; padding: 12px 16px; margin: 4px 0; background: #0d2137;">
+  <span style="color: #a8dadc; font-weight: bold;">Phase 2 — 章节改编</span>
+  <div style="color: #ccc; margin-top: 6px; font-size: 12px;">
+    原文 → LLM改编为多角色口播剧本 → LLM自审 → 人工审核<br>
+    剧本 → LLM生成分镜稿（场景/情绪/构图）→ LLM自审 → 人工审核<br>
+    <span style="color: #ffd166;">⚠ 不通过 → 回退上一步重新生成</span>
+  </div>
+</div>
+
+<div style="color: #888; margin: 12px 0 4px 0;">↓</div>
+
+<div style="border: 1px solid #c77dff; border-radius: 8px; padding: 12px 16px; margin: 4px 0; background: #0d2137;">
+  <span style="color: #c77dff; font-weight: bold;">Phase 3 — 音频合成</span>
+  <div style="color: #ccc; margin-top: 6px; font-size: 12px;">
+    剧本台词 → 远端TTS服务器 大规模合成（按角色音色）<br>
+    输出：各段落音频文件 + 时间轴（每段起止时间戳）<br>
+    产物保存至 &nbsp;<code style="color:#90ee90;">output/{小说名}/{章节}/audio/</code>
+  </div>
+</div>
+
+<div style="color: #888; margin: 12px 0 4px 0;">↓</div>
+
+<div style="border: 1px solid #c77dff; border-radius: 8px; padding: 12px 16px; margin: 4px 0; background: #0d2137;">
+  <span style="color: #c77dff; font-weight: bold;">Phase 4 — 场景图生成</span>
+  <div style="color: #ccc; margin-top: 6px; font-size: 12px;">
+    分镜稿 × 音频时间轴 → ComfyUI批量生成场景图<br>
+    <span style="color: #ffd166;">⚠ 图片时序 = 音频骨架，图片是皮（按音频段落切换）</span><br>
+    产物保存至 &nbsp;<code style="color:#90ee90;">output/{小说名}/{章节}/images/</code>
+  </div>
+</div>
+
+<div style="color: #888; margin: 12px 0 4px 0;">↓</div>
+
+<div style="border: 1px solid #ffd166; border-radius: 8px; padding: 12px 16px; margin: 4px 0; background: #0d2137;">
+  <span style="color: #ffd166; font-weight: bold;">人工决策节点 — 章节结束</span>
+  <div style="color: #ccc; margin-top: 6px; font-size: 12px;">
+    询问：是否将已积累的 N 章内容导入剪映？<br>
+    ✅ 是 → 打包导出剪映工程 → 标记章节状态为「已提交」<br>
+    ❌ 否 → 继续下一章节循环
+  </div>
+</div>
+
+<div style="color: #888; margin: 12px 0 4px 0;">↓</div>
+
+<div style="border: 1px solid #90ee90; border-radius: 8px; padding: 12px 16px; margin: 4px 0; background: #0d2137;">
+  <span style="color: #90ee90; font-weight: bold;">Phase 5 — 剪映导出</span>
+  <div style="color: #ccc; margin-top: 6px; font-size: 12px;">
+    音频轨 + 图片序列 + 时间轴 → 生成剪映草稿工程文件<br>
+    状态记录：chapters_status.json 跟踪哪些章节已提交
+  </div>
+</div>
+
+</div>
+
+<p style="color: #aaa; font-size: 13px; margin-top: 8px;">
+  👆 以上是根据你的描述梳理出的整体流程。请在终端告诉我：这个流程是否准确？有没有遗漏或不对的地方？
+</p>
