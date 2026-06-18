@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+log = logging.getLogger("graph_runner")
 
 # StateSnapshot 在不同版本的 LangGraph 中位置不同
 # 暂时用 type: ignore 跳过类型检查，后续统一处理
@@ -140,6 +144,9 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
         await _runs_db.update_status(run_id, "done")
         await push_event(run_id, {"type": "run_complete"})
     except Exception as exc:
+        # 记录完整堆栈到后端日志
+        log.error(f"Run {run_id} failed: {exc}", exc_info=True)
+        # 简化消息发给前端（避免堆栈信息泄露）
         await _runs_db.update_status(run_id, "error")
         await push_event(run_id, {"type": "run_error", "message": str(exc)})
         # 出错时保留 queue，以便用户重试后重新连接 SSE

@@ -9,14 +9,19 @@ from novel2media.workflows import build_workflow
 
 log = get_logger("setup_nodes")
 
+# 项目根目录（6 层 parent）
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent.parent
+
 
 def _load_config(state: dict):
     from novel2media.config import ServicesConfig
 
     novel_dir = Path(state.get("novel_dir", "."))
+    # 优先从小说目录的 config/ 读取（用户自定义配置）
     cfg_path = novel_dir / "config" / "services.json"
     if not cfg_path.exists():
-        cfg_path = Path(__file__).parent.parent.parent.parent / "config" / "services.json"
+        # 回退到项目根目录的全局配置
+        cfg_path = PROJECT_ROOT / "config" / "services.json"
     return ServicesConfig.from_file(cfg_path)
 
 

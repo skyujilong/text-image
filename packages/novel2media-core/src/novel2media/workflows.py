@@ -5,7 +5,9 @@ import json
 import random
 from pathlib import Path
 
-_WORKFLOWS_DIR = Path(__file__).parent.parent.parent.parent.parent / "config" / "workflows"
+# 从当前文件往上 6 层到项目根
+# packages/novel2media-core/src/novel2media/workflows.py
+_WORKFLOWS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "config" / "workflows"
 
 # 各模板可配置参数 → (node_id, field_name)
 PARAM_MAP: dict[str, dict[str, tuple[str, str]]] = {

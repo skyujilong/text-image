@@ -86,6 +86,9 @@ lint.ignore = [
 "__init__.py" = ["F401"]
 "tests/**/*.py" = ["ARG001", "ARG002", "F841"]  # 测试文件：允许未使用参数和变量
 
+[project.scripts]
+backend = "uvicorn.main:main"
+
 [dependency-groups]
 dev = [
     "pyright>=1.1.410",
