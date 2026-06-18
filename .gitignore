@@ -1,9 +1,63 @@
+# ======================================
+# Python
+# ======================================
 __pycache__/
 *.pyc
 *.pyo
-.venv/
 *.egg-info/
 dist/
+build/
 .pytest_cache/
-.langgraph_api/
+.venv/
+*.egg
+
+# ======================================
+# Node.js
+# ======================================
+node_modules/
+.pnpm-debug.log*
+.yarn-integrity
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+dist/
+.nuxt/
+.output/
+
+# ======================================
+# 运行时数据
+# ======================================
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.log.*
+data/
+workspace/
+outputs/
+
+# ======================================
+# 环境变量
+# ======================================
+.env
 .env.local
+.env.*.local
+.env.*.override
+
+# ======================================
+# IDE & 编辑器
+# ======================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ======================================
+# 工具 & 缓存
+# ======================================
+.langgraph_api/
+.superpowers/
+.turbo/

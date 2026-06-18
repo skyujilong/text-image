@@ -1,0 +1,9 @@
+{
+  "name": "novel2media-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev:backend": "cd apps/backend && uv run uvicorn main:app --reload",
+    "dev:frontend": "cd apps/frontend && pnpm dev"
+  }
+}
