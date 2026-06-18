@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -31,19 +31,21 @@ type FormValues = z.infer<typeof schema>
 interface Props {
   onStarted: (runId: string) => void
   onCancel: () => void
+  initialValues?: Record<string, unknown>
 }
 
-export default function StartRunForm({ onStarted, onCancel }: Props) {
+export default function StartRunForm({ onStarted, onCancel, initialValues }: Props) {
   const { upsertRun, setCurrentRunId, resetNodeStatuses, resetDrill } = useRunStore()
+  const [browsing, setBrowsing] = useState(false)
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     mode: 'onBlur',
     defaultValues: {
-      novel_dir: '',
-      novel_title: '',
-      worldview: '',
-      start_chapter: 1,
-      end_chapter: null,
+      novel_dir: (initialValues?.novel_dir as string) ?? '',
+      novel_title: (initialValues?.novel_title as string) ?? '',
+      worldview: (initialValues?.worldview as string) ?? '',
+      start_chapter: (initialValues?.start_chapter as number) ?? 1,
+      end_chapter: (initialValues?.end_chapter as number | null) ?? null,
     },
   })
 
@@ -83,9 +85,21 @@ export default function StartRunForm({ onStarted, onCancel }: Props) {
 
   const configDisabled = !dirValid
 
+  const handleBrowse = async () => {
+    setBrowsing(true)
+    try {
+      const { path } = await api.browseFolder()
+      form.setValue('novel_dir', path, { shouldValidate: true, shouldDirty: true })
+    } catch {
+      // 用户取消或后端不支持，忽略
+    } finally {
+      setBrowsing(false)
+    }
+  }
+
   return (
     <div className="w-full max-w-lg p-6 bg-white rounded-xl shadow">
-      <h2 className="text-lg font-semibold mb-4">新建 Run</h2>
+      <h2 className="text-lg font-semibold mb-4">{initialValues ? '修改参数重跑' : '新建 Run'}</h2>
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <FormField
@@ -94,9 +108,20 @@ export default function StartRunForm({ onStarted, onCancel }: Props) {
             render={({ field }) => (
               <FormItem>
                 <FormLabel>小说目录</FormLabel>
-                <FormControl>
-                  <Input placeholder="/path/to/your/novel" {...field} />
-                </FormControl>
+                <div className="flex gap-2">
+                  <FormControl>
+                    <Input placeholder="/path/to/your/novel" {...field} />
+                  </FormControl>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={browsing}
+                    onClick={handleBrowse}
+                    className="shrink-0"
+                  >
+                    {browsing ? '选择中…' : '浏览…'}
+                  </Button>
+                </div>
                 <FormMessage />
               </FormItem>
             )}

@@ -16,17 +16,23 @@ class ResumeRequest(BaseModel):
     resume_value: Any
 
 
+class RestartFromRequest(BaseModel):
+    node_path: str
+
+
 class RunMeta(BaseModel):
     run_id: str
     novel_dir: str
     novel_title: str
     status: Literal["pending", "running", "waiting_human", "done", "error"] = "pending"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    params: dict = Field(default_factory=dict)
 
 
 class SSEEvent(BaseModel):
     type: Literal["node_status", "run_complete", "run_error"]
     node: str | None = None
+    status_key: str | None = None
     status: str | None = None
     payload: dict[str, Any] | None = None
     message: str | None = None

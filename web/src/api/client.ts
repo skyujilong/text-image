@@ -1,11 +1,41 @@
 const BASE = '/api'
 
+export interface GraphSchemaNode {
+  id: string
+  label: string
+  type: 'subgraph' | 'internal'
+}
+
+export interface GraphSchemaEdge {
+  id: string
+  source: string
+  target: string
+  conditional: boolean
+  label: string | null
+  is_back_edge: boolean
+}
+
+export interface GraphSchema {
+  nodes: GraphSchemaNode[]
+  edges: GraphSchemaEdge[]
+}
+
 export interface RunMeta {
   run_id: string
   novel_dir: string
   novel_title: string
   status: 'pending' | 'running' | 'waiting_human' | 'done' | 'error'
   created_at: string
+  params: Record<string, unknown>
+}
+
+export interface CheckpointEntry {
+  checkpoint_id: string
+  step: number
+  node: string | null
+  created_at: string | null
+  next: string[]
+  checkpoint_ns: string
 }
 
 export interface StartRunParams {
@@ -40,6 +70,15 @@ export const api = {
       body: JSON.stringify({ resume_value: resumeValue }),
     }),
 
+  retryRun: (runId: string) =>
+    request<{ ok: boolean }>(`/runs/${runId}/retry`, { method: 'POST' }),
+
+  restartFrom: (runId: string, nodePath: string) =>
+    request<{ ok: boolean }>(`/runs/${runId}/restart-from`, {
+      method: 'POST',
+      body: JSON.stringify({ node_path: nodePath }),
+    }),
+
   validatePath: (path: string) =>
     request<{ exists: boolean }>(`/validate/path?path=${encodeURIComponent(path)}`),
 
@@ -47,4 +86,17 @@ export const api = {
     request<Record<string, unknown>>(`/novels/config?dir=${encodeURIComponent(dir)}`),
 
   listNovels: () => request<{ dirs: string[] }>('/novels/list'),
+
+  browseFolder: () => request<{ path: string }>('/browse/folder'),
+
+  getGraphSchema: (subgraphId?: string) =>
+    request<GraphSchema>(subgraphId ? `/graph/schema/${subgraphId}` : '/graph/schema'),
+
+  getNodeState: (runId: string, nodePath: string) =>
+    request<{ node: string; values: Record<string, unknown> }>(
+      `/runs/${runId}/state?node_path=${encodeURIComponent(nodePath)}`
+    ),
+
+  getCheckpoints: (runId: string) =>
+    request<CheckpointEntry[]>(`/runs/${runId}/checkpoints`),
 }

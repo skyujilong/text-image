@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import api.graph_runner as runner
-from api.routers import runs, interact, novels, files
+from api.routers import runs, interact, novels, files, graph as graph_router
 
 
 @asynccontextmanager
@@ -27,3 +27,4 @@ app.include_router(runs.router)
 app.include_router(interact.router)
 app.include_router(novels.router)
 app.include_router(files.router)
+app.include_router(graph_router.router)

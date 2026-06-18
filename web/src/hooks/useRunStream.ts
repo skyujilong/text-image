@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useRunStore } from '@/store/runStore'
 
 export function useRunStream(runId: string | null) {
-  const { setNodeStatus, setActiveInteraction, upsertRun } = useRunStore()
+  const { setNodeStatus, setActiveInteraction, upsertRun, setRunError } = useRunStore()
   const esRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
@@ -23,14 +23,16 @@ export function useRunStream(runId: string | null) {
       const type = event.type as string
 
       if (type === 'node_status') {
-        const node = event.node as string
+        const statusKey = event.status_key as string
         const status = event.status as string
 
         if (status === 'waiting_human') {
-          setNodeStatus(node, 'waiting_human')
-          setActiveInteraction({ node, payload: event.payload })
+          setNodeStatus(statusKey, 'waiting_human')
+          if (event.node !== undefined) {
+            setActiveInteraction({ node: event.node as string, payload: event.payload })
+          }
         } else {
-          setNodeStatus(node, status as 'running' | 'done' | 'error')
+          setNodeStatus(statusKey, status as 'running' | 'done' | 'error')
         }
       }
 
@@ -46,6 +48,8 @@ export function useRunStream(runId: string | null) {
       }
 
       if (type === 'run_error') {
+        const msg = event.message as string | undefined
+        setRunError(msg ?? '未知错误')
         upsertRun({
           run_id: runId,
           novel_dir: '',
@@ -53,7 +57,7 @@ export function useRunStream(runId: string | null) {
           status: 'error',
           created_at: new Date().toISOString(),
         })
-        es.close()
+        // 不关闭 SSE，保持连接以便用户重试后继续接收事件
       }
     }
 

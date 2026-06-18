@@ -14,6 +14,8 @@ interface RunStore {
   nodeStatuses: Record<string, NodeStatus>
   activeInteraction: ActiveInteraction | null
   drillPath: string[]
+  runError: string | null
+  inspectingNode: string | null
 
   setRuns: (runs: RunMeta[]) => void
   upsertRun: (run: RunMeta) => void
@@ -24,6 +26,8 @@ interface RunStore {
   pushDrill: (subgraph: string) => void
   popDrill: () => void
   resetDrill: () => void
+  setRunError: (msg: string | null) => void
+  setInspectingNode: (path: string | null) => void
 }
 
 export const useRunStore = create<RunStore>((set) => ({
@@ -32,6 +36,8 @@ export const useRunStore = create<RunStore>((set) => ({
   nodeStatuses: {},
   activeInteraction: null,
   drillPath: [],
+  runError: null,
+  inspectingNode: null,
 
   setRuns: (runs) =>
     set({ runs: Object.fromEntries(runs.map((r) => [r.run_id, r])) }),
@@ -44,7 +50,11 @@ export const useRunStore = create<RunStore>((set) => ({
   setNodeStatus: (node, status) =>
     set((s) => ({ nodeStatuses: { ...s.nodeStatuses, [node]: status } })),
 
-  resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null }),
+  resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null, runError: null }),
+
+  setRunError: (msg) => set({ runError: msg }),
+
+  setInspectingNode: (path) => set({ inspectingNode: path }),
 
   setActiveInteraction: (interaction) => set({ activeInteraction: interaction }),
 

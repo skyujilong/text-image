@@ -6,6 +6,26 @@ from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter()
 
+
+def _pick_folder_blocking() -> str | None:
+    """启动子进程弹出系统原生文件夹选择窗（macOS 要求 AppKit 在主线程）。"""
+    import subprocess, sys
+    script = (
+        "import tkinter as tk; from tkinter import filedialog; "
+        "root = tk.Tk(); root.withdraw(); root.wm_attributes('-topmost', True); "
+        "p = filedialog.askdirectory(title='选择小说目录'); "
+        "root.destroy(); print(p, end='')"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=120,
+        )
+        path = result.stdout.strip()
+        return path if path else None
+    except Exception:
+        return None
+
 _RECENT_NOVELS_FILE = ".recent_novels.json"
 
 
@@ -45,3 +65,13 @@ async def get_novel_config(dir: str = Query(...)):
 @router.get("/novels/list")
 async def list_novels():
     return {"dirs": _load_recent()}
+
+
+@router.get("/browse/folder")
+async def browse_folder():
+    import asyncio
+    loop = asyncio.get_event_loop()
+    path = await loop.run_in_executor(None, _pick_folder_blocking)
+    if path is None:
+        raise HTTPException(status_code=204, detail="cancelled")
+    return {"path": path}

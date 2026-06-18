@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import aiosqlite
 from datetime import datetime, timezone
 from api.models import RunMeta
@@ -24,17 +25,22 @@ class RunsDB:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute(_CREATE_TABLE)
         await self._conn.commit()
+        try:
+            await self._conn.execute("ALTER TABLE runs ADD COLUMN params TEXT NOT NULL DEFAULT '{}'")
+            await self._conn.commit()
+        except Exception:
+            pass  # 列已存在
         return self
 
     async def __aexit__(self, *_):
         if self._conn:
             await self._conn.close()
 
-    async def insert(self, run_id: str, novel_dir: str, novel_title: str) -> None:
+    async def insert(self, run_id: str, novel_dir: str, novel_title: str, params: dict | None = None) -> None:
         now = datetime.now(timezone.utc).isoformat()
         await self._conn.execute(
-            "INSERT INTO runs (run_id, novel_dir, novel_title, status, created_at) VALUES (?,?,?,?,?)",
-            (run_id, novel_dir, novel_title, "pending", now),
+            "INSERT INTO runs (run_id, novel_dir, novel_title, status, created_at, params) VALUES (?,?,?,?,?,?)",
+            (run_id, novel_dir, novel_title, "pending", now, json.dumps(params or {})),
         )
         await self._conn.commit()
 
@@ -57,6 +63,7 @@ class RunsDB:
             novel_title=row["novel_title"],
             status=row["status"],
             created_at=datetime.fromisoformat(row["created_at"]),
+            params=json.loads(row["params"] or "{}"),
         )
 
     async def list_all(self) -> list[RunMeta]:
@@ -71,6 +78,7 @@ class RunsDB:
                 novel_title=r["novel_title"],
                 status=r["status"],
                 created_at=datetime.fromisoformat(r["created_at"]),
+                params=json.loads(r["params"] or "{}"),
             )
             for r in rows
         ]
