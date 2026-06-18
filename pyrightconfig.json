@@ -1,0 +1,23 @@
+{
+  "include": [
+    "apps/backend",
+    "packages/novel2media-core/src",
+    "tests"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/node_modules",
+    "data",
+    "workspace"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.13",
+  "extraPaths": [
+    "apps/backend",
+    "packages/novel2media-core/src"
+  ],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "error",
+  "reportMissingTypeStubs": "none"
+}
