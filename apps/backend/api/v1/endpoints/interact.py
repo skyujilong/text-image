@@ -1,6 +1,7 @@
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException
+
 import services.graph_runner as runner
+from fastapi import APIRouter, HTTPException
 from schemas.models import ResumeRequest
 
 router = APIRouter()

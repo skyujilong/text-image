@@ -1,14 +1,17 @@
 from __future__ import annotations
+
 from pathlib import Path
+
 from novel2media.clients.comfyui import ComfyUIClient
-from novel2media.workflows import build_workflow
 from novel2media.logger import get_logger
+from novel2media.workflows import build_workflow
 
 log = get_logger("image_nodes")
 
 
 def _load_config(state: dict):
     from novel2media.config import ServicesConfig
+
     novel_dir = Path(state.get("novel_dir", "."))
     cfg_path = novel_dir / "config" / "services.json"
     if not cfg_path.exists():
@@ -44,26 +47,32 @@ def generate_images(state: dict) -> dict:
         scene_prompt = entry.get("scene_prompt", "masterpiece, best quality")
 
         base_prefix = f"{ch_id}_{sid}_base"
-        wf_base = build_workflow("wf_t2i_scene", {
-            "positive_prompt": scene_prompt,
-            "style_image": char.get("fullbody_comfyui", ""),
-            "face_image": char.get("portrait_comfyui", ""),
-            "pose_image": pose_image,
-            "batch_size": 1,
-            "filename_prefix": base_prefix,
-        })
+        wf_base = build_workflow(
+            "wf_t2i_scene",
+            {
+                "positive_prompt": scene_prompt,
+                "style_image": char.get("fullbody_comfyui", ""),
+                "face_image": char.get("portrait_comfyui", ""),
+                "pose_image": pose_image,
+                "batch_size": 1,
+                "filename_prefix": base_prefix,
+            },
+        )
         base_paths = client.generate(wf_base, out_dir, 1)
         base_filename = base_paths[0].name
 
         hires_prefix = f"{ch_id}_{sid}_hires"
-        wf_hires = build_workflow("wf_hires_2x", {
-            "input_image": base_filename,
-            "positive_prompt": scene_prompt,
-            "style_image": char.get("fullbody_comfyui", ""),
-            "face_image": char.get("portrait_comfyui", ""),
-            "pose_image": pose_image,
-            "filename_prefix": hires_prefix,
-        })
+        wf_hires = build_workflow(
+            "wf_hires_2x",
+            {
+                "input_image": base_filename,
+                "positive_prompt": scene_prompt,
+                "style_image": char.get("fullbody_comfyui", ""),
+                "face_image": char.get("portrait_comfyui", ""),
+                "pose_image": pose_image,
+                "filename_prefix": hires_prefix,
+            },
+        )
         hires_paths = client.generate(wf_hires, out_dir, 1)
         image_map[sid] = str(hires_paths[0])
         log.info("generate_images: 场景图完成", chapter=ch_id, sid=sid)

@@ -1,5 +1,6 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
+
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -8,8 +9,8 @@ from typing import Any
 class AudioSegment:
     storyboard_id: str
     speaker: str
-    duration: float                      # 秒
-    raw_timestamps: list[dict[str, Any]] # TTS 返回的原始时间戳（从 0 开始）
+    duration: float  # 秒
+    raw_timestamps: list[dict[str, Any]]  # TTS 返回的原始时间戳（从 0 开始）
 
 
 class AudioPipeline:
@@ -26,13 +27,15 @@ class AudioPipeline:
             if prev_speaker is not None and seg.speaker != prev_speaker:
                 offset += self._silence_ms / 1000.0
             for ts in seg.raw_timestamps:
-                result.append({
-                    "storyboard_id": seg.storyboard_id,
-                    "text": ts["text"],
-                    "speaker": seg.speaker,
-                    "start_time": round(ts["start_time"] + offset, 3),
-                    "end_time": round(ts["end_time"] + offset, 3),
-                })
+                result.append(
+                    {
+                        "storyboard_id": seg.storyboard_id,
+                        "text": ts["text"],
+                        "speaker": seg.speaker,
+                        "start_time": round(ts["start_time"] + offset, 3),
+                        "end_time": round(ts["end_time"] + offset, 3),
+                    }
+                )
             offset += seg.duration
             prev_speaker = seg.speaker
 
@@ -67,6 +70,7 @@ class AudioPipeline:
         依赖 pydub + ffmpeg，仅在集成场景使用。"""
         import base64
         import io
+
         from pydub import AudioSegment as PydubSeg
         from pydub import effects
 

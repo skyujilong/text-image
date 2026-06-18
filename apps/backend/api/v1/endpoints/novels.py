@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -22,7 +23,3 @@ async def get_novel_config(dir: str = Query(...)):
     if not config_path.exists():
         raise HTTPException(status_code=404, detail="config.json not found")
     return json.loads(config_path.read_text(encoding="utf-8"))
-
-
-
-

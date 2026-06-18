@@ -1,13 +1,13 @@
 from __future__ import annotations
+
 import asyncio
 import json
-from typing import AsyncIterator
-
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from collections.abc import AsyncIterator
 
 import services.graph_runner as runner
-from schemas.models import StartRunRequest, RestartFromRequest
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from schemas.models import RestartFromRequest, StartRunRequest
 
 router = APIRouter()
 
@@ -75,7 +75,7 @@ async def stream_run(run_id: str):
                 if event.get("type") == "run_complete":
                     break
                 # run_error 时保持流打开，以便用户重试后继续接收事件
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 yield ": heartbeat\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

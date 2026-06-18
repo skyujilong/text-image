@@ -1,6 +1,6 @@
-import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 from novel2media.nodes.image_nodes import generate_images
 
 
@@ -31,7 +31,7 @@ def _mock_client(tmp_path: Path, sid: str):
 
 
 @patch("novel2media.nodes.image_nodes._load_config")
-@patch("novel2media.nodes.image_nodes.ComfyUIClient")  # noqa: E501
+@patch("novel2media.nodes.image_nodes.ComfyUIClient")
 def test_generate_images_returns_image_map(mock_client_cls, mock_cfg, tmp_path):
     cfg = MagicMock()
     cfg.comfyui_url = "http://localhost:8188"
@@ -66,7 +66,7 @@ def test_generate_images_returns_image_map(mock_client_cls, mock_cfg, tmp_path):
 
 
 @patch("novel2media.nodes.image_nodes._load_config")
-@patch("novel2media.nodes.image_nodes.ComfyUIClient")  # noqa: E501
+@patch("novel2media.nodes.image_nodes.ComfyUIClient")
 def test_generate_images_calls_generate_twice_per_entry(mock_client_cls, mock_cfg, tmp_path):
     """每个 storyboard 条目应调用 generate 两次：t2i + hires。"""
     cfg = MagicMock()
@@ -91,7 +91,7 @@ def test_generate_images_calls_generate_twice_per_entry(mock_client_cls, mock_cf
 
 
 @patch("novel2media.nodes.image_nodes._load_config")
-@patch("novel2media.nodes.image_nodes.ComfyUIClient")  # noqa: E501
+@patch("novel2media.nodes.image_nodes.ComfyUIClient")
 def test_generate_images_empty_storyboard(mock_client_cls, mock_cfg, tmp_path):
     cfg = MagicMock()
     cfg.comfyui_url = "http://localhost:8188"

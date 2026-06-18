@@ -16,6 +16,7 @@ interface RunStore {
   drillPath: string[]
   runError: string | null
   inspectingNode: string | null
+  streamGeneration: number
 
   setRuns: (runs: RunMeta[]) => void
   upsertRun: (run: RunMeta) => void
@@ -28,6 +29,7 @@ interface RunStore {
   resetDrill: () => void
   setRunError: (msg: string | null) => void
   setInspectingNode: (path: string | null) => void
+  incrementStreamGeneration: () => void
 }
 
 export const useRunStore = create<RunStore>((set) => ({
@@ -38,6 +40,7 @@ export const useRunStore = create<RunStore>((set) => ({
   drillPath: [],
   runError: null,
   inspectingNode: null,
+  streamGeneration: 0,
 
   setRuns: (runs) =>
     set({ runs: Object.fromEntries(runs.map((r) => [r.run_id, r])) }),
@@ -50,7 +53,7 @@ export const useRunStore = create<RunStore>((set) => ({
   setNodeStatus: (node, status) =>
     set((s) => ({ nodeStatuses: { ...s.nodeStatuses, [node]: status } })),
 
-  resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null, runError: null }),
+  resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null }),
 
   setRunError: (msg) => set({ runError: msg }),
 
@@ -65,4 +68,7 @@ export const useRunStore = create<RunStore>((set) => ({
     set((s) => ({ drillPath: s.drillPath.slice(0, -1) })),
 
   resetDrill: () => set({ drillPath: [] }),
+
+  incrementStreamGeneration: () =>
+    set((s) => ({ streamGeneration: s.streamGeneration + 1 })),
 }))

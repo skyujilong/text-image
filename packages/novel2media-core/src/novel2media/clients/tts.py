@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 import time
 from dataclasses import dataclass
 from typing import Any
+
 import httpx
 from novel2media.logger import get_logger
 

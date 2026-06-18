@@ -8,7 +8,7 @@ interface Props {
 
 export default function CheckpointTimeline({ runId }: Props) {
   const [entries, setEntries] = useState<CheckpointEntry[]>([])
-  const { runs, upsertRun, resetNodeStatuses, resetDrill, setCurrentRunId } = useRunStore()
+  const { runs, upsertRun, resetNodeStatuses, resetDrill, setCurrentRunId, incrementStreamGeneration, setRunError } = useRunStore()
 
   useEffect(() => {
     if (!runId) return
@@ -16,12 +16,14 @@ export default function CheckpointTimeline({ runId }: Props) {
   }, [runId])
 
   const handleRestartFrom = async (nodePath: string) => {
+    setRunError(null) // 重新运行前先清空旧错误
     await api.restartFrom(runId, nodePath)
     setCurrentRunId(runId)
     resetNodeStatuses()
     resetDrill()
     const run = runs[runId]
     if (run) upsertRun({ ...run, status: 'running' })
+    incrementStreamGeneration() // 触发 SSE 重新连接
   }
 
   return (

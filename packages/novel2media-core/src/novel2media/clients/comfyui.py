@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import time
 from pathlib import Path
+
 import httpx
 from novel2media.logger import get_logger
 

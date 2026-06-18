@@ -1,7 +1,8 @@
 from __future__ import annotations
-from langgraph.graph import StateGraph, END
-from novel2media.state import GraphState
+
+from langgraph.graph import END, StateGraph
 from novel2media.nodes.init_nodes import load_config
+from novel2media.state import GraphState
 from novel2media.subgraphs.setup import build_character_setup_subgraph
 
 

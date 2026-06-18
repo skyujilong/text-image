@@ -16,17 +16,19 @@ export type SubgraphNodeData = Node<{ label: string; subgraphId: string; statusK
 type SubgraphNodeProps = NodeProps<SubgraphNodeData>
 
 function SubgraphNode({ data }: SubgraphNodeProps) {
-  const { nodeStatuses, currentRunId, runs, pushDrill, resetNodeStatuses, upsertRun, setInspectingNode } = useRunStore()
+  const { nodeStatuses, currentRunId, runs, pushDrill, resetNodeStatuses, upsertRun, setInspectingNode, incrementStreamGeneration, setRunError } = useRunStore()
   const status = (nodeStatuses[data.statusKey] ?? 'pending') as NodeStatus
 
   const handleRestartFrom = async (e: React.MouseEvent) => {
     e.stopPropagation()
     if (!currentRunId) return
     try {
+      setRunError(null) // 重新运行前先清空旧错误
       await api.restartFrom(currentRunId, data.statusKey)
       resetNodeStatuses()
       const run = runs[currentRunId]
       if (run) upsertRun({ ...run, status: 'running' })
+      incrementStreamGeneration() // 触发 SSE 重新连接
     } catch (err) {
       console.error(err)
     }

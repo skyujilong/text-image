@@ -1,14 +1,15 @@
 from __future__ import annotations
-from langgraph.graph import StateGraph, END
-from novel2media.state import GraphState
+
+from langgraph.graph import END, StateGraph
 from novel2media.nodes.chapter_nodes import (
+    build_timeline,
+    export_to_jianying,
     load_chapter,
     review_script_llm,
     review_storyboard_llm,
-    build_timeline,
-    export_to_jianying,
 )
 from novel2media.nodes.image_nodes import generate_images
+from novel2media.state import GraphState
 from novel2media.subgraphs.setup import build_character_setup_subgraph
 
 
@@ -54,8 +55,10 @@ def _route_human_export(state: GraphState) -> str:
 def _placeholder_node(name: str):
     def node(state: GraphState) -> dict:
         from novel2media.logger import get_logger
+
         get_logger(name).info(f"{name}: interrupt 占位节点")
         return {}
+
     node.__name__ = name
     return node
 
@@ -81,36 +84,53 @@ def build_chapter_subgraph():
     builder.add_node("export_to_jianying", export_to_jianying)
 
     builder.set_entry_point("load_chapter")
-    builder.add_conditional_edges("load_chapter", _route_load_chapter,
-                                  {"adapt_script": "adapt_script", END: END})
+    builder.add_conditional_edges("load_chapter", _route_load_chapter, {"adapt_script": "adapt_script", END: END})
     builder.add_edge("adapt_script", "review_script_llm")
-    builder.add_conditional_edges("review_script_llm", _route_review_script_llm,
-                                  {"review_script_human": "review_script_human",
-                                   "adapt_script": "adapt_script",
-                                   "review_script_llm_interrupt": "review_script_llm_interrupt"})
-    builder.add_conditional_edges("review_script_human", _route_review_script_human,
-                                  {"detect_new_characters": "detect_new_characters",
-                                   "adapt_script": "adapt_script"})
+    builder.add_conditional_edges(
+        "review_script_llm",
+        _route_review_script_llm,
+        {
+            "review_script_human": "review_script_human",
+            "adapt_script": "adapt_script",
+            "review_script_llm_interrupt": "review_script_llm_interrupt",
+        },
+    )
+    builder.add_conditional_edges(
+        "review_script_human",
+        _route_review_script_human,
+        {"detect_new_characters": "detect_new_characters", "adapt_script": "adapt_script"},
+    )
     builder.add_edge("review_script_llm_interrupt", "adapt_script")
-    builder.add_conditional_edges("detect_new_characters", _route_detect_new_characters,
-                                  {"character_setup_subgraph": "character_setup_subgraph",
-                                   "generate_storyboard": "generate_storyboard"})
+    builder.add_conditional_edges(
+        "detect_new_characters",
+        _route_detect_new_characters,
+        {"character_setup_subgraph": "character_setup_subgraph", "generate_storyboard": "generate_storyboard"},
+    )
     builder.add_edge("character_setup_subgraph", "generate_storyboard")
     builder.add_edge("generate_storyboard", "review_storyboard_llm")
-    builder.add_conditional_edges("review_storyboard_llm", _route_review_storyboard_llm,
-                                  {"review_storyboard_human": "review_storyboard_human",
-                                   "generate_storyboard": "generate_storyboard",
-                                   "review_storyboard_llm_interrupt": "review_storyboard_llm_interrupt"})
-    builder.add_conditional_edges("review_storyboard_human", _route_review_storyboard_human,
-                                  {"synthesize_audio": "synthesize_audio",
-                                   "generate_storyboard": "generate_storyboard"})
+    builder.add_conditional_edges(
+        "review_storyboard_llm",
+        _route_review_storyboard_llm,
+        {
+            "review_storyboard_human": "review_storyboard_human",
+            "generate_storyboard": "generate_storyboard",
+            "review_storyboard_llm_interrupt": "review_storyboard_llm_interrupt",
+        },
+    )
+    builder.add_conditional_edges(
+        "review_storyboard_human",
+        _route_review_storyboard_human,
+        {"synthesize_audio": "synthesize_audio", "generate_storyboard": "generate_storyboard"},
+    )
     builder.add_edge("review_storyboard_llm_interrupt", "generate_storyboard")
     builder.add_edge("synthesize_audio", "generate_images")
     builder.add_edge("generate_images", "build_timeline")
     builder.add_edge("build_timeline", "human_export_decision")
-    builder.add_conditional_edges("human_export_decision", _route_human_export,
-                                  {"export_to_jianying": "export_to_jianying",
-                                   "load_chapter": "load_chapter"})
+    builder.add_conditional_edges(
+        "human_export_decision",
+        _route_human_export,
+        {"export_to_jianying": "export_to_jianying", "load_chapter": "load_chapter"},
+    )
     builder.add_edge("export_to_jianying", "load_chapter")
 
     return builder.compile()

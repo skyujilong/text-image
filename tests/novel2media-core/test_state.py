@@ -1,4 +1,4 @@
-from novel2media.state import GraphState, ChapterArtifacts, ChapterStatus
+from novel2media.state import ChapterArtifacts, ChapterStatus, GraphState
 
 
 def test_chapter_status_values():
@@ -20,16 +20,28 @@ def test_chapter_artifacts_keys():
 def test_graph_state_shape():
     keys = set(GraphState.__annotations__.keys())
     required = {
-        "novel_title", "novel_dir", "worldview",
-        "characters_profile", "ignored_characters",
-        "chapters_status", "chapters_artifacts",
-        "current_chapter_id", "current_chapter_text",
-        "current_script", "current_storyboard",
-        "current_audio_path", "current_subtitles_path",
-        "current_timestamps", "current_image_map", "current_timeline_path",
-        "script_review_attempts", "storyboard_review_attempts",
-        "setup_queue", "setup_current_character",
-        "setup_image_candidates", "setup_voice_candidates",
+        "novel_title",
+        "novel_dir",
+        "worldview",
+        "characters_profile",
+        "ignored_characters",
+        "chapters_status",
+        "chapters_artifacts",
+        "current_chapter_id",
+        "current_chapter_text",
+        "current_script",
+        "current_storyboard",
+        "current_audio_path",
+        "current_subtitles_path",
+        "current_timestamps",
+        "current_image_map",
+        "current_timeline_path",
+        "script_review_attempts",
+        "storyboard_review_attempts",
+        "setup_queue",
+        "setup_current_character",
+        "setup_image_candidates",
+        "setup_voice_candidates",
         "pending_new_characters",
     }
     assert required.issubset(keys)

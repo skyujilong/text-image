@@ -1,6 +1,6 @@
 import json
+
 import pytest
-from pathlib import Path
 from novel2media.nodes.init_nodes import load_config
 
 
@@ -12,11 +12,9 @@ def test_load_config_initializes_state(tmp_path):
         "genre": "玄幻",
         "worldview": "修仙世界",
         "characters": [
-            {"id": "narrator", "name": "旁白", "gender": "neutral",
-             "personality": "沉稳", "appearance": ""},
-            {"id": "char_001", "name": "主角", "gender": "male",
-             "personality": "热血", "appearance": "白发"},
-        ]
+            {"id": "narrator", "name": "旁白", "gender": "neutral", "personality": "沉稳", "appearance": ""},
+            {"id": "char_001", "name": "主角", "gender": "male", "personality": "热血", "appearance": "白发"},
+        ],
     }
     (novel_dir / "config.json").write_text(json.dumps(config_data, ensure_ascii=False))
 

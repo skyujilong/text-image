@@ -1,13 +1,12 @@
-import pytest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 from novel2media.nodes.setup_nodes import (
-    setup_dispatcher,
     check_needs_visual,
-    fix_character_visual,
     fix_character_profile,
-    generate_portrait_candidates,
+    fix_character_visual,
     generate_fullbody_candidates,
+    generate_portrait_candidates,
+    setup_dispatcher,
 )
 
 
@@ -25,6 +24,7 @@ def _base_state(**overrides):
 
 
 # --- setup_dispatcher ---
+
 
 def test_dispatcher_pops_first_character():
     chars = [
@@ -46,6 +46,7 @@ def test_dispatcher_empty_queue_returns_sentinel():
 
 # --- check_needs_visual ---
 
+
 def test_check_needs_visual_with_appearance():
     state = _base_state(setup_current_character={"id": "char_001", "appearance": "白发"})
     result = check_needs_visual(state)
@@ -59,6 +60,7 @@ def test_check_needs_visual_without_appearance():
 
 
 # --- fix_character_visual ---
+
 
 def test_fix_character_visual_is_confirmation_noop():
     """fix_character_visual 只记录日志，portrait 信息已由 portrait_selector 写入 state。"""
@@ -75,6 +77,7 @@ def test_fix_character_visual_is_confirmation_noop():
 
 
 # --- fix_character_profile ---
+
 
 def test_fix_character_profile_merges_into_profile(tmp_path):
     state = _base_state(
@@ -95,6 +98,7 @@ def test_fix_character_profile_merges_into_profile(tmp_path):
 
 
 # --- generate_portrait_candidates ---
+
 
 @patch("novel2media.nodes.setup_nodes._load_config")
 def test_generate_portrait_candidates_returns_candidates(mock_cfg, tmp_path):
@@ -128,6 +132,7 @@ def test_generate_portrait_candidates_returns_candidates(mock_cfg, tmp_path):
 
 # --- generate_fullbody_candidates ---
 
+
 @patch("novel2media.nodes.setup_nodes._load_config")
 def test_generate_fullbody_candidates_uses_portrait_comfyui(mock_cfg, tmp_path):
     """generate_fullbody_candidates 应将 portrait_comfyui 作为 face_image 传给工作流。"""
@@ -142,8 +147,10 @@ def test_generate_fullbody_candidates_uses_portrait_comfyui(mock_cfg, tmp_path):
     fake_path.parent.mkdir(parents=True)
     fake_path.write_bytes(b"PNG")
 
-    with patch("novel2media.nodes.setup_nodes.ComfyUIClient") as mock_cls, \
-         patch("novel2media.nodes.setup_nodes.build_workflow") as mock_wf:
+    with (
+        patch("novel2media.nodes.setup_nodes.ComfyUIClient") as mock_cls,
+        patch("novel2media.nodes.setup_nodes.build_workflow") as mock_wf,
+    ):
         mock_client = MagicMock()
         mock_client.generate.return_value = [fake_path]
         mock_cls.return_value = mock_client

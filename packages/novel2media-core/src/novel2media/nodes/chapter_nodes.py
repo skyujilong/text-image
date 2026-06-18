@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import json
 from pathlib import Path
+
 from novel2media.logger import get_logger
 
 log = get_logger("chapter_nodes")
@@ -21,9 +23,7 @@ def load_chapter(state: dict) -> dict:
             chapters_status[ch_id] = "pending"
 
     # 取第一个 pending 章节（字典序）
-    pending = sorted(
-        [ch_id for ch_id, st in chapters_status.items() if st == "pending"]
-    )
+    pending = sorted([ch_id for ch_id, st in chapters_status.items() if st == "pending"])
     if not pending:
         log.info("load_chapter: 无 pending 章节，流程结束")
         return {
@@ -95,14 +95,16 @@ def build_timeline(state: dict) -> dict:
     timeline = []
     for ts in timestamps:
         sid = ts["storyboard_id"]
-        timeline.append({
-            "storyboard_id": sid,
-            "text": ts["text"],
-            "speaker": ts["speaker"],
-            "start_time": ts["start_time"],
-            "end_time": ts["end_time"],
-            "image_path": image_map.get(sid, ""),
-        })
+        timeline.append(
+            {
+                "storyboard_id": sid,
+                "text": ts["text"],
+                "speaker": ts["speaker"],
+                "start_time": ts["start_time"],
+                "end_time": ts["end_time"],
+                "image_path": image_map.get(sid, ""),
+            }
+        )
 
     out_dir = novel_dir / ch_id
     out_dir.mkdir(parents=True, exist_ok=True)

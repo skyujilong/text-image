@@ -1,19 +1,20 @@
 from __future__ import annotations
-from langgraph.graph import StateGraph, END
-from novel2media.state import GraphState
+
+from langgraph.graph import END, StateGraph
 from novel2media.nodes.setup_nodes import (
-    setup_dispatcher,
     check_needs_visual,
+    fix_character_profile,
+    fix_character_visual,
+    fullbody_selector,
+    generate_fullbody_candidates,
     generate_portrait_candidates,
     portrait_selector,
-    fix_character_visual,
-    generate_fullbody_candidates,
-    fullbody_selector,
+    setup_dispatcher,
+    voice_card_draw,
     voice_params_choice,
     voice_params_manual,
-    voice_card_draw,
-    fix_character_profile,
 )
+from novel2media.state import GraphState
 
 
 def _route_after_dispatcher(state: GraphState) -> str:
@@ -74,35 +75,52 @@ def build_character_setup_subgraph():
 
     builder.set_entry_point("setup_dispatcher")
 
-    builder.add_conditional_edges("setup_dispatcher", _route_after_dispatcher,
-                                  {"check_needs_visual": "check_needs_visual", END: END})
-    builder.add_conditional_edges("check_needs_visual", _route_after_check_visual,
-                                  {"generate_portrait_candidates": "generate_portrait_candidates",
-                                   "portrait_selector": "portrait_selector",
-                                   "voice_params_choice": "voice_params_choice"})
+    builder.add_conditional_edges(
+        "setup_dispatcher", _route_after_dispatcher, {"check_needs_visual": "check_needs_visual", END: END}
+    )
+    builder.add_conditional_edges(
+        "check_needs_visual",
+        _route_after_check_visual,
+        {
+            "generate_portrait_candidates": "generate_portrait_candidates",
+            "portrait_selector": "portrait_selector",
+            "voice_params_choice": "voice_params_choice",
+        },
+    )
 
     # 大头照：生成 → 选择 → 确认
     builder.add_edge("generate_portrait_candidates", "portrait_selector")
     builder.add_edge("portrait_selector", "fix_character_visual")
-    builder.add_conditional_edges("fix_character_visual", _route_after_fix_character_visual,
-                                  {"generate_fullbody_candidates": "generate_fullbody_candidates",
-                                   "fullbody_selector": "fullbody_selector"})
+    builder.add_conditional_edges(
+        "fix_character_visual",
+        _route_after_fix_character_visual,
+        {"generate_fullbody_candidates": "generate_fullbody_candidates", "fullbody_selector": "fullbody_selector"},
+    )
 
     # 全身立绘：生成 → 选择 → 语音参数
     builder.add_edge("generate_fullbody_candidates", "fullbody_selector")
     builder.add_edge("fullbody_selector", "voice_params_choice")
 
     # 语音参数阶段
-    builder.add_conditional_edges("voice_params_choice", _route_after_voice_choice,
-                                  {"voice_params_manual": "voice_params_manual",
-                                   "voice_card_draw": "voice_card_draw"})
-    builder.add_conditional_edges("voice_params_manual", _route_after_manual_review,
-                                  {"fix_character_profile": "fix_character_profile",
-                                   "voice_params_manual": "voice_params_manual",
-                                   "voice_card_draw": "voice_card_draw"})
-    builder.add_conditional_edges("voice_card_draw", _route_after_card_draw,
-                                  {"fix_character_profile": "fix_character_profile",
-                                   "voice_card_draw": "voice_card_draw"})
+    builder.add_conditional_edges(
+        "voice_params_choice",
+        _route_after_voice_choice,
+        {"voice_params_manual": "voice_params_manual", "voice_card_draw": "voice_card_draw"},
+    )
+    builder.add_conditional_edges(
+        "voice_params_manual",
+        _route_after_manual_review,
+        {
+            "fix_character_profile": "fix_character_profile",
+            "voice_params_manual": "voice_params_manual",
+            "voice_card_draw": "voice_card_draw",
+        },
+    )
+    builder.add_conditional_edges(
+        "voice_card_draw",
+        _route_after_card_draw,
+        {"fix_character_profile": "fix_character_profile", "voice_card_draw": "voice_card_draw"},
+    )
     builder.add_edge("fix_character_profile", "setup_dispatcher")  # 内部循环
 
     return builder.compile()

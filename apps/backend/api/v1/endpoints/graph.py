@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from fastapi import APIRouter, HTTPException
 
 router = APIRouter(prefix="/graph")
@@ -11,11 +12,13 @@ def _serialize_graph(g, subgraph_id_set: set[str]) -> dict:
         if node_id in ("__start__", "__end__"):
             continue
         node_type = "subgraph" if node_id in subgraph_id_set else "internal"
-        nodes.append({
-            "id": node_id,
-            "label": node_id,
-            "type": node_type,
-        })
+        nodes.append(
+            {
+                "id": node_id,
+                "label": node_id,
+                "type": node_type,
+            }
+        )
 
     # 收集所有边（过滤含 __start__ / __end__ 的边）
     raw_edges = []
@@ -28,14 +31,16 @@ def _serialize_graph(g, subgraph_id_set: set[str]) -> dict:
         is_conditional = bool(getattr(edge, "conditional", False))
         edge_label = edge.data if (is_conditional and edge.data) else None
         edge_id_suffix = f"-{edge_label}" if edge_label else ""
-        raw_edges.append({
-            "id": f"e-{src}-{tgt}{edge_id_suffix}",
-            "source": src,
-            "target": tgt,
-            "conditional": is_conditional,
-            "label": edge_label,
-            "is_back_edge": False,  # 稍后 DFS 标记
-        })
+        raw_edges.append(
+            {
+                "id": f"e-{src}-{tgt}{edge_id_suffix}",
+                "source": src,
+                "target": tgt,
+                "conditional": is_conditional,
+                "label": edge_label,
+                "is_back_edge": False,  # 稍后 DFS 标记
+            }
+        )
 
     # DFS 标记回边：找 entry 节点（__start__ 的后继，即首个节点）
     entry_node = None
@@ -76,10 +81,7 @@ def _build_schemas() -> tuple[dict, dict[str, dict]]:
 
     subgraph_id_set = set(_graph_module.SUBGRAPH_REGISTRY.keys())
     top = _serialize_graph(_graph_module.graph.get_graph(), subgraph_id_set)
-    subs = {
-        k: _serialize_graph(v.get_graph(), set())
-        for k, v in _graph_module.SUBGRAPH_REGISTRY.items()
-    }
+    subs = {k: _serialize_graph(v.get_graph(), set()) for k, v in _graph_module.SUBGRAPH_REGISTRY.items()}
     return top, subs
 
 
@@ -97,12 +99,14 @@ def _ensure_schemas() -> None:
 @router.get("/schema")
 def get_top_schema():
     _ensure_schemas()
+    assert _top_schema is not None
     return _top_schema
 
 
 @router.get("/schema/{subgraph_id}")
 def get_subgraph_schema(subgraph_id: str):
     _ensure_schemas()
+    assert _subgraph_schemas is not None
     if subgraph_id not in _subgraph_schemas:
         raise HTTPException(status_code=404, detail="subgraph not found")
     return _subgraph_schemas[subgraph_id]

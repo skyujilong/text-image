@@ -1,15 +1,18 @@
 from __future__ import annotations
+
 import json
 from pathlib import Path
+
 from novel2media.clients.comfyui import ComfyUIClient
-from novel2media.workflows import build_workflow
 from novel2media.logger import get_logger
+from novel2media.workflows import build_workflow
 
 log = get_logger("setup_nodes")
 
 
 def _load_config(state: dict):
     from novel2media.config import ServicesConfig
+
     novel_dir = Path(state.get("novel_dir", "."))
     cfg_path = novel_dir / "config" / "services.json"
     if not cfg_path.exists():
@@ -37,13 +40,16 @@ def check_needs_visual(state: dict) -> dict:
 def fix_character_visual(state: dict) -> dict:
     """大头照选定后的确认节点，portrait_path/portrait_comfyui 已由 portrait_selector 写入。"""
     char = state.get("setup_current_character", {})
-    log.info("fix_character_visual: 大头照已确认",
-             char=char.get("name", char.get("id")),
-             portrait=char.get("portrait_comfyui", ""))
+    log.info(
+        "fix_character_visual: 大头照已确认",
+        char=char.get("name", char.get("id")),
+        portrait=char.get("portrait_comfyui", ""),
+    )
     return {}
 
 
 # ─── 大头照阶段（2个节点）────────────────────────────────────────────
+
 
 def generate_portrait_candidates(state: dict) -> dict:
     """调用 ComfyUI 生成大头照候选图（无FaceID/ControlNet），写磁盘，返回路径列表。
@@ -56,13 +62,16 @@ def generate_portrait_candidates(state: dict) -> dict:
     client = ComfyUIClient(cfg.comfyui_url, cfg.comfyui_timeout)
 
     output_dir = Path(state["novel_dir"]) / "characters" / char_name / "portrait_candidates"
-    seed = abs(hash(char_name)) % (2 ** 32)
-    wf = build_workflow("wf_portrait_init", {
-        "positive_prompt": char.get("appearance_prompt", char.get("appearance", "")),
-        "batch_size": cfg.image_candidates,
-        "seed": seed,
-        "filename_prefix": f"portrait_{char_name}",
-    })
+    seed = abs(hash(char_name)) % (2**32)
+    wf = build_workflow(
+        "wf_portrait_init",
+        {
+            "positive_prompt": char.get("appearance_prompt", char.get("appearance", "")),
+            "batch_size": cfg.image_candidates,
+            "seed": seed,
+            "filename_prefix": f"portrait_{char_name}",
+        },
+    )
     paths = client.generate(wf, output_dir, cfg.image_candidates)
     candidates = [str(p) for p in paths]
     log.info("generate_portrait_candidates: 完成", count=len(candidates))
@@ -96,6 +105,7 @@ def portrait_selector(state: dict) -> dict:
 
 # ─── 全身立绘阶段（2个节点）──────────────────────────────────────────
 
+
 def generate_fullbody_candidates(state: dict) -> dict:
     """以大头照 FaceID 生成全身立绘候选（512×768），写磁盘，返回路径列表。
 
@@ -107,17 +117,20 @@ def generate_fullbody_candidates(state: dict) -> dict:
     client = ComfyUIClient(cfg.comfyui_url, cfg.comfyui_timeout)
 
     output_dir = Path(state["novel_dir"]) / "characters" / char_name / "fullbody_candidates"
-    seed = (abs(hash(char_name)) + 1) % (2 ** 32)
-    wf = build_workflow("wf_fullbody_with_face", {
-        "positive_prompt": char.get("appearance_prompt", char.get("appearance", "")),
-        "face_image": char["portrait_comfyui"],
-        "pose_image": cfg.standing_pose_image,
-        "width": 512,
-        "height": 768,
-        "batch_size": cfg.image_candidates,
-        "seed": seed,
-        "filename_prefix": f"fullbody_{char_name}",
-    })
+    seed = (abs(hash(char_name)) + 1) % (2**32)
+    wf = build_workflow(
+        "wf_fullbody_with_face",
+        {
+            "positive_prompt": char.get("appearance_prompt", char.get("appearance", "")),
+            "face_image": char["portrait_comfyui"],
+            "pose_image": cfg.standing_pose_image,
+            "width": 512,
+            "height": 768,
+            "batch_size": cfg.image_candidates,
+            "seed": seed,
+            "filename_prefix": f"fullbody_{char_name}",
+        },
+    )
     paths = client.generate(wf, output_dir, cfg.image_candidates)
     candidates = [str(p) for p in paths]
     log.info("generate_fullbody_candidates: 完成", count=len(candidates))
@@ -147,6 +160,7 @@ def fullbody_selector(state: dict) -> dict:
 
 
 # ─── 语音参数阶段（占位节点）────────────────────────────────────────
+
 
 def fix_character_profile(state: dict) -> dict:
     char = state.get("setup_current_character", {})

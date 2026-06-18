@@ -1,12 +1,11 @@
 import json
-import pytest
 from pathlib import Path
+
 from novel2media.nodes.chapter_nodes import (
+    build_timeline,
     load_chapter,
     review_script_llm,
     review_storyboard_llm,
-    build_timeline,
-    export_to_jianying,
 )
 
 
@@ -101,16 +100,28 @@ def test_build_timeline_matches_storyboard_and_timestamps(tmp_path):
         "novel_dir": str(novel_dir),
         "current_chapter_id": "chapter_01",
         "current_storyboard": [
-            {"id": "sb_001", "text": "开头", "speaker": "narrator",
-             "scene_change": True, "comfyui_prompt": "scene", "emotion": "calm", "composition": "wide"},
-            {"id": "sb_002", "text": "对话", "speaker": "char_001",
-             "scene_change": False, "comfyui_prompt": "", "emotion": "normal", "composition": ""},
+            {
+                "id": "sb_001",
+                "text": "开头",
+                "speaker": "narrator",
+                "scene_change": True,
+                "comfyui_prompt": "scene",
+                "emotion": "calm",
+                "composition": "wide",
+            },
+            {
+                "id": "sb_002",
+                "text": "对话",
+                "speaker": "char_001",
+                "scene_change": False,
+                "comfyui_prompt": "",
+                "emotion": "normal",
+                "composition": "",
+            },
         ],
         "current_timestamps": [
-            {"storyboard_id": "sb_001", "text": "开头", "speaker": "narrator",
-             "start_time": 0.0, "end_time": 2.0},
-            {"storyboard_id": "sb_002", "text": "对话", "speaker": "char_001",
-             "start_time": 2.2, "end_time": 3.5},
+            {"storyboard_id": "sb_001", "text": "开头", "speaker": "narrator", "start_time": 0.0, "end_time": 2.0},
+            {"storyboard_id": "sb_002", "text": "对话", "speaker": "char_001", "start_time": 2.2, "end_time": 3.5},
         ],
         "current_image_map": {
             "sb_001": str(ch_dir / "images" / "scene_001.png"),

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from enum import Enum
 from typing import TypedDict
 
@@ -24,11 +25,11 @@ class GraphState(TypedDict):
     worldview: str
 
     # 角色管理
-    characters_profile: dict            # 角色完整档案（唯一真相）
-    ignored_characters: list[str]       # 已忽略角色名列表
+    characters_profile: dict  # 角色完整档案（唯一真相）
+    ignored_characters: list[str]  # 已忽略角色名列表
 
     # 章节状态与产物（历史章节数据累积存储，支持跨章导出）
-    chapters_status: dict[str, str]     # chapter_id → ChapterStatus
+    chapters_status: dict[str, str]  # chapter_id → ChapterStatus
     chapters_artifacts: dict[str, ChapterArtifacts]  # chapter_id → 产物路径
 
     # 当前章节中间状态（load_chapter 时全部重置）
@@ -38,8 +39,8 @@ class GraphState(TypedDict):
     current_storyboard: list[dict]
     current_audio_path: str
     current_subtitles_path: str
-    current_timestamps: list[dict]      # 含全局偏移后时间戳
-    current_image_map: dict[str, str]   # storyboard_id → image_path（generate_images 中间结果）
+    current_timestamps: list[dict]  # 含全局偏移后时间戳
+    current_image_map: dict[str, str]  # storyboard_id → image_path（generate_images 中间结果）
     current_timeline_path: str
 
     # 审核重试计数器（load_chapter 统一重置）
@@ -47,9 +48,9 @@ class GraphState(TypedDict):
     storyboard_review_attempts: int
 
     # character_setup_subgraph 内部状态（子图自驱动队列循环）
-    setup_queue: list[dict]             # 待设定角色队列，dispatcher 逐个弹出
-    setup_current_character: dict       # 当前待处理的单个角色信息
-    setup_image_candidates: list[str]   # 当前角色的候选图片路径列表
+    setup_queue: list[dict]  # 待设定角色队列，dispatcher 逐个弹出
+    setup_current_character: dict  # 当前待处理的单个角色信息
+    setup_image_candidates: list[str]  # 当前角色的候选图片路径列表
     setup_voice_candidates: list[dict]  # 当前角色的候选音色列表（seed + 样本路径）
 
     # detect_new_characters 中间结果

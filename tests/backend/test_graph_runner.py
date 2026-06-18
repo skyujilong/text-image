@@ -1,6 +1,7 @@
 import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 import services.graph_runner as runner
 
 
@@ -40,6 +41,7 @@ async def test_resume_run_calls_command():
     runner._runs_db = AsyncMock()
 
     from langgraph.types import Command
+
     await runner.resume_run("run-99", 2)
     mock_graph.astream.assert_called_once()
     call_args = mock_graph.astream.call_args

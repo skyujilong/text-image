@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useRunStore } from '@/store/runStore'
 
 export function useRunStream(runId: string | null) {
-  const { setNodeStatus, setActiveInteraction, upsertRun, setRunError } = useRunStore()
+  const { setNodeStatus, setActiveInteraction, upsertRun, setRunError, streamGeneration } = useRunStore()
   const esRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
@@ -11,6 +11,10 @@ export function useRunStream(runId: string | null) {
     esRef.current?.close()
     const es = new EventSource(`/api/runs/${runId}/stream`)
     esRef.current = es
+
+    es.onopen = () => {
+      console.log('[SSE] 连接已建立:', runId)
+    }
 
     es.onmessage = (e) => {
       let event: Record<string, unknown>
@@ -25,6 +29,7 @@ export function useRunStream(runId: string | null) {
       if (type === 'node_status') {
         const statusKey = event.status_key as string
         const status = event.status as string
+        console.log('[SSE] 节点状态:', statusKey, status)
 
         if (status === 'waiting_human') {
           setNodeStatus(statusKey, 'waiting_human')
@@ -37,6 +42,7 @@ export function useRunStream(runId: string | null) {
       }
 
       if (type === 'run_complete') {
+        console.log('[SSE] 运行完成:', runId)
         upsertRun({
           run_id: runId,
           novel_dir: '',
@@ -49,6 +55,7 @@ export function useRunStream(runId: string | null) {
 
       if (type === 'run_error') {
         const msg = event.message as string | undefined
+        console.error('[SSE] 运行出错:', msg)
         setRunError(msg ?? '未知错误')
         upsertRun({
           run_id: runId,
@@ -57,15 +64,19 @@ export function useRunStream(runId: string | null) {
           status: 'error',
           created_at: new Date().toISOString(),
         })
-        // 不关闭 SSE，保持连接以便用户重试后继续接收事件
+        // 出错时不关闭 SSE，用户重试后可以继续接收事件
       }
     }
 
-    es.onerror = () => es.close()
+    es.onerror = (err) => {
+      console.error('[SSE] 连接错误:', err)
+      // 出错时不要立即关闭，让浏览器自动重连
+    }
 
     return () => {
+      console.log('[SSE] 清理连接:', runId)
       es.close()
       esRef.current = null
     }
-  }, [runId])
+  }, [runId, streamGeneration])
 }

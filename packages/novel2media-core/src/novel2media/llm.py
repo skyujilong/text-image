@@ -1,6 +1,9 @@
 from __future__ import annotations
+
 import os
+
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 
 def get_llm(temperature: float = 0.8) -> ChatOpenAI:
@@ -14,8 +17,6 @@ def get_llm(temperature: float = 0.8) -> ChatOpenAI:
     return ChatOpenAI(
         model=os.environ.get("ARK_MODEL", "doubao-seed-2.0-lite"),
         temperature=temperature,
-        api_key=api_key,
-        base_url=os.environ.get(
-            "ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"
-        ),
+        api_key=SecretStr(api_key),
+        base_url=os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
     )

@@ -1,6 +1,6 @@
+import httpx
 import pytest
 import respx
-import httpx
 from novel2media.clients.comfyui import ComfyUIClient
 
 BASE = "http://comfy.local:8188"
@@ -9,18 +9,19 @@ BASE = "http://comfy.local:8188"
 @respx.mock
 def test_generate_images_returns_paths(tmp_path):
     prompt_id = "abc123"
-    respx.post(f"{BASE}/prompt").mock(
-        return_value=httpx.Response(200, json={"prompt_id": prompt_id})
-    )
+    respx.post(f"{BASE}/prompt").mock(return_value=httpx.Response(200, json={"prompt_id": prompt_id}))
     image_bytes = b"FAKEPNG"
     respx.get(f"{BASE}/history/{prompt_id}").mock(
-        return_value=httpx.Response(200, json={
-            prompt_id: {
-                "outputs": {
-                    "9": {"images": [{"filename": "ComfyUI_00001_.png", "subfolder": "", "type": "output"}]}
+        return_value=httpx.Response(
+            200,
+            json={
+                prompt_id: {
+                    "outputs": {
+                        "9": {"images": [{"filename": "ComfyUI_00001_.png", "subfolder": "", "type": "output"}]}
+                    }
                 }
-            }
-        })
+            },
+        )
     )
     respx.get(f"{BASE}/view").mock(return_value=httpx.Response(200, content=image_bytes))
 
@@ -41,6 +42,7 @@ def test_generate_raises_on_prompt_failure():
     client = ComfyUIClient(base_url=BASE, timeout=10, max_retries=1, backoff=0)
     with pytest.raises(RuntimeError, match="ComfyUI prompt 提交失败"):
         from pathlib import Path
+
         client.generate(workflow_prompt={}, output_dir=Path("/tmp"), count=1)
 
 

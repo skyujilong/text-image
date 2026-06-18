@@ -1,6 +1,8 @@
 from __future__ import annotations
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 from typing import Any, Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -35,7 +37,7 @@ class RunMeta(BaseModel):
     novel_dir: str
     novel_title: str
     status: Literal["pending", "running", "waiting_human", "done", "error"] = "pending"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     params: dict = Field(default_factory=dict)
 
 

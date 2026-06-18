@@ -20,7 +20,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
-  const { runs, currentRunId, setRuns, setCurrentRunId, upsertRun, resetNodeStatuses, resetDrill } = useRunStore()
+  const { runs, currentRunId, setRuns, setCurrentRunId, upsertRun, resetNodeStatuses, resetDrill, incrementStreamGeneration, setRunError } = useRunStore()
   const [retrying, setRetrying] = useState<string | null>(null)
 
   useEffect(() => {
@@ -31,17 +31,20 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
     setCurrentRunId(runId)
     resetNodeStatuses()
     resetDrill()
+    setRunError(null) // 切换 Run 时清空错误
   }
 
   const handleRetry = async (e: React.MouseEvent, runId: string) => {
     e.stopPropagation()
     setRetrying(runId)
     try {
+      setRunError(null) // 重试前先清空旧错误
       await api.retryRun(runId)
       upsertRun({ ...runs[runId], status: 'running' })
       setCurrentRunId(runId)
       resetNodeStatuses()
       resetDrill()
+      incrementStreamGeneration() // 触发 SSE 重新连接
     } catch (err) {
       console.error(err)
     } finally {

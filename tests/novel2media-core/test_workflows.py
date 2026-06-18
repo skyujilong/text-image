@@ -13,11 +13,14 @@ def test_build_workflow_ignores_unknown_params():
 
 
 def test_build_workflow_scene_sets_all_images():
-    wf = build_workflow("wf_t2i_scene", {
-        "style_image": "style.png",
-        "face_image": "face.png",
-        "pose_image": "pose.png",
-    })
+    wf = build_workflow(
+        "wf_t2i_scene",
+        {
+            "style_image": "style.png",
+            "face_image": "face.png",
+            "pose_image": "pose.png",
+        },
+    )
     assert wf["49"]["inputs"]["image"] == "style.png"
     assert wf["56"]["inputs"]["image"] == "face.png"
     assert wf["69"]["inputs"]["image"] == "pose.png"
@@ -44,10 +47,13 @@ def test_build_workflow_explicit_seed_preserved():
 
 
 def test_build_workflow_fullbody_sets_face_and_pose():
-    wf = build_workflow("wf_fullbody_with_face", {
-        "face_image": "my_face.png",
-        "pose_image": "standing.png",
-    })
+    wf = build_workflow(
+        "wf_fullbody_with_face",
+        {
+            "face_image": "my_face.png",
+            "pose_image": "standing.png",
+        },
+    )
     assert wf["56"]["inputs"]["image"] == "my_face.png"
     assert wf["69"]["inputs"]["image"] == "standing.png"
 

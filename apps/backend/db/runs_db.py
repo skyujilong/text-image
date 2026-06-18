@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 import json
+from datetime import UTC, datetime
+
 import aiosqlite
-from datetime import datetime, timezone
 from schemas.models import RunMeta
 
 _CREATE_TABLE = """
@@ -20,7 +22,7 @@ class RunsDB:
         self._db_path = db_path
         self._conn: aiosqlite.Connection | None = None
 
-    async def __aenter__(self) -> "RunsDB":
+    async def __aenter__(self) -> RunsDB:
         self._conn = await aiosqlite.connect(self._db_path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute(_CREATE_TABLE)
@@ -37,7 +39,9 @@ class RunsDB:
             await self._conn.close()
 
     async def insert(self, run_id: str, novel_dir: str, novel_title: str, params: dict | None = None) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        now = datetime.now(UTC).isoformat()
         await self._conn.execute(
             "INSERT INTO runs (run_id, novel_dir, novel_title, status, created_at, params) VALUES (?,?,?,?,?,?)",
             (run_id, novel_dir, novel_title, "pending", now, json.dumps(params or {})),
@@ -45,15 +49,15 @@ class RunsDB:
         await self._conn.commit()
 
     async def update_status(self, run_id: str, status: str) -> None:
-        await self._conn.execute(
-            "UPDATE runs SET status=? WHERE run_id=?", (status, run_id)
-        )
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        await self._conn.execute("UPDATE runs SET status=? WHERE run_id=?", (status, run_id))
         await self._conn.commit()
 
     async def get(self, run_id: str) -> RunMeta | None:
-        async with self._conn.execute(
-            "SELECT * FROM runs WHERE run_id=?", (run_id,)
-        ) as cur:
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        async with self._conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)) as cur:
             row = await cur.fetchone()
         if row is None:
             return None
@@ -67,9 +71,9 @@ class RunsDB:
         )
 
     async def list_all(self) -> list[RunMeta]:
-        async with self._conn.execute(
-            "SELECT * FROM runs ORDER BY created_at DESC"
-        ) as cur:
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        async with self._conn.execute("SELECT * FROM runs ORDER BY created_at DESC") as cur:
             rows = await cur.fetchall()
         return [
             RunMeta(

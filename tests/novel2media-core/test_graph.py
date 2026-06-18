@@ -1,8 +1,7 @@
-import pytest
-from novel2media.subgraphs.setup import build_character_setup_subgraph
+from novel2media.graph import graph
 from novel2media.subgraphs.chapter import build_chapter_subgraph
 from novel2media.subgraphs.init_graph import build_init_subgraph
-from novel2media.graph import graph
+from novel2media.subgraphs.setup import build_character_setup_subgraph
 
 
 def test_setup_subgraph_compiles():

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,7 @@ class ServicesConfig:
     default_preview_text: str
 
     @classmethod
-    def from_file(cls, path: Path) -> "ServicesConfig":
+    def from_file(cls, path: Path) -> ServicesConfig:
         if not path.exists():
             raise FileNotFoundError(f"services.json not found: {path}")
         data = json.loads(path.read_text(encoding="utf-8"))

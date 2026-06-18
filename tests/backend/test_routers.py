@@ -1,14 +1,15 @@
-import pytest
 from unittest.mock import AsyncMock
-import tempfile
 
 
 async def test_post_runs_returns_run_id(client, mock_runner):
     mock_runner.start_run = AsyncMock(return_value="run-uuid-123")
-    resp = await client.post("/runs", json={
-        "novel_dir": "/novels/foo",
-        "novel_title": "Foo",
-    })
+    resp = await client.post(
+        "/runs",
+        json={
+            "novel_dir": "/novels/foo",
+            "novel_title": "Foo",
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["run_id"] == "run-uuid-123"
@@ -16,9 +17,8 @@ async def test_post_runs_returns_run_id(client, mock_runner):
 
 async def test_get_runs_returns_list(client, mock_runner):
     from schemas.models import RunMeta
-    mock_runner.list_runs = AsyncMock(return_value=[
-        RunMeta(run_id="r1", novel_dir="/x", novel_title="X")
-    ])
+
+    mock_runner.list_runs = AsyncMock(return_value=[RunMeta(run_id="r1", novel_dir="/x", novel_title="X")])
     resp = await client.get("/runs")
     assert resp.status_code == 200
     assert len(resp.json()) == 1
@@ -27,6 +27,7 @@ async def test_get_runs_returns_list(client, mock_runner):
 
 async def test_post_resume(client, mock_runner):
     from schemas.models import RunMeta
+
     mock_runner.resume_run = AsyncMock()
     mock_runner.get_run = AsyncMock(return_value=RunMeta(run_id="run-uuid-123", novel_dir="/x", novel_title="X"))
     resp = await client.post("/runs/run-uuid-123/resume", json={"resume_value": 1})
