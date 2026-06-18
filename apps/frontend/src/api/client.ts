@@ -41,7 +41,17 @@ export interface CheckpointEntry {
 export interface StartRunParams {
   novel_dir: string
   novel_title?: string
-  worldview?: string
+  genre?: string
+  writing_style?: string
+  target_audience?: string
+  core_tone?: string
+  chapter_word_count?: string
+  total_word_count?: string
+  core_theme?: string
+  world_building?: string
+  core_conflicts?: string
+  overall_outline?: string
+  character_profiles?: string
   start_chapter?: number
   end_chapter?: number | null
 }
@@ -86,8 +96,6 @@ export const api = {
     request<Record<string, unknown>>(`/novels/config?dir=${encodeURIComponent(dir)}`),
 
   listNovels: () => request<{ dirs: string[] }>('/novels/list'),
-
-  browseFolder: () => request<{ path: string }>('/browse/folder'),
 
   getGraphSchema: (subgraphId?: string) =>
     request<GraphSchema>(subgraphId ? `/graph/schema/${subgraphId}` : '/graph/schema'),

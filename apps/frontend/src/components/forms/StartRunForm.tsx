@@ -11,6 +11,22 @@ import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 
+// 本地存储最近使用的目录
+const RECENT_DIRS_KEY = 'novel-recent-dirs'
+
+function loadRecentDirs(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(RECENT_DIRS_KEY) ?? '[]')
+  } catch {
+    return []
+  }
+}
+
+function saveRecentDir(dir: string) {
+  const existing = loadRecentDirs().filter(d => d !== dir)
+  localStorage.setItem(RECENT_DIRS_KEY, JSON.stringify([dir, ...existing].slice(0, 10)))
+}
+
 const schema = z.object({
   novel_dir: z.string().min(1, '请输入小说目录').refine(
     async (dir) => {
@@ -46,7 +62,8 @@ interface Props {
 
 export default function StartRunForm({ onStarted, onCancel, initialValues }: Props) {
   const { upsertRun, setCurrentRunId, resetNodeStatuses, resetDrill } = useRunStore()
-  const [browsing, setBrowsing] = useState(false)
+  const [showRecent, setShowRecent] = useState(false)
+  const [recentDirs, setRecentDirs] = useState<string[]>([])
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     mode: 'onBlur',
@@ -72,10 +89,18 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
   const novelDir = form.watch('novel_dir')
   const dirValid = form.formState.dirtyFields.novel_dir && !form.formState.errors.novel_dir
 
+  // 加载最近使用目录
+  useEffect(() => {
+    setRecentDirs(loadRecentDirs())
+  }, [])
+
   useEffect(() => {
     if (!dirValid || !novelDir) return
     api.getNovelConfig(novelDir)
       .then((cfg) => {
+        // 保存到最近使用
+        saveRecentDir(novelDir)
+        setRecentDirs(loadRecentDirs())
         // 支持两种字段命名映射
         form.setValue('novel_title', (cfg.novel_title ?? cfg.novel_name ?? '') as string)
         form.setValue('genre', (cfg.genre ?? '') as string)
@@ -126,16 +151,9 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
 
   const configDisabled = !dirValid
 
-  const handleBrowse = async () => {
-    setBrowsing(true)
-    try {
-      const { path } = await api.browseFolder()
-      form.setValue('novel_dir', path, { shouldValidate: true, shouldDirty: true })
-    } catch {
-      // 用户取消或后端不支持，忽略
-    } finally {
-      setBrowsing(false)
-    }
+  const selectRecentDir = (dir: string) => {
+    form.setValue('novel_dir', dir, { shouldValidate: true, shouldDirty: true })
+    setShowRecent(false)
   }
 
   return (
@@ -147,22 +165,42 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
             control={form.control}
             name="novel_dir"
             render={({ field }) => (
-              <FormItem>
+              <FormItem className="relative">
                 <FormLabel>小说目录</FormLabel>
                 <div className="flex gap-2">
                   <FormControl>
-                    <Input placeholder="/path/to/your/novel" {...field} />
+                    <Input
+                      placeholder="/Users/nbe01/Downloads/小说名"
+                      {...field}
+                      onFocus={() => setShowRecent(true)}
+                      onBlur={() => setTimeout(() => setShowRecent(false), 200)}
+                    />
                   </FormControl>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={browsing}
-                    onClick={handleBrowse}
-                    className="shrink-0"
-                  >
-                    {browsing ? '选择中…' : '浏览…'}
-                  </Button>
+                  {recentDirs.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setShowRecent(!showRecent)}
+                      className="shrink-0"
+                    >
+                      {showRecent ? '收起' : '最近'}
+                    </Button>
+                  )}
                 </div>
+                {showRecent && recentDirs.length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto">
+                    {recentDirs.map((dir, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 truncate"
+                        onClick={() => selectRecentDir(dir)}
+                      >
+                        📁 {dir}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <FormMessage />
               </FormItem>
             )}
