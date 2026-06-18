@@ -1,16 +1,25 @@
 from __future__ import annotations
 import asyncio
 import uuid
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
+from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from db.runs_db import RunsDB
 
-CHECKPOINT_DB = "data/checkpoints.db"
-RUNS_DB = "data/runs.db"
+# 加载环境变量
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env.local")
+
+# 确保 data 目录存在
+DATA_DIR = Path(__file__).parent.parent.parent.parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
+
+CHECKPOINT_DB = str(DATA_DIR / "checkpoints.db")
+RUNS_DB = str(DATA_DIR / "runs.db")
 
 _compiled_graph = None
 _runs_db: RunsDB | None = None
