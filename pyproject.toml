@@ -31,9 +31,9 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/novel2media", "api"]
+packages = ["packages/novel2media-core/src/novel2media", "apps/backend"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "apps/backend", "packages/novel2media-core/src"]
