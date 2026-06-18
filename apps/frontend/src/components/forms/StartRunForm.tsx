@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 
-// 本地存储最近使用的目录
+// 本地存储最近使用目录
 const RECENT_DIRS_KEY = 'novel-recent-dirs'
 
 function loadRecentDirs(): string[] {
@@ -28,14 +28,7 @@ function saveRecentDir(dir: string) {
 }
 
 const schema = z.object({
-  novel_dir: z.string().min(1, '请输入小说目录').refine(
-    async (dir) => {
-      if (!dir) return false
-      const res = await api.validatePath(dir)
-      return res.exists
-    },
-    { message: '目录不存在' }
-  ),
+  novel_dir: z.string().min(1, '请输入小说目录'),
   novel_title: z.string(),
   genre: z.string(),
   writing_style: z.string(),
@@ -64,6 +57,10 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
   const { upsertRun, setCurrentRunId, resetNodeStatuses, resetDrill } = useRunStore()
   const [showRecent, setShowRecent] = useState(false)
   const [recentDirs, setRecentDirs] = useState<string[]>([])
+  const [configLoaded, setConfigLoaded] = useState(false)
+  const [loadingConfig, setLoadingConfig] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     mode: 'onBlur',
@@ -87,36 +84,65 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
   })
 
   const novelDir = form.watch('novel_dir')
-  const dirValid = form.formState.dirtyFields.novel_dir && !form.formState.errors.novel_dir
 
   // 加载最近使用目录
   useEffect(() => {
     setRecentDirs(loadRecentDirs())
   }, [])
 
+  // 如果有初始值，视为已加载配置
   useEffect(() => {
-    if (!dirValid || !novelDir) return
-    api.getNovelConfig(novelDir)
-      .then((cfg) => {
-        // 保存到最近使用
-        saveRecentDir(novelDir)
-        setRecentDirs(loadRecentDirs())
-        // 支持两种字段命名映射
-        form.setValue('novel_title', (cfg.novel_title ?? cfg.novel_name ?? '') as string)
-        form.setValue('genre', (cfg.genre ?? '') as string)
-        form.setValue('writing_style', (cfg.writing_style ?? '') as string)
-        form.setValue('target_audience', (cfg.target_audience ?? '') as string)
-        form.setValue('core_tone', (cfg.core_tone ?? '') as string)
-        form.setValue('chapter_word_count', (cfg.chapter_word_count ?? '') as string)
-        form.setValue('total_word_count', (cfg.total_word_count ?? '') as string)
-        form.setValue('core_theme', (cfg.core_theme ?? '') as string)
-        form.setValue('world_building', (cfg.world_building ?? '') as string)
-        form.setValue('core_conflicts', (cfg.core_conflicts ?? '') as string)
-        form.setValue('overall_outline', (cfg.overall_outline ?? '') as string)
-        form.setValue('character_profiles', (cfg.character_profiles ?? '') as string)
-      })
-      .catch(() => { /* 目录存在但无配置文件，忽略 */ })
-  }, [dirValid, novelDir])
+    if (initialValues?.novel_dir) {
+      setConfigLoaded(true)
+    }
+  }, [initialValues])
+
+  // 使用配置填充表单
+  const fillFormWithConfig = (cfg: Record<string, unknown>) => {
+    form.setValue('novel_title', (cfg.novel_title ?? cfg.novel_name ?? '') as string)
+    form.setValue('genre', (cfg.genre ?? '') as string)
+    form.setValue('writing_style', (cfg.writing_style ?? '') as string)
+    form.setValue('target_audience', (cfg.target_audience ?? '') as string)
+    form.setValue('core_tone', (cfg.core_tone ?? '') as string)
+    form.setValue('chapter_word_count', (cfg.chapter_word_count ?? '') as string)
+    form.setValue('total_word_count', (cfg.total_word_count ?? '') as string)
+    form.setValue('core_theme', (cfg.core_theme ?? '') as string)
+    form.setValue('world_building', (cfg.world_building ?? '') as string)
+    form.setValue('core_conflicts', (cfg.core_conflicts ?? '') as string)
+    form.setValue('overall_outline', (cfg.overall_outline ?? '') as string)
+    form.setValue('character_profiles', (cfg.character_profiles ?? '') as string)
+  }
+
+  // 点击加载配置按钮
+  const handleLoadConfig = async () => {
+    const dir = form.getValues('novel_dir')
+    if (!dir.trim()) {
+      form.setError('novel_dir', { message: '请输入小说目录' })
+      return
+    }
+
+    setLoadingConfig(true)
+    try {
+      // 先验证目录是否存在
+      const validateRes = await api.validatePath(dir)
+      if (!validateRes.exists) {
+        form.setError('novel_dir', { message: '目录不存在' })
+        return
+      }
+
+      // 加载配置
+      const cfg = await api.getNovelConfig(dir)
+      fillFormWithConfig(cfg)
+      saveRecentDir(dir)
+      setRecentDirs(loadRecentDirs())
+      setConfigLoaded(true)
+      form.clearErrors('novel_dir')
+    } catch (e) {
+      form.setError('novel_dir', { message: '加载配置失败，请检查目录路径' })
+    } finally {
+      setLoadingConfig(false)
+    }
+  }
 
   const onSubmit = async (values: FormValues) => {
     const { run_id } = await api.startRun({
@@ -149,10 +175,8 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
     onStarted(run_id)
   }
 
-  const configDisabled = !dirValid
-
   const selectRecentDir = (dir: string) => {
-    form.setValue('novel_dir', dir, { shouldValidate: true, shouldDirty: true })
+    form.setValue('novel_dir', dir, { shouldValidate: false, shouldDirty: true })
     setShowRecent(false)
   }
 
@@ -161,6 +185,7 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
       <h2 className="text-lg font-semibold mb-4">{initialValues ? '修改参数重跑' : '新建 Run'}</h2>
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          {/* 第一步：选择目录 */}
           <FormField
             control={form.control}
             name="novel_dir"
@@ -174,8 +199,19 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
                       {...field}
                       onFocus={() => setShowRecent(true)}
                       onBlur={() => setTimeout(() => setShowRecent(false), 200)}
+                      disabled={configLoaded}
                     />
                   </FormControl>
+                  {!configLoaded && (
+                    <Button
+                      type="button"
+                      onClick={handleLoadConfig}
+                      disabled={loadingConfig}
+                      className="shrink-0"
+                    >
+                      {loadingConfig ? '加载中...' : '加载配置'}
+                    </Button>
+                  )}
                   {recentDirs.length > 0 && (
                     <Button
                       type="button"
@@ -206,249 +242,249 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
             )}
           />
 
-          <FormField
-            control={form.control}
-            name="novel_title"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>小说标题</FormLabel>
-                <FormControl>
-                  <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+          {/* 配置加载成功后显示表单 */}
+          {configLoaded && (
+            <>
+              {/* ================ 核心配置 ================ */}
+              <div className="space-y-4">
+                <FormField
+                  control={form.control}
+                  name="novel_title"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>小说标题</FormLabel>
+                      <FormControl>
+                        <Input {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
 
-          <FormField
-            control={form.control}
-            name="genre"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>题材类型</FormLabel>
-                <FormControl>
-                  <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <div className="flex gap-4">
-            <FormField
-              control={form.control}
-              name="writing_style"
-              render={({ field }) => (
-                <FormItem className="flex-1">
-                  <FormLabel>写作风格</FormLabel>
-                  <FormControl>
-                    <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="target_audience"
-              render={({ field }) => (
-                <FormItem className="flex-1">
-                  <FormLabel>目标受众</FormLabel>
-                  <FormControl>
-                    <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
-
-          <FormField
-            control={form.control}
-            name="core_tone"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>核心基调</FormLabel>
-                <FormControl>
-                  <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <div className="flex gap-4">
-            <FormField
-              control={form.control}
-              name="chapter_word_count"
-              render={({ field }) => (
-                <FormItem className="flex-1">
-                  <FormLabel>单章字数</FormLabel>
-                  <FormControl>
-                    <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="total_word_count"
-              render={({ field }) => (
-                <FormItem className="flex-1">
-                  <FormLabel>总字数</FormLabel>
-                  <FormControl>
-                    <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
-
-          <FormField
-            control={form.control}
-            name="core_theme"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>核心主题</FormLabel>
-                <FormControl>
-                  <Textarea
-                    disabled={configDisabled}
-                    placeholder="（选择目录后自动填充）"
-                    rows={3}
-                    {...field}
+                <div className="flex gap-4">
+                  <FormField
+                    control={form.control}
+                    name="start_chapter"
+                    render={({ field }) => (
+                      <FormItem className="flex-1">
+                        <FormLabel>起始章节</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={1}
+                            {...field}
+                            onChange={(e) => field.onChange(e.target.valueAsNumber)}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
                   />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name="world_building"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>世界观设定</FormLabel>
-                <FormControl>
-                  <Textarea
-                    disabled={configDisabled}
-                    placeholder="（选择目录后自动填充）"
-                    rows={4}
-                    {...field}
+                  <FormField
+                    control={form.control}
+                    name="end_chapter"
+                    render={({ field }) => (
+                      <FormItem className="flex-1">
+                        <FormLabel>结束章节（留空=全部）</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={1}
+                            value={field.value ?? ''}
+                            onChange={(e) => field.onChange(e.target.value ? e.target.valueAsNumber : null)}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
                   />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+                </div>
+              </div>
 
-          <FormField
-            control={form.control}
-            name="core_conflicts"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>核心冲突</FormLabel>
-                <FormControl>
-                  <Textarea
-                    disabled={configDisabled}
-                    placeholder="（选择目录后自动填充）"
-                    rows={3}
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+              {/* ================ 高级配置（可折叠） ================ */}
+              <div className="border-t pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-800 mb-3"
+                >
+                  <span>{showAdvanced ? '▼' : '▶'}</span>
+                  <span>小说配置详情</span>
+                </button>
 
-          <FormField
-            control={form.control}
-            name="overall_outline"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>整体大纲</FormLabel>
-                <FormControl>
-                  <Textarea
-                    disabled={configDisabled}
-                    placeholder="（选择目录后自动填充）"
-                    rows={5}
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name="character_profiles"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>人物设定</FormLabel>
-                <FormControl>
-                  <Textarea
-                    disabled={configDisabled}
-                    placeholder="（选择目录后自动填充）"
-                    rows={5}
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <div className="flex gap-4">
-            <FormField
-              control={form.control}
-              name="start_chapter"
-              render={({ field }) => (
-                <FormItem className="flex-1">
-                  <FormLabel>起始章节</FormLabel>
-                  <FormControl>
-                    <Input
-                      type="number"
-                      min={1}
-                      disabled={configDisabled}
-                      {...field}
-                      onChange={(e) => field.onChange(e.target.valueAsNumber)}
+                {showAdvanced && (
+                  <div className="space-y-4 pl-2 border-l-2 border-gray-200">
+                    <FormField
+                      control={form.control}
+                      name="genre"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>题材类型</FormLabel>
+                          <FormControl>
+                            <Input {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
                     />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="end_chapter"
-              render={({ field }) => (
-                <FormItem className="flex-1">
-                  <FormLabel>结束章节（留空=全部）</FormLabel>
-                  <FormControl>
-                    <Input
-                      type="number"
-                      min={1}
-                      disabled={configDisabled}
-                      value={field.value ?? ''}
-                      onChange={(e) => field.onChange(e.target.value ? e.target.valueAsNumber : null)}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
 
+                    <div className="flex gap-4">
+                      <FormField
+                        control={form.control}
+                        name="writing_style"
+                        render={({ field }) => (
+                          <FormItem className="flex-1">
+                            <FormLabel>写作风格</FormLabel>
+                            <FormControl>
+                              <Input {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="target_audience"
+                        render={({ field }) => (
+                          <FormItem className="flex-1">
+                            <FormLabel>目标受众</FormLabel>
+                            <FormControl>
+                              <Input {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+
+                    <FormField
+                      control={form.control}
+                      name="core_tone"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>核心基调</FormLabel>
+                          <FormControl>
+                            <Input {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <div className="flex gap-4">
+                      <FormField
+                        control={form.control}
+                        name="chapter_word_count"
+                        render={({ field }) => (
+                          <FormItem className="flex-1">
+                            <FormLabel>单章字数</FormLabel>
+                            <FormControl>
+                              <Input {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="total_word_count"
+                        render={({ field }) => (
+                          <FormItem className="flex-1">
+                            <FormLabel>总字数</FormLabel>
+                            <FormControl>
+                              <Input {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+
+                    <FormField
+                      control={form.control}
+                      name="core_theme"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>核心主题</FormLabel>
+                          <FormControl>
+                            <Textarea rows={3} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="world_building"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>世界观设定</FormLabel>
+                          <FormControl>
+                            <Textarea rows={4} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="core_conflicts"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>核心冲突</FormLabel>
+                          <FormControl>
+                            <Textarea rows={3} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="overall_outline"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>整体大纲</FormLabel>
+                          <FormControl>
+                            <Textarea rows={5} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="character_profiles"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>人物设定</FormLabel>
+                          <FormControl>
+                            <Textarea rows={5} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* 按钮区域 */}
           <div className="flex justify-end gap-3 pt-2">
             <Button type="button" variant="outline" onClick={onCancel}>
               取消
             </Button>
-            <Button type="submit" disabled={form.formState.isSubmitting || configDisabled}>
-              {form.formState.isSubmitting ? '启动中...' : '开始运行 →'}
-            </Button>
+            {configLoaded && (
+              <Button type="submit" disabled={form.formState.isSubmitting}>
+                {form.formState.isSubmitting ? '启动中...' : '开始运行 →'}
+              </Button>
+            )}
           </div>
         </form>
       </Form>

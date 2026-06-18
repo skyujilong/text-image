@@ -107,6 +107,8 @@ async def _emit(
 
 
 async def _run_graph(input: Any, config: dict, run_id: str) -> None:
+    if _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
     await _runs_db.update_status(run_id, "running")
     try:
         async for ns, event in _compiled_graph.astream(
