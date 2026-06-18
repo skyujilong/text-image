@@ -49,9 +49,12 @@ async def validate_path(path: str = Query(...)):
 @router.get("/novels/config")
 async def get_novel_config(dir: str = Query(...)):
     novel_dir = Path(dir)
-    config_path = novel_dir / "config" / "novel.json"
+    # 支持两种路径：config.json (根目录) 或 config/novel.json
+    config_path = novel_dir / "config.json"
     if not config_path.exists():
-        raise HTTPException(status_code=404, detail="novel.json not found in config/")
+        config_path = novel_dir / "config" / "novel.json"
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="config.json not found")
     data = json.loads(config_path.read_text(encoding="utf-8"))
 
     recent = _load_recent()

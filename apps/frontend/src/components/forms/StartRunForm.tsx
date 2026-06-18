@@ -21,7 +21,17 @@ const schema = z.object({
     { message: '目录不存在' }
   ),
   novel_title: z.string(),
-  worldview: z.string(),
+  genre: z.string(),
+  writing_style: z.string(),
+  target_audience: z.string(),
+  core_tone: z.string(),
+  chapter_word_count: z.string(),
+  total_word_count: z.string(),
+  core_theme: z.string(),
+  world_building: z.string(),
+  core_conflicts: z.string(),
+  overall_outline: z.string(),
+  character_profiles: z.string(),
   start_chapter: z.number().int().min(1),
   end_chapter: z.number().int().min(1).optional().nullable(),
 })
@@ -43,7 +53,17 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
     defaultValues: {
       novel_dir: (initialValues?.novel_dir as string) ?? '',
       novel_title: (initialValues?.novel_title as string) ?? '',
-      worldview: (initialValues?.worldview as string) ?? '',
+      genre: (initialValues?.genre as string) ?? '',
+      writing_style: (initialValues?.writing_style as string) ?? '',
+      target_audience: (initialValues?.target_audience as string) ?? '',
+      core_tone: (initialValues?.core_tone as string) ?? '',
+      chapter_word_count: (initialValues?.chapter_word_count as string) ?? '',
+      total_word_count: (initialValues?.total_word_count as string) ?? '',
+      core_theme: (initialValues?.core_theme as string) ?? '',
+      world_building: (initialValues?.world_building as string) ?? '',
+      core_conflicts: (initialValues?.core_conflicts as string) ?? '',
+      overall_outline: (initialValues?.overall_outline as string) ?? '',
+      character_profiles: (initialValues?.character_profiles as string) ?? '',
       start_chapter: (initialValues?.start_chapter as number) ?? 1,
       end_chapter: (initialValues?.end_chapter as number | null) ?? null,
     },
@@ -56,17 +76,38 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
     if (!dirValid || !novelDir) return
     api.getNovelConfig(novelDir)
       .then((cfg) => {
-        if (cfg.novel_title) form.setValue('novel_title', cfg.novel_title as string)
-        if (cfg.worldview) form.setValue('worldview', cfg.worldview as string)
+        // 支持两种字段命名映射
+        form.setValue('novel_title', (cfg.novel_title ?? cfg.novel_name ?? '') as string)
+        form.setValue('genre', (cfg.genre ?? '') as string)
+        form.setValue('writing_style', (cfg.writing_style ?? '') as string)
+        form.setValue('target_audience', (cfg.target_audience ?? '') as string)
+        form.setValue('core_tone', (cfg.core_tone ?? '') as string)
+        form.setValue('chapter_word_count', (cfg.chapter_word_count ?? '') as string)
+        form.setValue('total_word_count', (cfg.total_word_count ?? '') as string)
+        form.setValue('core_theme', (cfg.core_theme ?? '') as string)
+        form.setValue('world_building', (cfg.world_building ?? '') as string)
+        form.setValue('core_conflicts', (cfg.core_conflicts ?? '') as string)
+        form.setValue('overall_outline', (cfg.overall_outline ?? '') as string)
+        form.setValue('character_profiles', (cfg.character_profiles ?? '') as string)
       })
-      .catch(() => { /* 目录存在但无 novel.json，忽略 */ })
+      .catch(() => { /* 目录存在但无配置文件，忽略 */ })
   }, [dirValid, novelDir])
 
   const onSubmit = async (values: FormValues) => {
     const { run_id } = await api.startRun({
       novel_dir: values.novel_dir,
       novel_title: values.novel_title,
-      worldview: values.worldview,
+      genre: values.genre,
+      writing_style: values.writing_style,
+      target_audience: values.target_audience,
+      core_tone: values.core_tone,
+      chapter_word_count: values.chapter_word_count,
+      total_word_count: values.total_word_count,
+      core_theme: values.core_theme,
+      world_building: values.world_building,
+      core_conflicts: values.core_conflicts,
+      overall_outline: values.overall_outline,
+      character_profiles: values.character_profiles,
       start_chapter: values.start_chapter,
       end_chapter: values.end_chapter ?? undefined,
     })
@@ -143,7 +184,112 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
 
           <FormField
             control={form.control}
-            name="worldview"
+            name="genre"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>题材类型</FormLabel>
+                <FormControl>
+                  <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <div className="flex gap-4">
+            <FormField
+              control={form.control}
+              name="writing_style"
+              render={({ field }) => (
+                <FormItem className="flex-1">
+                  <FormLabel>写作风格</FormLabel>
+                  <FormControl>
+                    <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="target_audience"
+              render={({ field }) => (
+                <FormItem className="flex-1">
+                  <FormLabel>目标受众</FormLabel>
+                  <FormControl>
+                    <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <FormField
+            control={form.control}
+            name="core_tone"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>核心基调</FormLabel>
+                <FormControl>
+                  <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <div className="flex gap-4">
+            <FormField
+              control={form.control}
+              name="chapter_word_count"
+              render={({ field }) => (
+                <FormItem className="flex-1">
+                  <FormLabel>单章字数</FormLabel>
+                  <FormControl>
+                    <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="total_word_count"
+              render={({ field }) => (
+                <FormItem className="flex-1">
+                  <FormLabel>总字数</FormLabel>
+                  <FormControl>
+                    <Input disabled={configDisabled} placeholder="（选择目录后自动填充）" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <FormField
+            control={form.control}
+            name="core_theme"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>核心主题</FormLabel>
+                <FormControl>
+                  <Textarea
+                    disabled={configDisabled}
+                    placeholder="（选择目录后自动填充）"
+                    rows={3}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="world_building"
             render={({ field }) => (
               <FormItem>
                 <FormLabel>世界观设定</FormLabel>
@@ -152,6 +298,63 @@ export default function StartRunForm({ onStarted, onCancel, initialValues }: Pro
                     disabled={configDisabled}
                     placeholder="（选择目录后自动填充）"
                     rows={4}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="core_conflicts"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>核心冲突</FormLabel>
+                <FormControl>
+                  <Textarea
+                    disabled={configDisabled}
+                    placeholder="（选择目录后自动填充）"
+                    rows={3}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="overall_outline"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>整体大纲</FormLabel>
+                <FormControl>
+                  <Textarea
+                    disabled={configDisabled}
+                    placeholder="（选择目录后自动填充）"
+                    rows={5}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="character_profiles"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>人物设定</FormLabel>
+                <FormControl>
+                  <Textarea
+                    disabled={configDisabled}
+                    placeholder="（选择目录后自动填充）"
+                    rows={5}
                     {...field}
                   />
                 </FormControl>
