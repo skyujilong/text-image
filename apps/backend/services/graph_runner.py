@@ -42,12 +42,13 @@ def _resolve_interrupted_node(snap) -> tuple[str, str]:
     parts: list[str] = []
     cur = snap
     while cur is not None:
-        task = next((t for t in cur.tasks if getattr(t, "interrupts", None)), None)
+        tasks = getattr(cur, 'tasks', []) or []
+        task = next((t for t in tasks if getattr(t, "interrupts", None)), None)
         if task is None:
             break
-        parts.append(task.name)
+        parts.append(getattr(task, 'name', 'unknown'))
         cur = getattr(task, "state", None)
-        if not hasattr(cur, "tasks"):
+        if cur is None or not hasattr(cur, "tasks"):
             break
     return (parts[-1], "/".join(parts)) if parts else ("unknown", "unknown")
 
@@ -168,9 +169,12 @@ async def restart_from_node(run_id: str, node_path: str) -> None:
     # 顶层：找到 next 包含 top_node 的最新 checkpoint（即该节点执行前的快照）
     top_cid = None
     async for snap in _compiled_graph.aget_state_history(config):
-        if top_node in snap.next:
-            top_cid = snap.config["configurable"]["checkpoint_id"]
-            break
+        snap_next = getattr(snap, 'next', []) or []
+        snap_config = getattr(snap, 'config', {}) or {}
+        if top_node in snap_next:
+            top_cid = snap_config.get("configurable", {}).get("checkpoint_id")
+            if top_cid:
+                break
     if top_cid is None:
         raise ValueError(f"node {top_node!r} not found in checkpoint history")
 
@@ -190,16 +194,19 @@ async def restart_from_node(run_id: str, node_path: str) -> None:
             sub_cid = None
             sub_config = {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns}}
             async for snap in _compiled_graph.aget_state_history(sub_config):
-                if leaf_node in snap.next:
-                    sub_cid = snap.config["configurable"]["checkpoint_id"]
-                    break
+                snap_next = getattr(snap, 'next', []) or []
+                snap_config = getattr(snap, 'config', {}) or {}
+                if leaf_node in snap_next:
+                    sub_cid = snap_config.get("configurable", {}).get("checkpoint_id")
+                    if sub_cid:
+                        break
             if sub_cid:
                 target_snap = await _compiled_graph.aget_state(
                     {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns, "checkpoint_id": sub_cid}}
                 )
                 await _compiled_graph.aupdate_state(
                     {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns, "checkpoint_id": sub_cid}},
-                    target_snap.values,
+                    getattr(target_snap, 'values', {}),
                 )
 
     get_or_create_sse_queue(run_id)
@@ -215,9 +222,10 @@ async def get_node_state(run_id: str, node_path: str) -> dict | None:
 
     if len(parts) == 1:
         async for snap in _compiled_graph.aget_state_history(config):
-            writes = snap.metadata.get("writes") if isinstance(snap.metadata, dict) else {}
+            meta = getattr(snap, 'metadata', {}) or {}
+            writes = meta.get("writes") if isinstance(meta.get("writes"), dict) else {}
             if writes and top_node in writes:
-                return {"node": top_node, "values": snap.values}
+                return {"node": top_node, "values": getattr(snap, 'values', {})}
     else:
         async with aiosqlite.connect(CHECKPOINT_DB) as db:
             async with db.execute(
@@ -231,9 +239,10 @@ async def get_node_state(run_id: str, node_path: str) -> dict | None:
         sub_ns = ns_rows[-1][0]
         sub_config = {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns}}
         async for snap in _compiled_graph.aget_state_history(sub_config):
-            writes = snap.metadata.get("writes") if isinstance(snap.metadata, dict) else {}
+            meta = getattr(snap, 'metadata', {}) or {}
+            writes = meta.get("writes") if isinstance(meta.get("writes"), dict) else {}
             if writes and leaf_node in writes:
-                return {"node": leaf_node, "values": snap.values}
+                return {"node": leaf_node, "values": getattr(snap, 'values', {})}
 
     return None
 
@@ -243,16 +252,16 @@ async def get_checkpoints(run_id: str) -> list[dict]:
     result = []
 
     async for snap in _compiled_graph.aget_state_history(config):
-        meta = snap.metadata if isinstance(snap.metadata, dict) else {}
-        writes = meta.get("writes") or {}
+        meta = getattr(snap, 'metadata', {}) or {}
+        writes = meta.get("writes") or {} if isinstance(meta.get("writes"), dict) else {}
         step = meta.get("step", -1)
         node_name = next(iter(writes.keys()), None)
         result.append({
-            "checkpoint_id": snap.config["configurable"]["checkpoint_id"],
+            "checkpoint_id": (getattr(snap, 'config', {}) or {}).get("configurable", {}).get("checkpoint_id", ""),
             "step": step,
             "node": node_name,
-            "created_at": snap.created_at.isoformat() if snap.created_at else None,
-            "next": list(snap.next),
+            "created_at": getattr(snap, 'created_at', None) and snap.created_at.isoformat() or None,
+            "next": list(getattr(snap, 'next', []) or []),
             "checkpoint_ns": "",
         })
 
@@ -268,22 +277,23 @@ async def get_checkpoints(run_id: str) -> list[dict]:
         sub_config = {"configurable": {"thread_id": run_id, "checkpoint_ns": ns}}
         top_node = ns.split(":")[0]
         async for snap in _compiled_graph.aget_state_history(sub_config):
-            meta = snap.metadata if isinstance(snap.metadata, dict) else {}
-            writes = meta.get("writes") or {}
+            meta = getattr(snap, 'metadata', {}) or {}
+            writes = meta.get("writes") or {} if isinstance(meta.get("writes"), dict) else {}
             step = meta.get("step", -1)
             leaf_node = next(iter(writes.keys()), None)
             node_path = f"{top_node}/{leaf_node}" if leaf_node else None
             result.append({
-                "checkpoint_id": snap.config["configurable"]["checkpoint_id"],
+                "checkpoint_id": (getattr(snap, 'config', {}) or {}).get("configurable", {}).get("checkpoint_id", ""),
                 "step": step,
                 "node": node_path,
-                "created_at": snap.created_at.isoformat() if snap.created_at else None,
-                "next": list(snap.next),
+                "created_at": getattr(snap, 'created_at', None) and snap.created_at.isoformat() or None,
+                "next": list(getattr(snap, 'next', [])),
                 "checkpoint_ns": ns,
             })
 
     result = [r for r in result if r["node"] is not None]
-    result.sort(key=lambda r: r["created_at"] or "")
+    # 按 step 排序更可靠，created_at 可能不存在
+    result.sort(key=lambda r: r["step"] if r["step"] >= 0 else 999999)
     return result
 
 
