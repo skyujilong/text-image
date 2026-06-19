@@ -5,13 +5,14 @@ from novel2media.logger import setup_logging
 from novel2media.state import MainGraphState
 from novel2media.subgraphs.chapter import build_chapter_subgraph
 from novel2media.subgraphs.init_graph import build_init_subgraph
-from novel2media.subgraphs.setup import build_character_setup_subgraph
+from novel2media.subgraphs.setup import character_setup_subgraph_compiled
 
 setup_logging()
 
 _init_compiled = build_init_subgraph()
 _chapter_compiled = build_chapter_subgraph()
-_setup_compiled = build_character_setup_subgraph()
+# R4/R10：复用 setup 模块级单例，与 init_graph / chapter 内引用同一编译对象
+_setup_compiled = character_setup_subgraph_compiled
 
 _builder = StateGraph(MainGraphState)
 _builder.add_node("init_subgraph", _init_compiled)

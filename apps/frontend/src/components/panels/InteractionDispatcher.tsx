@@ -1,51 +1,84 @@
 import { useRunStore } from '@/store/runStore'
-import PortraitSelector from './PortraitSelector'
-import FullbodySelector from './FullbodySelector'
+import ChapterReviewPanel from './ChapterReviewPanel'
+import TriViewUploadPanel from './TriViewUploadPanel'
+import ChapterAdvancePanel from './ChapterAdvancePanel'
+import FinalDecisionPanel from './FinalDecisionPanel'
+import VoiceParamsChoicePanel from './VoiceParamsChoicePanel'
 import VoiceCardDraw from './VoiceCardDraw'
 import VoiceParamsManual from './VoiceParamsManual'
-import NewCharacterDecision from './NewCharacterDecision'
 
 interface Props {
   runId: string
 }
 
+/**
+ * 按 interrupt 叶子节点名分发到对应交互面板。
+ * node 名由后端 _resolve_interrupted_node 解析（叶子 interrupt 节点名），
+ * payload 由后端 interrupt() 传入。resume 值严格对齐后端节点校验。
+ */
 export default function InteractionDispatcher({ runId }: Props) {
   const { activeInteraction, setActiveInteraction } = useRunStore()
 
   if (!activeInteraction) return null
 
   const { node, payload } = activeInteraction
-  const p = payload as Record<string, unknown>
+  const p = (payload ?? {}) as Record<string, unknown>
   const onClose = () => setActiveInteraction(null)
 
-  if (node === 'portrait_selector') {
+  if (node === 'review_chapter') {
     return (
-      <PortraitSelector
+      <ChapterReviewPanel
         runId={runId}
-        candidates={(p.candidates as string[]) ?? []}
+        chapterId={p.chapter_id as string | undefined}
+        script={(p.script as Record<string, unknown>[]) ?? []}
+        storyboard={(p.storyboard as Record<string, unknown>[]) ?? []}
+        newCharacters={(p.new_characters as Record<string, unknown>[]) ?? []}
         open
         onClose={onClose}
       />
     )
   }
 
-  if (node === 'fullbody_selector') {
+  if (node === 'upload_tri_view') {
     return (
-      <FullbodySelector
+      <TriViewUploadPanel
         runId={runId}
-        candidates={(p.candidates as string[]) ?? []}
+        character={(p.character as Record<string, unknown>) ?? {}}
         open
         onClose={onClose}
       />
     )
   }
 
-  if (node === 'voice_card_draw') {
-    type VCand = Parameters<typeof VoiceCardDraw>[0]['candidates']
+  if (node === 'chapter_advance_decision') {
     return (
-      <VoiceCardDraw
+      <ChapterAdvancePanel
         runId={runId}
-        candidates={(p.candidates as VCand) ?? []}
+        chapterId={p.chapter_id as string | undefined}
+        plannedCount={(p.planned_count as number) ?? 0}
+        open
+        onClose={onClose}
+      />
+    )
+  }
+
+  if (node === 'final_decision') {
+    return (
+      <FinalDecisionPanel
+        runId={runId}
+        exportedCount={(p.exported_count as number) ?? 0}
+        remainingPending={(p.remaining_pending as number) ?? 0}
+        open
+        onClose={onClose}
+      />
+    )
+  }
+
+  if (node === 'voice_params_choice') {
+    return (
+      <VoiceParamsChoicePanel
+        runId={runId}
+        character={(p.character as Record<string, unknown>) ?? {}}
         open
         onClose={onClose}
       />
@@ -64,12 +97,13 @@ export default function InteractionDispatcher({ runId }: Props) {
     )
   }
 
-  if (node === 'detect_new_characters') {
-    type PChars = Parameters<typeof NewCharacterDecision>[0]['pendingCharacters']
+  if (node === 'voice_card_draw') {
+    type VCand = Parameters<typeof VoiceCardDraw>[0]['candidates']
     return (
-      <NewCharacterDecision
+      <VoiceCardDraw
         runId={runId}
-        pendingCharacters={(p.pending_characters as PChars) ?? []}
+        character={(p.character as Record<string, unknown>) ?? undefined}
+        candidates={(p.candidates as VCand) ?? []}
         open
         onClose={onClose}
       />

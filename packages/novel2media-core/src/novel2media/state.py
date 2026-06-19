@@ -7,15 +7,25 @@ from typing import TypedDict
 class ChapterStatus(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
-    DONE = "done"
-    EXPORTED = "exported"
+    PLANNED = "planned"  # 规划阶段完成：script/storyboard 已落盘并审核通过
+    RENDERED = "rendered"  # 渲染批次完成：场景图+TTS+timeline 已生成
+    DONE = "done"  # 旧流程遗留枚举值，新流程不再写入（保留以兼容历史 checkpoint）
+    EXPORTED = "exported"  # 已导出为剪映草稿
 
 
-class ChapterArtifacts(TypedDict):
+class ChapterArtifactsRequired(TypedDict):
     audio_path: str
     subtitles_path: str
     timeline_path: str
     # image_path 已含于 timeline.json 每条记录中，此处不重复存储
+
+
+class ChapterArtifacts(ChapterArtifactsRequired, total=False):
+    """章节产物路径。script_path/storyboard_path 为规划阶段落盘的不可变版本化文件路径，
+    渲染阶段从盘读回（不依赖 state 标量），故设为可选。"""
+
+    script_path: str  # <ch>/script.json 路径（adapt_script 落盘）
+    storyboard_path: str  # <ch>/storyboard.json 路径（generate_storyboard 落盘）
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +56,9 @@ class MainGraphState(TypedDict):
     worldview: str  # 世界观设定文本
 
     # 角色管理
-    characters_profile: dict  # 角色完整档案（唯一真相）
+    characters_profile: dict  # 角色完整档案（唯一真相），key 为角色名（name-based，无 id）
+    # characters_profile[name] 约定字段：appearance(外观描述)、voice_params(音色参数)、
+    # tri_view(三视图上传后的 comfyui_name，渲染阶段场景图作 reference；小角色可缺省跳过)
     ignored_characters: list[str]  # 已忽略角色名列表
 
     # 章节状态与产物（历史章节数据累积存储，支持跨章导出）
@@ -70,6 +82,15 @@ class SetupSubgraphState(TypedDict):
     setup_voice_candidates: list[dict]  # 当前角色的候选音色列表（seed + 样本路径）
     # detect_new_characters 中间结果
     pending_new_characters: list[dict]  # 待人工决策的新角色列表
+
+    # 路由控制字段（下划线前缀，interrupt 节点写回驱动条件边）。
+    # 显式声明：窄 schema 子图会丢弃未声明字段，不补则路由读不到用户决策。
+    # 默认值在各节点/路由函数用 state.get(..., 默认) 兜底，此处声明仅为持久化。
+    _voice_route: str  # voice_params_choice 路由：manual / draw
+    _manual_review: str  # voice_params_manual 审核：pass / revise
+    _manual_retry: str  # manual revise 后重试方向：adjust / redraw
+    _card_selected: bool  # voice_card_draw 是否选定音色
+    _route: str  # 通用路由复用字段（如 check_needs_visual 分支）
 
 
 class InitSubgraphState(MainGraphState, SetupSubgraphState):
@@ -99,6 +120,12 @@ class ChapterSubgraphState(InitSubgraphState):
     # 审核重试计数器（load_chapter 统一重置）
     script_review_attempts: int  # 剧本审核已重试次数
     storyboard_review_attempts: int  # 分镜审核已重试次数
+
+    # 章节级路由控制字段（interrupt 节点写回，load_chapter 统一重置）。
+    # 显式声明原因同 SetupSubgraphState：避免窄 schema 子图丢弃导致路由失控。
+    _review_decision: str  # review_chapter 审核：pass / revise
+    _chapter_advance: str  # chapter_advance_decision：next / render
+    _final_decision: str  # final_decision：done / continue
 
 
 # 向后兼容别名：等价于最全的 ChapterSubgraphState。

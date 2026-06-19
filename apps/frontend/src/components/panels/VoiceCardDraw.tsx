@@ -5,7 +5,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
-import { cn } from '@/lib/utils'
 
 interface VoiceCandidate {
   index: number
@@ -16,13 +15,18 @@ interface VoiceCandidate {
 
 interface Props {
   runId: string
+  character?: { name?: string; appearance?: string }
   candidates: VoiceCandidate[]
   open: boolean
   onClose: () => void
 }
 
-export default function VoiceCardDraw({ runId, candidates, open, onClose }: Props) {
-  const [selected, setSelected] = useState<number | null>(null)
+/**
+ * 音色抽卡面板。TTS 尚未接入时候选为空，仅支持“用默认音色”（resume 0）。
+ * 后端 voice_card_draw 对 idx<0（拒绝）在 TTS 未接入时会抛错，故此处不提供拒绝入口，
+ * 避免死循环或静默接受。TTS 接入后补回候选列表与拒绝/重抽逻辑。
+ */
+export default function VoiceCardDraw({ runId, character, candidates, open, onClose }: Props) {
   const [loading, setLoading] = useState(false)
   const { setActiveInteraction } = useRunStore()
 
@@ -39,48 +43,45 @@ export default function VoiceCardDraw({ runId, candidates, open, onClose }: Prop
     }
   }
 
-  const handleRejectAll = () => handleConfirm(-1)
+  const hasCandidates = candidates.length > 0
 
   return (
     <Sheet open={open} onOpenChange={(o: boolean) => !o && onClose()}>
       <SheetContent side="right" className="w-[440px] sm:max-w-[440px]">
         <SheetHeader>
-          <SheetTitle>选择语音音色（voice_card_draw）</SheetTitle>
+          <SheetTitle>选择语音音色（voice_card_draw{character?.name ? ` · ${character.name}` : ''}）</SheetTitle>
         </SheetHeader>
 
         <div className="flex flex-col gap-3 py-4 overflow-y-auto max-h-[70vh]">
-          {candidates.map((c) => (
-            <div
-              key={c.index}
-              className={cn(
-                'border-2 rounded p-3 cursor-pointer',
-                selected === c.index ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-400'
-              )}
-              onClick={() => setSelected(c.index)}
-            >
-              <div className="font-medium text-sm">{c.label}</div>
-              <div className="text-xs text-gray-400">seed: {c.seed}</div>
-              {c.sample_path && (
-                <audio
-                  controls
-                  src={`/api/files/${encodeURIComponent(c.sample_path)}`}
-                  className="mt-2 w-full h-8"
-                  onClick={(e) => e.stopPropagation()}
-                />
-              )}
-            </div>
-          ))}
+          {hasCandidates ? (
+            candidates.map((c) => (
+              <div
+                key={c.index}
+                className="border-2 rounded p-3 cursor-pointer hover:border-gray-400"
+                onClick={() => handleConfirm(c.index)}
+              >
+                <div className="font-medium text-sm">{c.label}</div>
+                <div className="text-xs text-gray-400">seed: {c.seed}</div>
+                {c.sample_path && (
+                  <audio
+                    controls
+                    src={`/api/files/${encodeURIComponent(c.sample_path)}`}
+                    className="mt-2 w-full h-8"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                )}
+              </div>
+            ))
+          ) : (
+            <p className="text-sm text-gray-500">
+              TTS 抽卡尚未接入，无候选音色。点击下方按钮使用默认音色继续。
+            </p>
+          )}
         </div>
 
         <SheetFooter>
-          <Button variant="outline" onClick={handleRejectAll} disabled={loading}>
-            全部拒绝（重抽）
-          </Button>
-          <Button
-            onClick={() => selected !== null && handleConfirm(selected)}
-            disabled={selected === null || loading}
-          >
-            {loading ? '提交中...' : '确认选择'}
+          <Button onClick={() => handleConfirm(0)} disabled={loading}>
+            {loading ? '提交中...' : '用默认音色'}
           </Button>
         </SheetFooter>
       </SheetContent>

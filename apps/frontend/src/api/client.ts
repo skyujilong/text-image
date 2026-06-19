@@ -123,4 +123,19 @@ export const api = {
 
   getCheckpoints: (runId: string) =>
     request<CheckpointEntry[]>(`/runs/${runId}/checkpoints`),
+
+  // 上传文件（如角色三视图）到 run 的 novel_dir 子目录，并转存到 ComfyUI input。
+  // 返回 { path, comfyui_name }；前端拿 comfyui_name 后 resume 给 upload_tri_view 节点。
+  uploadFile: async (runId: string, file: File, subdir: string) => {
+    const form = new FormData()
+    form.append('run_id', runId)
+    form.append('subdir', subdir)
+    form.append('file', file)
+    const res = await fetch(`${BASE}/upload`, { method: 'POST', body: form })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`HTTP ${res.status}: ${text}`)
+    }
+    return res.json() as Promise<{ path: string; comfyui_name: string }>
+  },
 }

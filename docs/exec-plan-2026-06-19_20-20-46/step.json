@@ -1,0 +1,38 @@
+[
+  {
+    "step": "01-schema-foundation",
+    "state": "complate"
+  },
+  {
+    "step": "02-subgraph-structure",
+    "state": "complate"
+  },
+  {
+    "step": "03-upstream-llm",
+    "state": "complate"
+  },
+  {
+    "step": "04-interrupt-nodes",
+    "state": "complate"
+  },
+  {
+    "step": "05-render-subnodes",
+    "state": "complate"
+  },
+  {
+    "step": "06-setup-refactor",
+    "state": "complate"
+  },
+  {
+    "step": "07-upload-api",
+    "state": "complate"
+  },
+  {
+    "step": "08-frontend-panels",
+    "state": "complate"
+  },
+  {
+    "step": "09-e2e-verify",
+    "state": "complate"
+  }
+]
