@@ -28,7 +28,7 @@ def test_graph_state_shape():
         "chapters_status",
         "chapters_artifacts",
         "current_chapter_id",
-        "current_chapter_text",
+        "current_chapter_text_path",
         "current_script",
         "current_storyboard",
         "current_audio_path",

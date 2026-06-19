@@ -9,7 +9,7 @@ from novel2media.nodes.chapter_nodes import (
     review_storyboard_llm,
 )
 from novel2media.nodes.image_nodes import generate_images
-from novel2media.state import GraphState
+from novel2media.state import ChapterSubgraphState, GraphState
 from novel2media.subgraphs.setup import build_character_setup_subgraph
 
 
@@ -64,7 +64,7 @@ def _placeholder_node(name: str):
 
 
 def build_chapter_subgraph():
-    builder = StateGraph(GraphState)
+    builder = StateGraph(ChapterSubgraphState)
 
     builder.add_node("load_chapter", load_chapter)
     builder.add_node("adapt_script", _placeholder_node("adapt_script"))

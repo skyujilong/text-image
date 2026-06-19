@@ -27,6 +27,8 @@ export interface RunMeta {
   status: 'pending' | 'running' | 'waiting_human' | 'done' | 'error'
   created_at: string
   params: Record<string, unknown>
+  parent_run_id?: string | null
+  fork_source_checkpoint_id?: string | null
 }
 
 export interface CheckpointEntry {
@@ -87,6 +89,20 @@ export const api = {
     request<{ ok: boolean }>(`/runs/${runId}/restart-from`, {
       method: 'POST',
       body: JSON.stringify({ node_path: nodePath }),
+    }),
+
+  // 从某 checkpoint 分叉出独立新 run（保留原 run 历史）
+  forkRun: (runId: string, checkpointId: string | null) =>
+    request<{ run_id: string }>(`/runs/${runId}/fork`, {
+      method: 'POST',
+      body: JSON.stringify({ checkpoint_id: checkpointId }),
+    }),
+
+  // 重命名 run
+  updateRun: (runId: string, novelTitle: string) =>
+    request<{ ok: boolean }>(`/runs/${runId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ novel_title: novelTitle }),
     }),
 
   validatePath: (path: string) =>

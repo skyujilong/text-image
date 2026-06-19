@@ -47,7 +47,7 @@ def load_config(state: dict) -> dict:
         "setup_voice_candidates": [],
         "pending_new_characters": [],
         "current_chapter_id": "",
-        "current_chapter_text": "",
+        "current_chapter_text_path": "",
         "current_script": [],
         "current_storyboard": [],
         "current_audio_path": "",

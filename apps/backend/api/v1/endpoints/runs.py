@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 import services.graph_runner as runner
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from schemas.models import RestartFromRequest, StartRunRequest
+from schemas.models import ForkRequest, RestartFromRequest, StartRunRequest, UpdateRunRequest
 
 router = APIRouter()
 
@@ -41,6 +41,27 @@ async def retry_run(run_id: str):
     if meta.status != "error":
         raise HTTPException(status_code=409, detail="run is not in error state")
     await runner.retry_run(run_id)
+    return {"ok": True}
+
+
+@router.post("/runs/{run_id}/fork")
+async def fork_run(run_id: str, req: ForkRequest):
+    """从 run 的某个历史 checkpoint 分叉出独立新 run（保留原 run 历史）。"""
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    new_run_id = await runner.fork_from_checkpoint(run_id, req.checkpoint_id)
+    return {"run_id": new_run_id}
+
+
+@router.patch("/runs/{run_id}")
+async def update_run(run_id: str, req: UpdateRunRequest):
+    """更新 run 元信息（目前仅支持重命名 novel_title）。"""
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if req.novel_title is not None:
+        await runner.update_run_title(run_id, req.novel_title)
     return {"ok": True}
 
 

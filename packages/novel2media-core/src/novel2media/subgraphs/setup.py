@@ -14,17 +14,17 @@ from novel2media.nodes.setup_nodes import (
     voice_params_choice,
     voice_params_manual,
 )
-from novel2media.state import GraphState
+from novel2media.state import SetupSubgraphState
 
 
-def _route_after_dispatcher(state: GraphState) -> str:
+def _route_after_dispatcher(state: SetupSubgraphState) -> str:
     char = state.get("setup_current_character", {})
     if not char:
         return END
     return "check_needs_visual"
 
 
-def _route_after_check_visual(state: GraphState) -> str:
+def _route_after_check_visual(state: SetupSubgraphState) -> str:
     route = state.get("_route", "voice_params_choice")
     if route != "image_card_draw":
         return "voice_params_choice"
@@ -32,16 +32,16 @@ def _route_after_check_visual(state: GraphState) -> str:
     return "portrait_selector" if state.get("setup_image_candidates") else "generate_portrait_candidates"
 
 
-def _route_after_fix_character_visual(state: GraphState) -> str:
+def _route_after_fix_character_visual(state: SetupSubgraphState) -> str:
     # resume 场景：全身候选图已存在，跳过生成
     return "fullbody_selector" if state.get("setup_image_candidates") else "generate_fullbody_candidates"
 
 
-def _route_after_voice_choice(state: GraphState) -> str:
+def _route_after_voice_choice(state: SetupSubgraphState) -> str:
     return state.get("_voice_route", "voice_card_draw")
 
 
-def _route_after_manual_review(state: GraphState) -> str:
+def _route_after_manual_review(state: SetupSubgraphState) -> str:
     decision = state.get("_manual_review", "pass")
     if decision == "pass":
         return "fix_character_profile"
@@ -49,14 +49,14 @@ def _route_after_manual_review(state: GraphState) -> str:
     return "voice_params_manual" if retry == "adjust" else "voice_card_draw"
 
 
-def _route_after_card_draw(state: GraphState) -> str:
+def _route_after_card_draw(state: SetupSubgraphState) -> str:
     if state.get("_card_selected"):
         return "fix_character_profile"
     return "voice_card_draw"  # 全部拒绝 → 重抽
 
 
 def build_character_setup_subgraph():
-    builder = StateGraph(GraphState)
+    builder = StateGraph(SetupSubgraphState)
 
     builder.add_node("setup_dispatcher", setup_dispatcher)
     builder.add_node("check_needs_visual", check_needs_visual)

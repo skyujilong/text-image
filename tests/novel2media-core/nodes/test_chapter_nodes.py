@@ -29,7 +29,9 @@ def test_load_chapter_registers_new_chapters(tmp_path):
     result = load_chapter(state)
     assert result["current_chapter_id"] == "chapter_01"
     assert result["chapters_status"]["chapter_01"] == "processing"
-    assert result["current_chapter_text"] == "内容"
+    # 章节原文改为只存源文件路径，不再把整章文本放进 state
+    assert result["current_chapter_text_path"].endswith("chapter_01.txt")
+    assert Path(result["current_chapter_text_path"]).read_text(encoding="utf-8") == "内容"
 
 
 def test_load_chapter_resets_current_fields(tmp_path):

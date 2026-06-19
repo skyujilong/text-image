@@ -239,7 +239,78 @@ async def restart_from_node(run_id: str, node_path: str) -> None:
     asyncio.create_task(_run_graph(None, replay_config, run_id))
 
 
+async def fork_from_checkpoint(run_id: str, checkpoint_id: str | None) -> str:
+    """从 run 的某个历史 checkpoint 分叉出一个全新 run（独立 thread_id）。
+
+    实现:把源 thread 的全部 checkpoints + writes 复制到新 thread_id
+    （parent 链内部自洽），再用目标 checkpoint_id 从该点继续执行。
+    符合 LangGraph append-only 时间旅行语义——原 run 历史不动，新 run
+    作为独立分支生长。fork 仅支持顶层 checkpoint 分叉。
+    """
+    if _compiled_graph is None or _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+
+    # 1. 确定源 checkpoint_id（缺省取顶层最新快照）
+    src_config = {"configurable": {"thread_id": run_id}}
+    if checkpoint_id is None:
+        src_snap = await _compiled_graph.aget_state(src_config)
+        if src_snap is None:
+            raise ValueError(f"run {run_id!r} has no checkpoint to fork from")
+        checkpoint_id = (
+            (getattr(src_snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id")
+        )
+    if not checkpoint_id:
+        raise ValueError(f"checkpoint not found for run {run_id!r}")
+
+    # 2. 生成新 run_id / thread_id
+    new_run_id = str(uuid.uuid4())
+
+    # 3. 复制源 thread 的全部 checkpoints + writes 到新 thread_id
+    #    checkpoint_id / parent_checkpoint_id 保持不变，新 thread 内部 parent 链自洽
+    async with aiosqlite.connect(CHECKPOINT_DB) as db:
+        await db.execute(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) "
+            "SELECT ?, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata "
+            "FROM checkpoints WHERE thread_id=?",
+            (new_run_id, run_id),
+        )
+        await db.execute(
+            "INSERT INTO writes "
+            "(thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value) "
+            "SELECT ?, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value "
+            "FROM writes WHERE thread_id=?",
+            (new_run_id, run_id),
+        )
+        await db.commit()
+
+    # 4. runs.db 记录新 run，继承源 novel_dir/title/params 并标记血缘
+    src_meta = await _runs_db.get(run_id)
+    if src_meta is None:
+        raise ValueError(f"run {run_id!r} not found in runs.db")
+    await _runs_db.insert(
+        new_run_id,
+        src_meta.novel_dir,
+        src_meta.novel_title,
+        src_meta.params,
+        parent_run_id=run_id,
+        fork_source_checkpoint_id=checkpoint_id,
+    )
+
+    # 5. 从目标 checkpoint 继续（新 thread 独立分支）
+    new_config = {"configurable": {"thread_id": new_run_id, "checkpoint_id": checkpoint_id}}
+    get_or_create_sse_queue(new_run_id)
+    asyncio.create_task(_run_graph(None, new_config, new_run_id))
+    return new_run_id
+
+
 async def get_node_state(run_id: str, node_path: str) -> dict | None:
+    """查看某节点执行前的 state 快照。
+
+    定位方式与 restart_from_node 一致:遍历历史(最新在前),找
+    snap.next 包含目标节点的快照——即该节点即将执行前的状态。
+    不依赖 metadata.writes(在 AsyncSqliteSaver 下该字段为空)。
+    """
     if _compiled_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     parts = node_path.split("/")
@@ -249,12 +320,13 @@ async def get_node_state(run_id: str, node_path: str) -> dict | None:
     config = {"configurable": {"thread_id": run_id}}
 
     if len(parts) == 1:
+        # 顶层节点:找 next 包含该节点的最新快照(= 该节点执行前)
         async for snap in _compiled_graph.aget_state_history(config):
-            meta = getattr(snap, "metadata", {}) or {}
-            writes = meta.get("writes") if isinstance(meta.get("writes"), dict) else {}
-            if writes and top_node in writes:
+            snap_next = list(getattr(snap, "next", []) or [])
+            if top_node in snap_next:
                 return {"node": top_node, "values": getattr(snap, "values", {})}
     else:
+        # 子图内节点:在子命名空间历史里找 next 包含 leaf_node 的最新快照
         async with (
             aiosqlite.connect(CHECKPOINT_DB) as db,
             db.execute(
@@ -268,15 +340,20 @@ async def get_node_state(run_id: str, node_path: str) -> dict | None:
         sub_ns = ns_rows[-1][0]  # type: ignore
         sub_config = {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns}}
         async for snap in _compiled_graph.aget_state_history(sub_config):
-            meta = getattr(snap, "metadata", {}) or {}
-            writes = meta.get("writes") if isinstance(meta.get("writes"), dict) else {}
-            if writes and leaf_node in writes:
+            snap_next = list(getattr(snap, "next", []) or [])
+            if leaf_node in snap_next:
                 return {"node": leaf_node, "values": getattr(snap, "values", {})}
 
     return None
 
 
 async def get_checkpoints(run_id: str) -> list[dict]:
+    """返回 run 的全部 checkpoint 历史条目(顶层 + 各子命名空间)。
+
+    节点定位用 snap.next(该快照之后将执行的节点),不再依赖
+    metadata.writes(AsyncSqliteSaver 下为空)。next 为空的快照
+    是入口/END 态,以 node=None 保留,前端可标记为初始化或结束。
+    """
     if _compiled_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     config = {"configurable": {"thread_id": run_id}}
@@ -284,9 +361,9 @@ async def get_checkpoints(run_id: str) -> list[dict]:
 
     async for snap in _compiled_graph.aget_state_history(config):
         meta = getattr(snap, "metadata", {}) or {}
-        writes = meta.get("writes") or {} if isinstance(meta.get("writes"), dict) else {}
         step = meta.get("step", -1)
-        node_name = next(iter(writes.keys()), None)
+        snap_next = list(getattr(snap, "next", []) or [])
+        node_name = snap_next[0] if snap_next else None
         created_at = getattr(snap, "created_at", None)
         result.append(
             {
@@ -294,7 +371,7 @@ async def get_checkpoints(run_id: str) -> list[dict]:
                 "step": step,
                 "node": node_name,
                 "created_at": created_at.isoformat() if created_at and hasattr(created_at, "isoformat") else None,
-                "next": list(getattr(snap, "next", []) or []),
+                "next": snap_next,
                 "checkpoint_ns": "",
             }
         )
@@ -313,10 +390,10 @@ async def get_checkpoints(run_id: str) -> list[dict]:
         top_node = ns.split(":")[0]
         async for snap in _compiled_graph.aget_state_history(sub_config):
             meta = getattr(snap, "metadata", {}) or {}
-            writes = meta.get("writes") or {} if isinstance(meta.get("writes"), dict) else {}
             step = meta.get("step", -1)
-            leaf_node = next(iter(writes.keys()), None)
-            node_path = f"{top_node}/{leaf_node}" if leaf_node else None
+            snap_next = list(getattr(snap, "next", []) or [])
+            leaf_node = snap_next[0] if snap_next else None
+            node_path = f"{top_node}/{leaf_node}" if leaf_node else top_node
             created_at = getattr(snap, "created_at", None)
             result.append(
                 {
@@ -326,12 +403,11 @@ async def get_checkpoints(run_id: str) -> list[dict]:
                     "step": step,
                     "node": node_path,
                     "created_at": created_at.isoformat() if created_at and hasattr(created_at, "isoformat") else None,
-                    "next": list(getattr(snap, "next", []) or []),
+                    "next": snap_next,
                     "checkpoint_ns": ns,
                 }
             )
 
-    result = [r for r in result if r["node"] is not None]
     # 按 step 排序更可靠，created_at 可能不存在
     result.sort(key=lambda r: r["step"] if r["step"] >= 0 else 999999)
     return result
@@ -347,3 +423,9 @@ async def get_run(run_id: str):
     if _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     return await _runs_db.get(run_id)
+
+
+async def update_run_title(run_id: str, novel_title: str):
+    if _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+    await _runs_db.update_title(run_id, novel_title)

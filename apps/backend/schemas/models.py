@@ -32,6 +32,15 @@ class RestartFromRequest(BaseModel):
     node_path: str
 
 
+class ForkRequest(BaseModel):
+    # 缺省从 run 最新 checkpoint 分叉；指定则从该历史 checkpoint 分叉
+    checkpoint_id: str | None = None
+
+
+class UpdateRunRequest(BaseModel):
+    novel_title: str | None = None
+
+
 class RunMeta(BaseModel):
     run_id: str
     novel_dir: str
@@ -39,6 +48,9 @@ class RunMeta(BaseModel):
     status: Literal["pending", "running", "waiting_human", "done", "error"] = "pending"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     params: dict = Field(default_factory=dict)
+    # fork 血缘：parent_run_id 为源 run，fork_source_checkpoint_id 为分叉点
+    parent_run_id: str | None = None
+    fork_source_checkpoint_id: str | None = None
 
 
 class SSEEvent(BaseModel):

@@ -29,7 +29,7 @@ def load_chapter(state: dict) -> dict:
         return {
             "chapters_status": chapters_status,
             "current_chapter_id": "",
-            "current_chapter_text": "",
+            "current_chapter_text_path": "",
             "current_script": [],
             "current_storyboard": [],
             "current_audio_path": "",
@@ -43,13 +43,15 @@ def load_chapter(state: dict) -> dict:
 
     ch_id = pending[0]
     chapters_status[ch_id] = "processing"
-    ch_text = (chapters_dir / f"{ch_id}.txt").read_text(encoding="utf-8")
+    # 章节原文是不可变源文件，仅存路径；不再把整章文本放进 state（避免每条
+    # checkpoint 复制一份）。需要原文时按路径读取。
+    ch_text_path = str(chapters_dir / f"{ch_id}.txt")
     log.info("load_chapter: 开始处理章节", chapter=ch_id)
 
     return {
         "chapters_status": chapters_status,
         "current_chapter_id": ch_id,
-        "current_chapter_text": ch_text,
+        "current_chapter_text_path": ch_text_path,
         "current_script": [],
         "current_storyboard": [],
         "current_audio_path": "",
