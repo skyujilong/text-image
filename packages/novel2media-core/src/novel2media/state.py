@@ -20,9 +20,9 @@ class ChapterArtifacts(TypedDict):
 
 class GraphState(TypedDict):
     # 全局配置
-    novel_title: str
-    novel_dir: str
-    worldview: str
+    novel_title: str  # 小说标题
+    novel_dir: str  # 小说资源根目录路径
+    worldview: str  # 世界观设定文本
 
     # 角色管理
     characters_profile: dict  # 角色完整档案（唯一真相）
@@ -33,19 +33,19 @@ class GraphState(TypedDict):
     chapters_artifacts: dict[str, ChapterArtifacts]  # chapter_id → 产物路径
 
     # 当前章节中间状态（load_chapter 时全部重置）
-    current_chapter_id: str
-    current_chapter_text: str
-    current_script: list[dict]
-    current_storyboard: list[dict]
-    current_audio_path: str
-    current_subtitles_path: str
+    current_chapter_id: str  # 当前处理的章节 ID
+    current_chapter_text: str  # 当前章节原文内容
+    current_script: list[dict]  # 当前章节剧本（对白 + 动作序列）
+    current_storyboard: list[dict]  # 当前章节分镜列表
+    current_audio_path: str  # 当前章节合成音频文件路径
+    current_subtitles_path: str  # 当前章节字幕文件路径
     current_timestamps: list[dict]  # 含全局偏移后时间戳
     current_image_map: dict[str, str]  # storyboard_id → image_path（generate_images 中间结果）
-    current_timeline_path: str
+    current_timeline_path: str  # 当前章节时间轴文件路径
 
     # 审核重试计数器（load_chapter 统一重置）
-    script_review_attempts: int
-    storyboard_review_attempts: int
+    script_review_attempts: int  # 剧本审核已重试次数
+    storyboard_review_attempts: int  # 分镜审核已重试次数
 
     # character_setup_subgraph 内部状态（子图自驱动队列循环）
     setup_queue: list[dict]  # 待设定角色队列，dispatcher 逐个弹出
