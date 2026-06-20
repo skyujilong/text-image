@@ -127,9 +127,30 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
     await _runs_db.update_status(run_id, "running")
 
     try:
-        async for ns, event in _compiled_graph.astream(input, config=config, stream_mode="updates", subgraphs=True):
+        # 同时订阅 updates（节点产出 update→done）和 debug（节点开始→running）。
+        # updates 模式只在节点执行完回调一次，拿不到「节点开始」信号，前端无法显示
+        # running 态/边流动动画。debug 模式的 task 事件在节点开始执行时触发，
+        # payload.name 为节点名，配合 ns 可生成 init_subgraph/load_config 这种 status_key。
+        # 多 mode + subgraphs=True 时 chunk 元组为 (ns, mode, payload)。
+        async for ns, mode, payload in _compiled_graph.astream(
+            input, config=config, stream_mode=["updates", "debug"], subgraphs=True
+        ):
+            if mode == "debug":
+                # 仅 task 事件（节点开始）有用；task_result/execution_* 等忽略，避免噪声。
+                if payload.get("type") != "task":
+                    continue
+                task_name = payload.get("payload", {}).get("name") if isinstance(payload.get("payload"), dict) else None
+                if not task_name:
+                    continue
+                # propagate=True 让祖先子图也标 running（下钻父节点显示运行中）；
+                # _emit 只给叶子 key 带 node 字段，running 的祖先事件不带 node，
+                # useRunStream 仅对 waiting_human+node 弹交互窗，故不会误弹窗。
+                await _emit(run_id, _ns_to_path(ns, task_name), "running", propagate=True)
+                continue
+
+            # mode == "updates"
             # ns: tuple[str, ...], event: dict[str, Any]
-            event_dict = event if isinstance(event, dict) else {}
+            event_dict = payload if isinstance(payload, dict) else {}
             for node_name, update in event_dict.items():
                 if node_name == "__interrupt__":
                     # stream_mode=updates+subgraphs=True 时，interrupt 会在子图层和
