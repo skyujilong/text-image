@@ -71,15 +71,16 @@ def upload_tri_view(state: dict) -> dict:
 def fix_character_profile(state: dict) -> dict:
     """把当前角色信息合并进 characters_profile 并落盘 characters_profile.json。
 
-    R11：name-based——以 char["name"] 作 profile key（去掉旧 id key）；
-    name 已作 key，不再作为字段重复写入；tri_view/voice_params/appearance 随 char 一并保留。
+    R11：name-based——以 char["name"] 作 profile key（去掉旧 id key）。
+    value 保留 name 字段（与 CharacterProfile 类型约定一致，便于序列化/前端展示/
+    脱离 key 使用）；tri_view/tri_view_prompt/voice_params/appearance 随 char 一并保留。
     """
     char = state.get("setup_current_character", {})
     char_name = char.get("name")
     if not char_name:
         raise ValueError(f"fix_character_profile: 当前角色缺 name 字段: {char!r}")
     profile = dict(state.get("characters_profile", {}))
-    profile[char_name] = {k: v for k, v in char.items() if k not in ("name", "id")}
+    profile[char_name] = {k: v for k, v in char.items() if k != "id"}
     novel_dir = Path(state.get("novel_dir", "."))
     out_dir = novel_dir / "characters"
     out_dir.mkdir(parents=True, exist_ok=True)

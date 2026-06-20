@@ -10,6 +10,7 @@ import { useRunStore } from '@/store/runStore'
 interface Character {
   name?: string
   appearance?: string
+  tri_view_prompt?: string
 }
 interface Props {
   runId: string
@@ -72,6 +73,9 @@ export default function TriViewUploadPanel({ runId, character, open, onClose }: 
         <div className="flex flex-col gap-3 py-4">
           {character.appearance && (
             <p className="text-sm text-gray-500">外观：{character.appearance}</p>
+          )}
+          {character.tri_view_prompt && (
+            <p className="text-xs text-gray-400">三视图参考：{character.tri_view_prompt}</p>
           )}
           <p className="text-xs text-gray-400">
             上传一张三视图（正面/侧面/背面），用于渲染阶段场景图作角色参考。小角色可跳过。

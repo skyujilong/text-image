@@ -1,5 +1,6 @@
 import { useRunStore } from '@/store/runStore'
 import ChapterReviewPanel from './ChapterReviewPanel'
+import InitialCharactersReviewPanel from './InitialCharactersReviewPanel'
 import TriViewUploadPanel from './TriViewUploadPanel'
 import ChapterAdvancePanel from './ChapterAdvancePanel'
 import FinalDecisionPanel from './FinalDecisionPanel'
@@ -33,6 +34,17 @@ export default function InteractionDispatcher({ runId }: Props) {
         script={(p.script as Record<string, unknown>[]) ?? []}
         storyboard={(p.storyboard as Record<string, unknown>[]) ?? []}
         newCharacters={(p.new_characters as Record<string, unknown>[]) ?? []}
+        open
+        onClose={onClose}
+      />
+    )
+  }
+
+  if (node === 'review_initial_characters') {
+    return (
+      <InitialCharactersReviewPanel
+        runId={runId}
+        characters={(p.characters as Record<string, unknown>[]) ?? []}
         open
         onClose={onClose}
       />

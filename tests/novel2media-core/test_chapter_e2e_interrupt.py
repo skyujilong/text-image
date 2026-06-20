@@ -51,7 +51,7 @@ async def test_chapter_subgraph_stops_at_review_chapter(tmp_path, monkeypatch):
         [
             [{"speaker": "主角", "text": "你好", "action": "挥手"}],
             [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "a room"}],
-            [{"name": "主角", "appearance": "黑发青年"}],
+            [{"name": "主角", "appearance": "黑发青年", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, black hair young man, consistent outfit, plain background"}],
         ],
     )
 
@@ -74,6 +74,7 @@ async def test_chapter_subgraph_stops_at_review_chapter(tmp_path, monkeypatch):
     assert len(payload["script"]) == 1
     assert len(payload["storyboard"]) == 1
     assert payload["new_characters"][0]["name"] == "主角"
+    assert payload["new_characters"][0]["tri_view_prompt"]  # 角色模型三字段
 
     # 章节状态在 interrupt 前仍为 processing（pass 后才标 planned）
     # interrupt 不改 chapters_status，由 resume 后 review_chapter 完成
@@ -89,7 +90,7 @@ async def test_chapter_subgraph_resume_pass_marks_planned(tmp_path, monkeypatch)
         [
             [{"speaker": "主角", "text": "你好", "action": "挥手"}],
             [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "a room"}],
-            [{"name": "主角", "appearance": "黑发青年"}],
+            [{"name": "主角", "appearance": "黑发青年", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, black hair young man, consistent outfit, plain background"}],
         ],
     )
 
@@ -109,11 +110,14 @@ async def test_chapter_subgraph_resume_pass_marks_planned(tmp_path, monkeypatch)
 
     # review_chapter pass 已标 planned
     assert result["chapters_status"]["chapter_01"] == "planned"
-    # 新角色进 setup_queue
+    # 新角色进 setup_queue（tri_view_prompt 随角色流转）
     assert result["setup_queue"][0]["name"] == "主角"
+    assert result["setup_queue"][0]["tri_view_prompt"]
     # 应停在 character_setup_subgraph 内的 upload_tri_view interrupt（setup_queue 非空）
     assert "__interrupt__" in result
-    assert result["__interrupt__"][0].value["type"] == "tri_view_upload"
+    interrupt_payload = result["__interrupt__"][0].value
+    assert interrupt_payload["type"] == "tri_view_upload"
+    assert interrupt_payload["character"]["tri_view_prompt"]  # 上传面板参考提示词
 
 
 @pytest.mark.asyncio
@@ -126,10 +130,10 @@ async def test_chapter_subgraph_resume_revise_loops_back(tmp_path, monkeypatch):
         [
             [{"speaker": "主角", "text": "v1", "action": ""}],
             [{"storyboard_id": "sb_001", "scene_change": True, "text": "v1", "speaker": "主角", "scene_prompt": "p"}],
-            [{"name": "主角", "appearance": "黑发"}],
+            [{"name": "主角", "appearance": "黑发", "tri_view_prompt": "character turnaround sheet, front side back, black hair, consistent outfit"}],
             [{"speaker": "主角", "text": "v2-revised", "action": "点头"}],
             [{"storyboard_id": "sb_001", "scene_change": True, "text": "v2", "speaker": "主角", "scene_prompt": "p2"}],
-            [{"name": "主角", "appearance": "黑发"}],
+            [{"name": "主角", "appearance": "黑发", "tri_view_prompt": "character turnaround sheet, front side back, black hair, consistent outfit"}],
         ],
     )
 

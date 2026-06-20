@@ -192,8 +192,8 @@ def test_fix_character_profile_merges_into_profile(tmp_path):
     # R11：name-based key
     assert "主角" in profile
     assert "旁白" in profile  # 原有保留
-    # name 作 key，不再作为字段重复；id 不入
-    assert "name" not in profile["主角"]
+    # value 保留 name（与 CharacterProfile 类型约定一致）；id 不入
+    assert profile["主角"]["name"] == "主角"
     assert "id" not in profile["主角"]
     assert profile["主角"]["voice_params"]["seed"] == 1234
     assert profile["主角"]["tri_view"] == "tri_zhujue.png"

@@ -62,8 +62,9 @@ def build_generate_storyboard_prompt(script: list[dict], characters_profile: dic
 def build_detect_new_characters_prompt(chapter_text: str, existing_names: set[str]) -> str:
     """构造新角色检测提示词。
 
-    输出 schema：JSON 数组，每个元素 {{"name": str, "appearance": str}}（无 id）。
-    仅输出本章新出现、且不在 existing_names 中的角色。
+    输出 schema：JSON 数组，每个元素 {{"name": str, "appearance": str, "tri_view_prompt": str}}（无 id）。
+    仅输出本章新出现、且不在 existing_names 中的角色。tri_view_prompt 为三视图生成提示词，
+    供人工上传三视图时参考。
     """
     existing = "、".join(sorted(existing_names)) if existing_names else "（无）"
     return f"""你是一个小说角色提取器。从下面的章节原文中，提取本章新出现的、有名字的角色。
@@ -72,13 +73,16 @@ def build_detect_new_characters_prompt(chapter_text: str, existing_names: set[st
 
 要求：
 1. 只提取有明确名字的角色（旁白、"众人"等泛指不算）。
-2. 每个角色输出 name（角色名）与 appearance（外观描述：性别、年龄、发色服饰等，用于后续生图；原文未提及则据上下文简述）。
-3. 不要输出 id 字段。
-4. 若本章无新角色，输出空数组 []。
-5. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
+2. 每个角色输出 name（角色名）、appearance（外观描述：性别、年龄、发色服饰等；原文未提及则据上下文简述）。
+3. tri_view_prompt：用于生成角色三视图的英文提示词，需包含 front view / side view / back view、
+   consistent outfit / hairstyle / body shape、character turnaround sheet、plain background，
+   确保三个视角角色一致。基于 appearance 推导。
+4. 不要输出 id 字段。
+5. 若本章无新角色，输出空数组 []。
+6. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
 
 输出格式示例：
-[{{"name": "李雷", "appearance": "青年男性，黑色短发，穿白色衬衫"}}]
+[{{"name": "李雷", "appearance": "青年男性，黑色短发，穿白色衬衫", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, young male, black short hair, white shirt, consistent outfit, plain background, masterpiece, best quality"}}]
 
 章节原文：
 {chapter_text}

@@ -132,17 +132,42 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
             event_dict = event if isinstance(event, dict) else {}
             for node_name, update in event_dict.items():
                 if node_name == "__interrupt__":
+                    # stream_mode=updates+subgraphs=True 时，interrupt 会在子图层和
+                    # 主图层各产生一条 __interrupt__ 事件（冒泡重复信号）。
+                    # 子图层那条(ns 非空)发生时，interrupt 尚未冒泡到顶层 checkpoint，
+                    # _resolve_interrupted_node 遍历顶层 task 找不到带 interrupts 的任务，
+                    # 返回 leaf='unknown'。若照发，前端会 setActiveInteraction({node:'unknown'})，
+                    # InteractionDispatcher 无分支匹配 → 不弹窗，run 卡在 waiting_human。
+                    # 故仅处理主图层(ns==())那条：此时顶层 task 已带上 interrupts，能正确
+                    # 解析出叶子节点名(如 review_initial_characters)。子图层重复信号跳过。
+                    if ns:
+                        continue
                     interrupt_val = update[0].value if update else {}
                     snap = await _compiled_graph.aget_state(config, subgraphs=True)
                     leaf_name, leaf_path = _resolve_interrupted_node(snap)
+                    if leaf_name == "unknown":
+                        # 解析失败属于异常态：宁可不发事件让前端保持当前态等待正确事件，
+                        # 也不要发 node=unknown 的垃圾事件覆盖掉（可能稍后到达的）正确事件。
+                        log.warning("interrupt 解析到 unknown 叶子节点，跳过该事件: path=%s", leaf_path)
+                        continue
                     await _runs_db.update_status(run_id, "waiting_human")
                     await _emit(
                         run_id, leaf_path, "waiting_human", node=leaf_name, payload=interrupt_val, propagate=True
                     )
                 else:
                     await _emit(run_id, _ns_to_path(ns, node_name), "done")
-        await _runs_db.update_status(run_id, "done")
-        await push_event(run_id, {"type": "run_complete"})
+        # 区分真完成 vs interrupt 暂停：astream 在 interrupt 时会正常退出迭代，
+        # 但主图仍处于暂停态（snap.next 非空，指向被中断的子图节点）。
+        # 此时绝不能标 done / 发 run_complete——否则前端在 waiting_human 弹窗后
+        # 立即收到 run_complete 并关闭 SSE，用户 resume 后的新事件将无法送达。
+        # 该 bug 影响所有 interrupt 节点（review_initial_characters/upload_tri_view/
+        # review_chapter/...）。用 snap.next 是否为空作为唯一判定依据。
+        snap = await _compiled_graph.aget_state(config)
+        if getattr(snap, "next", None):
+            await _runs_db.update_status(run_id, "waiting_human")
+        else:
+            await _runs_db.update_status(run_id, "done")
+            await push_event(run_id, {"type": "run_complete"})
     except Exception as exc:
         # 记录完整堆栈到后端日志
         log.error(f"Run {run_id} failed: {exc}", exc_info=True)

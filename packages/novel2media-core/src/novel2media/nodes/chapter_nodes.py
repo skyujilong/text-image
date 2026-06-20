@@ -5,6 +5,7 @@ from pathlib import Path
 
 from langgraph.types import interrupt
 
+from novel2media.chapters import chapter_sort_key
 from novel2media.llm import get_llm
 from novel2media.logger import get_logger
 from novel2media.prompts._parse import parse_json_array
@@ -33,16 +34,22 @@ def load_chapter(state: dict) -> dict:
     chapters_dir = novel_dir / "chapters"
     chapters_status: dict[str, str] = dict(state.get("chapters_status", {}))
 
-    # 动态发现新章节文件
+    # 动态发现新章节文件（按 chapter_xxx 数字序，兜底用户中途新增章节）
     known = set(chapters_status.keys())
-    for ch_file in sorted(chapters_dir.glob("*.txt")):
+    for ch_file in sorted(chapters_dir.glob("*.txt"), key=lambda p: chapter_sort_key(p.stem)):
         ch_id = ch_file.stem
         if ch_id not in known:
             chapters_status[ch_id] = "pending"
 
     # R13：优先恢复 processing（断点续跑），无则取第一个 pending
-    processing = sorted([ch_id for ch_id, st in chapters_status.items() if st == "processing"])
-    pending = sorted([ch_id for ch_id, st in chapters_status.items() if st == "pending"])
+    processing = sorted(
+        [ch_id for ch_id, st in chapters_status.items() if st == "processing"],
+        key=chapter_sort_key,
+    )
+    pending = sorted(
+        [ch_id for ch_id, st in chapters_status.items() if st == "pending"],
+        key=chapter_sort_key,
+    )
     if processing:
         ch_id = processing[0]
         log.info("load_chapter: 恢复 processing 章节（断点续跑）", chapter=ch_id)
@@ -69,6 +76,7 @@ def load_chapter(state: dict) -> dict:
             "_review_decision": "",
             "_chapter_advance": "",
             "_final_decision": "",
+            "_init_characters_review": "",
             "_export_now": False,
             "_card_selected": False,
             "_manual_review": "",
@@ -97,6 +105,7 @@ def load_chapter(state: dict) -> dict:
         "_review_decision": "",
         "_chapter_advance": "",
         "_final_decision": "",
+        "_init_characters_review": "",
         "_export_now": False,
         "_card_selected": False,
         "_manual_review": "",
@@ -157,20 +166,22 @@ def generate_storyboard(state: dict) -> dict:
 
 
 def detect_new_characters_llm(state: dict) -> dict:
-    """LLM 检测本章新角色 + 外观 → pending_new_characters（name-based，无 id）。
+    """LLM 检测本章新角色 + 外观 + 三视图提示词 → pending_new_characters（name-based，无 id）。
 
     读章节原文 + 现有 characters_profile 的 name 集。只输出新角色，不进 setup_queue
-    （留给 review_chapter 审 + upload_tri_view）。每个元素必须含 name 字段，否则抛错。
+    （留给 review_chapter 审 + upload_tri_view）。每个元素必须含 name/appearance/tri_view_prompt
+    三字段（与 init parse_characters_llm 角色模型一致），缺则抛错。
     """
     chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
     existing_names = set(state.get("characters_profile", {}).keys())
 
     prompt = build_detect_new_characters_prompt(chapter_text, existing_names)
     resp = get_llm().invoke(prompt)
-    pending = parse_json_array(resp)  # [{"name","appearance"}]
+    pending = parse_json_array(resp)  # [{"name","appearance","tri_view_prompt"}]
     for c in pending:
-        if "name" not in c:
-            raise ValueError(f"detect_new_characters_llm: LLM 输出缺少 name 字段: {c}")
+        for field in ("name", "appearance", "tri_view_prompt"):
+            if not c.get(field):
+                raise ValueError(f"detect_new_characters_llm: 角色缺 {field} 字段: {c}")
 
     log.info("detect_new_characters_llm: 完成", count=len(pending))
     return {"pending_new_characters": pending}

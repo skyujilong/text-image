@@ -21,6 +21,7 @@ interface StoryboardShot {
 interface NewCharacter {
   name?: string
   appearance?: string
+  tri_view_prompt?: string
 }
 interface Props {
   runId: string
@@ -101,6 +102,9 @@ export default function ChapterReviewPanel({
                 <div key={i} className="border rounded p-2 bg-gray-50">
                   <span className="font-medium">{c.name ?? '未命名'}</span>
                   {c.appearance && <span className="text-gray-500">：{c.appearance}</span>}
+                  {c.tri_view_prompt && (
+                    <div className="text-gray-400 mt-1">三视图参考：{c.tri_view_prompt}</div>
+                  )}
                 </div>
               ))}
               {newCharacters.length === 0 && <p className="text-gray-400">本章无新角色</p>}

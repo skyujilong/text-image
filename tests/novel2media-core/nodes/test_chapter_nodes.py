@@ -94,6 +94,7 @@ def test_load_chapter_clears_control_fields(tmp_path):
         "_review_decision": "revise",
         "_chapter_advance": "render",
         "_final_decision": "done",
+        "_init_characters_review": "pass",
         "_export_now": True,
         "_card_selected": True,
         "_manual_review": "revise",
@@ -104,6 +105,7 @@ def test_load_chapter_clears_control_fields(tmp_path):
     assert result["_review_decision"] == ""
     assert result["_chapter_advance"] == ""
     assert result["_final_decision"] == ""
+    assert result["_init_characters_review"] == ""
     assert result["_export_now"] is False
     assert result["_card_selected"] is False
     assert result["_manual_review"] == ""
@@ -120,6 +122,24 @@ def test_load_chapter_no_pending_returns_sentinel(tmp_path):
     }
     result = load_chapter(state)
     assert result["current_chapter_id"] == ""
+
+
+def test_load_chapter_orders_by_chapter_number(tmp_path):
+    """load_chapter 取第一个 pending 时按 chapter_xxx 数字序，非字符串序。
+
+    chapter_02 应优先于 chapter_10（字符串序会把 chapter_10 排在前面）。
+    """
+    novel_dir = _make_novel(
+        tmp_path,
+        chapters=("chapter_10_终章.txt", "chapter_02_初入.txt", "chapter_01_开端.txt"),
+    )
+    state = {
+        "novel_dir": str(novel_dir),
+        "chapters_status": {},  # 触发动态发现 + 排序
+        "chapters_artifacts": {},
+    }
+    result = load_chapter(state)
+    assert result["current_chapter_id"] == "chapter_01_开端"
 
 
 # --- 上游 LLM 生成节点（step 03，mock LLM）---
@@ -183,24 +203,38 @@ def test_generate_storyboard_forces_first_scene_change_and_persists(tmp_path, mo
 
 def test_detect_new_characters_llm_returns_name_based_list(tmp_path, monkeypatch):
     state = _make_chapter_state(tmp_path, profile={"主角": {}})
-    fake_pending = [{"name": "李雷", "appearance": "青年男性，黑发"}]
+    fake_pending = [
+        {"name": "李雷", "appearance": "青年男性，黑发", "tri_view_prompt": "character turnaround sheet, front view"}
+    ]
     _mock_llm(monkeypatch, fake_pending)
 
     result = detect_new_characters_llm(state)
 
     assert result["pending_new_characters"] == fake_pending
     assert "id" not in result["pending_new_characters"][0]
+    assert result["pending_new_characters"][0]["tri_view_prompt"]
 
 
 def test_detect_new_characters_llm_raises_on_missing_name(tmp_path, monkeypatch):
     state = _make_chapter_state(tmp_path)
     # 缺 name 字段 → 必须抛错（不静默）
-    _mock_llm(monkeypatch, [{"appearance": "无名的角色"}])
+    _mock_llm(monkeypatch, [{"appearance": "无名的角色", "tri_view_prompt": "p"}])
     try:
         detect_new_characters_llm(state)
     except ValueError:
         return
     raise AssertionError("应抛 ValueError（LLM 输出缺 name 字段）")
+
+
+def test_detect_new_characters_llm_raises_on_missing_tri_view_prompt(tmp_path, monkeypatch):
+    """缺 tri_view_prompt 字段 → 抛错（角色模型三字段必填）。"""
+    state = _make_chapter_state(tmp_path)
+    _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发"}])
+    try:
+        detect_new_characters_llm(state)
+    except ValueError:
+        return
+    raise AssertionError("应抛 ValueError（LLM 输出缺 tri_view_prompt 字段）")
 
 
 def test_adapt_script_raises_on_malformed_llm_output(tmp_path, monkeypatch):
@@ -242,7 +276,10 @@ def test_review_chapter_revise_writes_decision_only(tmp_path, monkeypatch):
 def test_review_chapter_pass_marks_planned_and_queues_new_characters(tmp_path, monkeypatch):
     """pass：标 planned + 新角色进 setup_queue + 清空 pending_new_characters。"""
     _mock_interrupt(monkeypatch, "pass")
-    pending = [{"name": "李雷", "appearance": "黑发"}, {"name": "韩梅梅"}]
+    pending = [
+        {"name": "李雷", "appearance": "黑发", "tri_view_prompt": "p1"},
+        {"name": "韩梅梅", "appearance": "", "tri_view_prompt": "p2"},
+    ]
     state = {
         "current_chapter_id": "chapter_01",
         "current_script": [],
