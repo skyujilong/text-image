@@ -3,12 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from langgraph.types import interrupt
-
 from novel2media.chapters import chapter_sort_key
 from novel2media.llm import get_llm
-from novel2media.logger import get_logger
 from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.init_prompts import build_parse_initial_characters_prompt
+from novel2media_logging import get_logger
 
 log = get_logger("init_nodes")
 

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
-from novel2media.logger import setup_logging
 from novel2media.state import MainGraphState
 from novel2media.subgraphs.chapter import build_chapter_subgraph
 from novel2media.subgraphs.init_graph import build_init_subgraph
 from novel2media.subgraphs.setup import character_setup_subgraph_compiled
+from novel2media_logging import setup_logging
 
 setup_logging()
 

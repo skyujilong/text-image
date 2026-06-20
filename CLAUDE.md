@@ -29,6 +29,8 @@ novel2media/
 │   └── frontend/                  # React 前端
 │
 ├── packages/                      # 可复用内部库
+│   ├── novel2media-logging/       # 统一日志配置（structlog + 标准 logging 双写 backend.log）
+│   │   └── src/novel2media_logging/
 │   └── novel2media-core/          # 核心业务逻辑
 │       ├── clients/               # 外部服务客户端（comfyui, tts）
 │       ├── nodes/                 # LangGraph 节点定义
@@ -39,7 +41,7 @@ novel2media/
 │       └── workflows.py           # ComfyUI Workflow 模板管理
 │
 ├── config/                        # 静态配置（services.json, workflows/）
-├── data/                          # 运行时数据（runs.db, checkpoints.db）
+├── data/                          # 运行时数据（runs.db, checkpoints.db, logs/backend.log）
 ├── workspace/                     # 用户工作区（小说、输出文件）
 └── tests/                         # 测试用例
     ├── backend/                   # 后端 API 测试
@@ -167,6 +169,7 @@ def node_name(state: GraphState) -> dict:
 | 状态定义 | `packages/novel2media-core/src/novel2media/state.py` |
 | 子图定义 | `packages/novel2media-core/src/novel2media/subgraphs/*` |
 | Workflow 模板 | `packages/novel2media-core/src/novel2media/workflows.py` |
+| 统一日志配置 | `packages/novel2media-logging/src/novel2media_logging/__init__.py` |
 | API 路由聚合 | `apps/backend/api/v1/router.py` |
 | 前端 API 客户端 | `apps/frontend/src/api/client.ts` |
 | 前端运行状态 Store | `apps/frontend/src/store/runStore.ts` |
@@ -181,6 +184,7 @@ def node_name(state: GraphState) -> dict:
 3. **Checkpoint**：LangGraph Checkpoint 存储在 `data/checkpoints.db`，支持断点续跑
 4. **前端代理**：开发模式下前端默认连接 `http://localhost:8000`
 5. **测试**：pytest 已配置 asyncio_mode=auto，异步测试无需额外标记
+6. **日志**：统一走共享包 `novel2media_logging`（`get_logger`/`setup_logging`）。所有日志（uvicorn access/error、图节点 structlog、langchain/openai 标准 logging）按时间连贯写入同一个 `data/logs/backend.log`，同时输出 stdout。`setup_logging()` 在包 import 时即执行（幂等），保证节点模块级 `log = get_logger(...)` 在 structlog 配置就绪后绑定 —— 否则会用 structlog 默认 PrintLogger 直接 print 到 stderr、绕过文件落盘。新代码用 `from novel2media_logging import get_logger`，勿再用旧 `novel2media.logger`（仅为兼容 shim）。
 
 ---
 

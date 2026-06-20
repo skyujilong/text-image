@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from novel2media.logger import get_logger
+from novel2media_logging import get_logger
 
 log = get_logger("tts_client")
 

@@ -4,16 +4,15 @@ import json
 from pathlib import Path
 
 from langgraph.types import interrupt
-
 from novel2media.chapters import chapter_sort_key
 from novel2media.llm import get_llm
-from novel2media.logger import get_logger
 from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.chapter_prompts import (
     build_adapt_script_prompt,
     build_detect_new_characters_prompt,
     build_generate_storyboard_prompt,
 )
+from novel2media_logging import get_logger
 
 log = get_logger("chapter_nodes")
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from novel2media.clients.comfyui import ComfyUIClient
-from novel2media.logger import get_logger
 from novel2media.workflows import build_workflow
+from novel2media_logging import get_logger
 
 log = get_logger("image_nodes")
 

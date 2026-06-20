@@ -33,17 +33,21 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["packages/novel2media-core/src/novel2media", "apps/backend"]
+packages = [
+    "packages/novel2media-core/src/novel2media",
+    "packages/novel2media-logging/src/novel2media_logging",
+    "apps/backend",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = [".", "apps/backend", "packages/novel2media-core/src"]
+pythonpath = [".", "apps/backend", "packages/novel2media-core/src", "packages/novel2media-logging/src"]
 
 [tool.pyright]
 pythonVersion = "3.13"
 typeCheckingMode = "basic"
-include = ["apps/backend", "packages/novel2media-core/src"]
+include = ["apps/backend", "packages/novel2media-core/src", "packages/novel2media-logging/src"]
 exclude = ["**/__pycache__", "**/*.pyc", "tests"]
 
 # 只开启真正能发现 bug 的检查
@@ -78,6 +82,7 @@ lint.ignore = [
     "RUF002",  # docstring 中文全角字符（中文项目正常使用）
     "RUF003",  # 中文全角字符检查（中文注释中正常使用）
     "E501",    # 行长度（已配置 line-length，这里排除冲突）
+    "E402",    # 模块级 import 未在文件顶部（apps/backend/main.py 的 sys.path.insert 后导入是有意的）
     "ARG001",  # 未使用的函数参数（占位节点、回调等场景正常）
     "UP042",   # StrEnum 建议（向后兼容考虑暂时保留）
 ]

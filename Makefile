@@ -22,7 +22,7 @@ frontend:
 
 # Lint 检查（自动修复）
 lint:
-	uv run ruff check apps/backend packages/novel2media-core/src tests --fix
+	uv run ruff check apps/backend packages/novel2media-core/src packages/novel2media-logging/src tests --fix
 
 # 类型检查
 typecheck:
@@ -30,7 +30,7 @@ typecheck:
 
 # 代码格式化
 format:
-	uv run ruff format apps/backend packages/novel2media-core/src tests
+	uv run ruff format apps/backend packages/novel2media-core/src packages/novel2media-logging/src tests
 
 # 全量质量检查（格式化 + Lint + 类型检查）
 quality:

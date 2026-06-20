@@ -4,8 +4,7 @@ import json
 from pathlib import Path
 
 from langgraph.types import interrupt
-
-from novel2media.logger import get_logger
+from novel2media_logging import get_logger
 
 log = get_logger("setup_nodes")
 
