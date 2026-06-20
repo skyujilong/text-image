@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 
-def build_parse_initial_characters_prompt(character_profiles: str, worldview: str) -> str:
+def build_parse_initial_characters_prompt(character_profiles: str, worldview: str, feedback: str = "") -> str:
     """构造初始角色解析提示词。
 
     输入 character_profiles 为前端 textarea 自由文本，worldview 为世界观设定。
     输出 schema：JSON 数组，每个元素 {{"name": str, "appearance": str, "tri_view_prompt": str}}。
     只提取贯穿全书的主要角色，不输出一次性路人/泛指群体。
+    feedback 非空时为上一版打回的修改意见，提示 LLM 据此调整（review_initial_characters revise 回环）。
     """
     worldview_block = f"世界观设定：{worldview}" if worldview else "（未提供世界观）"
+    feedback_block = f"上一版解析的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
     return f"""你是一个小说角色分析师。从下面的角色设定文本中，提取贯穿全书的主要角色。
 
 {worldview_block}
 
-角色设定文本：
+{feedback_block}角色设定文本：
 {character_profiles}
 
 要求：

@@ -60,21 +60,44 @@ def _resolve_interrupted(snap: object) -> tuple[str, str, Any] | None:
     parts: list[str] = []
     cur = snap
     interrupt_value: Any = None
+    # 诊断：记录顶层 snap.next 与顶层 tasks 概览，便于定位「重跑后解析断在哪层」。
+    log.info(
+        "_resolve_interrupted START snap.next=%s",
+        getattr(snap, "next", None),
+    )
     while cur is not None:
         tasks = getattr(cur, "tasks", []) or []
+        # 诊断：打印本层所有 task 的 name + 是否挂 interrupts，便于判断为何选不到。
+        log.info(
+            "_resolve_interrupted layer tasks=%s",
+            [(getattr(t, "name", "?"), bool(getattr(t, "interrupts", None))) for t in tasks],
+        )
         task = next((t for t in tasks if getattr(t, "interrupts", None)), None)
         if task is None:
+            log.info("_resolve_interrupted BREAK 无带 interrupts 的 task，已收集 parts=%s", parts)
             break
         parts.append(getattr(task, "name", "unknown"))
         interrupts = getattr(task, "interrupts", None) or ()
         if interrupts:
             interrupt_value = interrupts[0].value
-        cur = getattr(task, "state", None)
+        nxt = getattr(task, "state", None)
+        # 诊断：记录选中 task 下钻情况（state 是否带 tasks 决定能否继续下钻到叶子）。
+        log.info(
+            "_resolve_interrupted picked name=%s nxt_type=%s nxt_has_tasks=%s",
+            getattr(task, "name", "unknown"),
+            type(nxt).__name__,
+            hasattr(nxt, "tasks") if nxt is not None else False,
+        )
+        cur = nxt
         if cur is None or not hasattr(cur, "tasks"):
+            log.info("_resolve_interrupted STOP state 无 tasks，已收集 parts=%s", parts)
             break
     if not parts:
+        log.warning("_resolve_interrupted RETURN None（未解析到任何 interrupt task）")
         return None
-    return (parts[-1], "/".join(parts), interrupt_value)
+    result = (parts[-1], "/".join(parts), interrupt_value)
+    log.info("_resolve_interrupted RETURN leaf=%s path=%s payload_type=%s", result[0], result[1], type(result[2]).__name__)
+    return result
 
 
 async def init_runner():
@@ -183,7 +206,9 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
         # 该 bug 影响所有 interrupt 节点（review_initial_characters/batch_upload_tri_view/
         # review_chapter/...）。用 snap.next 是否为空作为唯一判定依据。
         snap = await _compiled_graph.aget_state(config)
-        if getattr(snap, "next", None):
+        snap_next = getattr(snap, "next", None)
+        log.info("_run_graph END astream 退出，snap.next=%s", snap_next)
+        if snap_next:
             # interrupt 暂停：稳态下解析叶子节点并补发 waiting_human 事件。
             # 解析必须在此处做（astream 已退出、interrupt 已完全冒泡到顶层 task tree），
             # 而非流中收到 __interrupt__ 的瞬间——那时冒泡未完成，曾解析为 None，
@@ -191,15 +216,17 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
             snap_sub = await _compiled_graph.aget_state(config, subgraphs=True)
             resolved = _resolve_interrupted(snap_sub)
             await _runs_db.update_status(run_id, "waiting_human")
+            log.info("_run_graph waiting_human resolved=%s", resolved)
             if resolved:
                 leaf_name, leaf_path, interrupt_val = resolved
                 await _emit(
                     run_id, leaf_path, "waiting_human", node=leaf_name, payload=interrupt_val, propagate=True
                 )
+                log.info("_run_graph 已发 waiting_human leaf_path=%s leaf_name=%s", leaf_path, leaf_name)
             else:
                 # snap.next 非空却解析不到叶子 interrupt：异常态，记录暴露，
                 # 保留 SSE 队列等待人工干预（不静默伪装成功）。
-                log.warning("interrupt 暂停但解析不到叶子节点: next=%s", getattr(snap, "next", None))
+                log.warning("interrupt 暂停但解析不到叶子节点: next=%s", snap_next)
         else:
             await _runs_db.update_status(run_id, "done")
             await push_event(run_id, {"type": "run_complete"})
@@ -248,6 +275,7 @@ async def restart_from_node(run_id: str, node_path: str) -> None:
     parts = node_path.split("/")
     top_node = parts[0]
     leaf_node = parts[-1] if len(parts) > 1 else None
+    log.info("restart_from_node START run_id=%s node_path=%s top=%s leaf=%s", run_id, node_path, top_node, leaf_node)
 
     config = {"configurable": {"thread_id": run_id}}
 
@@ -262,6 +290,7 @@ async def restart_from_node(run_id: str, node_path: str) -> None:
                 break
     if top_cid is None:
         raise ValueError(f"node {top_node!r} not found in checkpoint history")
+    log.info("restart_from_node top_cid=%s", top_cid)
 
     replay_config = {"configurable": {"thread_id": run_id, "checkpoint_id": top_cid}}
 
@@ -275,6 +304,7 @@ async def restart_from_node(run_id: str, node_path: str) -> None:
             ) as cur,
         ):
             ns_rows = list(await cur.fetchall())
+        log.info("restart_from_node 子图 ns_rows=%s", [r[0] for r in ns_rows])
         if ns_rows:
             sub_ns = ns_rows[-1][0]  # type: ignore
             sub_cid = None
@@ -286,6 +316,7 @@ async def restart_from_node(run_id: str, node_path: str) -> None:
                     sub_cid = snap_config.get("configurable", {}).get("checkpoint_id")
                     if sub_cid:
                         break
+            log.info("restart_from_node sub_ns=%s sub_cid=%s", sub_ns, sub_cid)
             if sub_cid:
                 target_snap = await _compiled_graph.aget_state(
                     {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns, "checkpoint_id": sub_cid}}
@@ -294,6 +325,10 @@ async def restart_from_node(run_id: str, node_path: str) -> None:
                     {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns, "checkpoint_id": sub_cid}},
                     getattr(target_snap, "values", {}),
                 )
+            else:
+                log.warning("restart_from_node 未找到 leaf=%s 在 next 的子图快照，跳过子图回拨", leaf_node)
+    else:
+        log.info("restart_from_node 无子图回拨（leaf==top 或无 leaf）")
 
     get_or_create_sse_queue(run_id)
     asyncio.create_task(_run_graph(None, replay_config, run_id))

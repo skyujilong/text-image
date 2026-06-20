@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter,
 } from '@/components/ui/sheet'
@@ -41,12 +42,18 @@ export default function ChapterReviewPanel({
   runId, chapterId, script, storyboard, newCharacters, open, onClose,
 }: Props) {
   const { setActiveInteraction } = useRunStore()
+  const [feedback, setFeedback] = useState('')
 
   const handle = async (decision: 'pass' | 'revise') => {
     try {
-      await api.resumeRun(runId, decision)
+      // resume 值为对象 {decision, feedback}：打回时带修改意见供 adapt_script 重写参考；
+      // 通过不需要意见。与后端 review_chapter 节点解析对齐。
+      await api.resumeRun(runId, decision === 'revise'
+        ? { decision: 'revise', feedback }
+        : { decision: 'pass' })
       setActiveInteraction(null)
       onClose()
+      setFeedback('')
     } catch (e) {
       console.error('resume failed', e)
     }
@@ -112,6 +119,16 @@ export default function ChapterReviewPanel({
             <p className="text-xs text-gray-400 mt-1">通过后将进入角色设定（上传三视图 + 音色）</p>
           </section>
         </div>
+
+        <section>
+          <h3 className="text-sm font-semibold mb-2">修改意见（打回时填写）</h3>
+          <textarea
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="打回重写时填写修改意见，如「对白太书面、节奏太快」，留空则盲重写"
+            className="w-full min-h-[80px] text-xs border rounded p-2 resize-y"
+          />
+        </section>
 
         <SheetFooter>
           <Button variant="outline" onClick={() => handle('revise')} disabled={false}>

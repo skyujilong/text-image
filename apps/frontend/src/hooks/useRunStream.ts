@@ -29,14 +29,16 @@ export function useRunStream(runId: string | null) {
       if (type === 'node_status') {
         const statusKey = event.status_key as string
         const status = event.status as string
-        console.log('[SSE] 节点状态:', statusKey, status)
+        const hasNode = event.node !== undefined
+        console.log('[SSE] 节点状态:', statusKey, status, 'node=', event.node, 'hasPayload=', event.payload !== undefined)
 
         if (status === 'waiting_human') {
           setNodeStatus(statusKey, 'waiting_human')
+          console.log('[SSE] waiting_human hasNode=', hasNode, hasNode ? '→ 将弹窗' : '→ 无 node（祖先事件），不弹窗')
           // R5：只有带 node 字段的叶子事件才触发交互弹窗。
           // _emit(propagate=True) 会对每个祖先 key 发同 status 事件，但祖先事件
           // 不带 node 字段（仅叶子带），故此处 node 判定天然过滤祖先事件，避免重复弹窗。
-          if (event.node !== undefined) {
+          if (hasNode) {
             setActiveInteraction({
               node: event.node as string,
               payload: event.payload ?? null,

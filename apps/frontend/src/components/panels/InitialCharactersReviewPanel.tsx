@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter,
 } from '@/components/ui/sheet'
@@ -26,12 +27,18 @@ export default function InitialCharactersReviewPanel({
   runId, characters, open, onClose,
 }: Props) {
   const { setActiveInteraction } = useRunStore()
+  const [feedback, setFeedback] = useState('')
 
   const handle = async (decision: 'pass' | 'revise') => {
     try {
-      await api.resumeRun(runId, decision)
+      // resume 值为对象 {decision, feedback}：打回时带修改意见供 parse_characters_llm 重解析参考；
+      // 通过不需要意见。与后端 review_initial_characters 节点解析对齐。
+      await api.resumeRun(runId, decision === 'revise'
+        ? { decision: 'revise', feedback }
+        : { decision: 'pass' })
       setActiveInteraction(null)
       onClose()
+      setFeedback('')
     } catch (e) {
       console.error('resume failed', e)
     }
@@ -59,6 +66,16 @@ export default function InitialCharactersReviewPanel({
           ))}
           <p className="text-xs text-gray-400 mt-1">通过后将逐个进入上传三视图 + 音色设定。</p>
         </div>
+
+        <section>
+          <h3 className="text-sm font-semibold mb-2">修改意见（打回时填写）</h3>
+          <textarea
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="打回重解析时填写修改意见，如「漏了重要角色、外观描述太简略」，留空则盲重解析"
+            className="w-full min-h-[80px] text-xs border rounded p-2 resize-y"
+          />
+        </section>
 
         <SheetFooter>
           <Button variant="outline" onClick={() => handle('revise')}>

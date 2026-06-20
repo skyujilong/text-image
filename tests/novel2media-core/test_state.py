@@ -52,9 +52,11 @@ def test_graph_state_shape():
         "render_batch",
         # R3：章节级控制字段显式声明
         "_review_decision",
+        "_review_feedback",
         "_chapter_advance",
         "_final_decision",
         "_init_characters_review",
+        "_init_characters_feedback",
         # 通用路由复用字段
         "_route",
     }

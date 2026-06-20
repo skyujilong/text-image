@@ -103,11 +103,30 @@ def test_parse_characters_llm_parses_main_characters(tmp_path, monkeypatch):
             "tri_view_prompt": "character turnaround sheet, front side back, black hair",
         }
     ]
-    _mock_llm(monkeypatch, fake)
+    mock = _mock_llm(monkeypatch, fake)
     state = {"character_profiles": "林澈：黑发少年", "worldview": "修仙", "characters_profile": {}}
     result = parse_characters_llm(state)
     assert result["pending_new_characters"] == fake
     assert result["pending_new_characters"][0]["tri_view_prompt"]
+    # 无 feedback 时 prompt 不含修改意见段；用完清空
+    assert "修改意见" not in mock.invoke.call_args.args[0]
+    assert result["_init_characters_feedback"] == ""
+
+
+def test_parse_characters_llm_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
+    """revise 回环：parse_characters_llm 读 _init_characters_feedback 拼进 prompt，用完清空。"""
+    fake = [{"name": "林澈", "appearance": "黑发", "tri_view_prompt": "p"}]
+    mock = _mock_llm(monkeypatch, fake)
+    state = {
+        "character_profiles": "林澈：黑发",
+        "worldview": "",
+        "characters_profile": {},
+        "_init_characters_feedback": "漏了重要角色、外观太简略",
+    }
+    result = parse_characters_llm(state)
+    prompt = mock.invoke.call_args.args[0]
+    assert "漏了重要角色、外观太简略" in prompt
+    assert result["_init_characters_feedback"] == ""
 
 
 def test_parse_characters_llm_empty_text_skips_llm(tmp_path, monkeypatch):
@@ -145,21 +164,30 @@ def test_parse_characters_llm_raises_on_duplicate_name(tmp_path, monkeypatch):
 
 
 def test_review_initial_characters_pass_queues_characters(tmp_path, monkeypatch):
-    """pass → setup_queue = pending + 清空 pending + _init_characters_review=pass。"""
+    """pass → setup_queue = pending + 清空 pending + _init_characters_review=pass + 清空 feedback。"""
     _mock_interrupt(monkeypatch, "pass")
     pending = [{"name": "林澈", "appearance": "a", "tri_view_prompt": "p"}]
     result = review_initial_characters({"pending_new_characters": pending})
     assert result["_init_characters_review"] == "pass"
     assert result["setup_queue"] == pending
     assert result["pending_new_characters"] == []
+    assert result["_init_characters_feedback"] == ""
 
 
 def test_review_initial_characters_revise_returns_decision_only(tmp_path, monkeypatch):
-    """revise → 仅写 _init_characters_review=revise，不写 setup_queue。"""
+    """revise（旧字符串兼容）：写 _init_characters_review=revise + 空 feedback，不写 setup_queue。"""
     _mock_interrupt(monkeypatch, "revise")
     pending = [{"name": "林澈", "appearance": "a", "tri_view_prompt": "p"}]
     result = review_initial_characters({"pending_new_characters": pending})
-    assert result == {"_init_characters_review": "revise"}
+    assert result == {"_init_characters_review": "revise", "_init_characters_feedback": ""}
+
+
+def test_review_initial_characters_revise_with_feedback(tmp_path, monkeypatch):
+    """revise（对象 resume）：把修改意见写入 _init_characters_feedback，供 parse_characters_llm 重解析参考。"""
+    _mock_interrupt(monkeypatch, {"decision": "revise", "feedback": "漏了重要角色"})
+    result = review_initial_characters({"pending_new_characters": []})
+    assert result["_init_characters_review"] == "revise"
+    assert result["_init_characters_feedback"] == "漏了重要角色"
 
 
 def test_review_initial_characters_raises_on_invalid(tmp_path, monkeypatch):

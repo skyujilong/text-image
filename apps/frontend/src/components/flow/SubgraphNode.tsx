@@ -23,15 +23,17 @@ function SubgraphNode({ data }: SubgraphNodeProps) {
   const handleRestartFrom = async (e: React.MouseEvent) => {
     e.stopPropagation()
     if (!currentRunId) return
+    console.log('[RESTART] 点重跑 statusKey=', data.statusKey, 'runId=', currentRunId)
     try {
       setRunError(null) // 重新运行前先清空旧错误
       await api.restartFrom(currentRunId, data.statusKey)
+      console.log('[RESTART] restartFrom 返回，清空状态 + 重连 SSE')
       resetNodeStatuses()
       const run = runs[currentRunId]
       if (run) upsertRun({ ...run, status: 'running' })
       incrementStreamGeneration() // 触发 SSE 重新连接
     } catch (err) {
-      console.error(err)
+      console.error('[RESTART] 失败', err)
     }
   }
 

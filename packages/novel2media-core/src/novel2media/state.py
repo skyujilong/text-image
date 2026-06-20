@@ -127,6 +127,9 @@ class InitSubgraphState(MainGraphState, SetupSubgraphState):
     # init 阶段角色审阅路由控制字段（review_initial_characters 写回）。
     # 显式声明：窄 schema 子图会丢弃未声明字段，不补则条件边路由读不到用户决策。
     _init_characters_review: str  # pass / revise
+    # 初始角色审阅打回时的修改意见（review_initial_characters revise 写回，
+    # parse_characters_llm 读取拼进 prompt 后清空）。
+    _init_characters_feedback: str
 
 
 class ChapterSubgraphState(InitSubgraphState):
@@ -156,6 +159,9 @@ class ChapterSubgraphState(InitSubgraphState):
     # 章节级路由控制字段（interrupt 节点写回，load_chapter 统一重置）。
     # 显式声明原因同 SetupSubgraphState：避免窄 schema 子图丢弃导致路由失控。
     _review_decision: str  # review_chapter 审核：pass / revise
+    # 章节审阅打回时的修改意见（review_chapter revise 写回，
+    # adapt_script 读取拼进 prompt 后清空）。
+    _review_feedback: str
     _chapter_advance: str  # chapter_advance_decision：next / render
     _final_decision: str  # final_decision：done / continue
 

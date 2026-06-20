@@ -73,6 +73,8 @@ def load_config(state: dict) -> dict:
         "setup_image_candidates": [],
         "pending_new_characters": [],
         "_init_characters_review": "",
+        "_init_characters_feedback": "",
+        "_review_feedback": "",
         "_route": "",
         # 全局音频配置（单播，整本书一份；configure_audio 节点配置，跨章节持久）
         "audio_config": {},
@@ -88,13 +90,17 @@ def parse_characters_llm(state: dict) -> dict:
     pending_new_characters（不调 LLM），由条件边跳过审阅直接 END。
     每个角色必含非空 name/appearance/tri_view_prompt，缺则抛错；重复 name 抛错。
     不落盘草稿（最终档案由 batch_fix_profiles 落盘）。
+
+    revise 回环时读 _init_characters_feedback（review_initial_characters 写入）拼进 prompt，
+    用完清空，避免串到下一次解析。
     """
     raw = (state.get("character_profiles") or "").strip()
     if not raw:
         log.info("parse_characters_llm: character_profiles 为空，跳过解析")
         return {"pending_new_characters": []}
 
-    prompt = build_parse_initial_characters_prompt(raw, state.get("worldview", ""))
+    feedback = state.get("_init_characters_feedback", "") or ""
+    prompt = build_parse_initial_characters_prompt(raw, state.get("worldview", ""), feedback)
     resp = get_llm().invoke(prompt)
     parsed = parse_json_array(resp)  # [{name, appearance, tri_view_prompt}]
 
@@ -108,32 +114,43 @@ def parse_characters_llm(state: dict) -> dict:
             raise ValueError(f"parse_characters_llm: 重复角色名: {name}")
         seen.add(name)
 
-    log.info("parse_characters_llm: 完成", count=len(parsed))
-    return {"pending_new_characters": parsed}
+    log.info("parse_characters_llm: 完成", count=len(parsed), feedback=bool(feedback))
+    return {"pending_new_characters": parsed, "_init_characters_feedback": ""}
 
 
 def review_initial_characters(state: dict) -> dict:
-    """interrupt：人工审阅 LLM 解析出的初始主要角色，resume 为 "pass" / "revise"。
+    """interrupt：人工审阅 LLM 解析出的初始主要角色，resume 为 {"decision","feedback"}。
 
     R1 原则：interrupt() 之后不做写盘副作用。本节点只读 state + 写 state 字段。
     - pass：把 pending_new_characters 转入 setup_queue（交给 character_setup_subgraph
       逐个上传三视图 + 音色），清空 pending。
-    - revise：回 parse_characters_llm 重解析。
+    - revise：回 parse_characters_llm 重解析，并把用户修改意见写入 _init_characters_feedback。
     - 非法 resume 值：显式抛错，不静默当 pass。
+
+    resume 兼容：旧 checkpoint 可能 resume 纯字符串 "pass"/"revise"（无意见），
+    此处按 decision 解释、feedback 视为空；非法值仍抛错。
     """
-    decision = interrupt(
+    raw = interrupt(
         {
             "type": "initial_characters_review",
             "characters": state.get("pending_new_characters", []),
         }
     )
 
+    # 兼容旧字符串 resume 与新对象 resume {decision, feedback}
+    if isinstance(raw, dict):
+        decision = raw.get("decision")
+        feedback = raw.get("feedback", "") or ""
+    else:
+        decision = raw
+        feedback = ""
+
     if decision == "revise":
-        log.info("review_initial_characters: 打回重解析")
-        return {"_init_characters_review": "revise"}
+        log.info("review_initial_characters: 打回重解析", feedback=bool(feedback))
+        return {"_init_characters_review": "revise", "_init_characters_feedback": feedback}
 
     if decision != "pass":
-        raise ValueError(f"review_initial_characters: 非法 resume 值（应为 pass/revise）: {decision!r}")
+        raise ValueError(f"review_initial_characters: 非法 resume 值（应为 pass/revise）: {raw!r}")
 
     queue = list(state.get("pending_new_characters", []))
     log.info("review_initial_characters: 审核通过", count=len(queue))
@@ -141,4 +158,6 @@ def review_initial_characters(state: dict) -> dict:
         "_init_characters_review": "pass",
         "setup_queue": queue,
         "pending_new_characters": [],
+        # pass 时清空反馈，防上一轮 revise 残留串到下次解析
+        "_init_characters_feedback": "",
     }

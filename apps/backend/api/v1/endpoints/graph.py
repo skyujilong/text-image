@@ -81,7 +81,13 @@ def _build_schemas() -> tuple[dict, dict[str, dict]]:
 
     subgraph_id_set = set(_graph_module.SUBGRAPH_REGISTRY.keys())
     top = _serialize_graph(_graph_module.graph.get_graph(), subgraph_id_set)
-    subs = {k: _serialize_graph(v.get_graph(), set()) for k, v in _graph_module.SUBGRAPH_REGISTRY.items()}
+    # 子图序列化同样传入 subgraph_id_set：嵌套子图节点（如 init_subgraph 内的
+    # character_setup_subgraph）才能被标 type=subgraph，前端方可下钻。
+    # 传空集会让嵌套子图降级成 internal，前端无法展开其内部节点。
+    subs = {
+        k: _serialize_graph(v.get_graph(), subgraph_id_set)
+        for k, v in _graph_module.SUBGRAPH_REGISTRY.items()
+    }
     return top, subs
 
 

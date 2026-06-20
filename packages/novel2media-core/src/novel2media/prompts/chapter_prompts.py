@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 
-def build_adapt_script_prompt(chapter_text: str, characters_profile: dict) -> str:
+def build_adapt_script_prompt(chapter_text: str, characters_profile: dict, feedback: str = "") -> str:
     """构造剧本改写提示词。
 
     输出 schema：JSON 数组，每个元素 {"speaker": str, "text": str, "action": str}。
     speaker 用角色名（与 characters_profile 的 key 一致），旁白用 "旁白"。
+    feedback 非空时为上一版打回的修改意见，提示 LLM 据此调整（review_chapter revise 回环）。
     """
     names = "、".join(characters_profile.keys()) if characters_profile else "（暂无已知角色，按原文推断）"
+    feedback_block = f"上一版剧本的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
     return f"""你是一个专业的小说改编剧本师。把下面的章节原文改写为分句剧本。
 
 已知角色（speaker 必须使用这些名字；新角色按原文出现的中文名）：{names}
 
-要求：
+{feedback_block}要求：
 1. 把原文拆成对白与动作描述交替的剧本条目。
 2. speaker 为说话者角色名（旁白用"旁白"）；text 为对白内容；action 为该条目的动作/场景描述（无对白时可为空）。
 3. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
