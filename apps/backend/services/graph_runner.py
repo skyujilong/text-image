@@ -46,19 +46,35 @@ def _ancestor_keys(path: str) -> list[str]:
     return ["/".join(parts[: i + 1]) for i in range(len(parts))]
 
 
-def _resolve_interrupted_node(snap: object) -> tuple[str, str]:
+def _resolve_interrupted(snap: object) -> tuple[str, str, Any] | None:
+    """从顶层 snap 递归下钻 task tree，找到带 interrupts 的叶子 task。
+
+    返回 (leaf_name, leaf_path, interrupt_value)；任一层无带 interrupts 的 task
+    则返回 None。interrupt_value 取叶子 task 的 interrupts[0].value（即 interrupt()
+    传入的 payload，前端审阅窗需要）。
+
+    必须在稳态调用（astream 已退出、interrupt 已完全冒泡到顶层 task tree）。
+    流中收到 __interrupt__ 的瞬间调用曾出现顶层 task 未挂 interrupts → 解析 None，
+    故 interrupt 解析统一推迟到 astream 结束后做（见 _run_graph 结尾）。
+    """
     parts: list[str] = []
     cur = snap
+    interrupt_value: Any = None
     while cur is not None:
         tasks = getattr(cur, "tasks", []) or []
         task = next((t for t in tasks if getattr(t, "interrupts", None)), None)
         if task is None:
             break
         parts.append(getattr(task, "name", "unknown"))
+        interrupts = getattr(task, "interrupts", None) or ()
+        if interrupts:
+            interrupt_value = interrupts[0].value
         cur = getattr(task, "state", None)
         if cur is None or not hasattr(cur, "tasks"):
             break
-    return (parts[-1], "/".join(parts)) if parts else ("unknown", "unknown")
+    if not parts:
+        return None
+    return (parts[-1], "/".join(parts), interrupt_value)
 
 
 async def init_runner():
@@ -151,44 +167,44 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
             # mode == "updates"
             # ns: tuple[str, ...], event: dict[str, Any]
             event_dict = payload if isinstance(payload, dict) else {}
-            for node_name, update in event_dict.items():
+            for node_name, _update in event_dict.items():
                 if node_name == "__interrupt__":
-                    # stream_mode=updates+subgraphs=True 时，interrupt 会在子图层和
-                    # 主图层各产生一条 __interrupt__ 事件（冒泡重复信号）。
-                    # 子图层那条(ns 非空)发生时，interrupt 尚未冒泡到顶层 checkpoint，
-                    # _resolve_interrupted_node 遍历顶层 task 找不到带 interrupts 的任务，
-                    # 返回 leaf='unknown'。若照发，前端会 setActiveInteraction({node:'unknown'})，
-                    # InteractionDispatcher 无分支匹配 → 不弹窗，run 卡在 waiting_human。
-                    # 故仅处理主图层(ns==())那条：此时顶层 task 已带上 interrupts，能正确
-                    # 解析出叶子节点名(如 review_initial_characters)。子图层重复信号跳过。
-                    if ns:
-                        continue
-                    interrupt_val = update[0].value if update else {}
-                    snap = await _compiled_graph.aget_state(config, subgraphs=True)
-                    leaf_name, leaf_path = _resolve_interrupted_node(snap)
-                    if leaf_name == "unknown":
-                        # 解析失败属于异常态：宁可不发事件让前端保持当前态等待正确事件，
-                        # 也不要发 node=unknown 的垃圾事件覆盖掉（可能稍后到达的）正确事件。
-                        log.warning("interrupt 解析到 unknown 叶子节点，跳过该事件: path=%s", leaf_path)
-                        continue
-                    await _runs_db.update_status(run_id, "waiting_human")
-                    await _emit(
-                        run_id, leaf_path, "waiting_human", node=leaf_name, payload=interrupt_val, propagate=True
-                    )
-                else:
-                    await _emit(run_id, _ns_to_path(ns, node_name), "done")
+                    # interrupt 信号：不在流中实时解析。astream 收到 __interrupt__ 的瞬间，
+                    # interrupt 可能尚未完全冒泡到顶层 task tree（顶层 task 未挂 interrupts），
+                    # 此刻 aget_state 解析会返回 None → waiting_human 事件被跳过 → 前端节点
+                    # 卡 running、弹不出审阅窗。统一交给 astream 结束后的稳态解析补发
+                    # （见下方 snap.next 分支）。子图层/主图层重复信号一并跳过。
+                    continue
+                await _emit(run_id, _ns_to_path(ns, node_name), "done")
         # 区分真完成 vs interrupt 暂停：astream 在 interrupt 时会正常退出迭代，
         # 但主图仍处于暂停态（snap.next 非空，指向被中断的子图节点）。
         # 此时绝不能标 done / 发 run_complete——否则前端在 waiting_human 弹窗后
         # 立即收到 run_complete 并关闭 SSE，用户 resume 后的新事件将无法送达。
-        # 该 bug 影响所有 interrupt 节点（review_initial_characters/upload_tri_view/
+        # 该 bug 影响所有 interrupt 节点（review_initial_characters/batch_upload_tri_view/
         # review_chapter/...）。用 snap.next 是否为空作为唯一判定依据。
         snap = await _compiled_graph.aget_state(config)
         if getattr(snap, "next", None):
+            # interrupt 暂停：稳态下解析叶子节点并补发 waiting_human 事件。
+            # 解析必须在此处做（astream 已退出、interrupt 已完全冒泡到顶层 task tree），
+            # 而非流中收到 __interrupt__ 的瞬间——那时冒泡未完成，曾解析为 None，
+            # 导致前端节点卡 running、弹不出审阅窗。
+            snap_sub = await _compiled_graph.aget_state(config, subgraphs=True)
+            resolved = _resolve_interrupted(snap_sub)
             await _runs_db.update_status(run_id, "waiting_human")
+            if resolved:
+                leaf_name, leaf_path, interrupt_val = resolved
+                await _emit(
+                    run_id, leaf_path, "waiting_human", node=leaf_name, payload=interrupt_val, propagate=True
+                )
+            else:
+                # snap.next 非空却解析不到叶子 interrupt：异常态，记录暴露，
+                # 保留 SSE 队列等待人工干预（不静默伪装成功）。
+                log.warning("interrupt 暂停但解析不到叶子节点: next=%s", getattr(snap, "next", None))
         else:
             await _runs_db.update_status(run_id, "done")
             await push_event(run_id, {"type": "run_complete"})
+            # 真正结束后才清理队列；前端收到 run_complete 会自行关闭 SSE。
+            _sse_queues.pop(run_id, None)
     except Exception as exc:
         # 记录完整堆栈到后端日志
         log.error(f"Run {run_id} failed: {exc}", exc_info=True)
@@ -196,8 +212,6 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
         await _runs_db.update_status(run_id, "error")
         await push_event(run_id, {"type": "run_error", "message": str(exc)})
         # 出错时保留 queue，以便用户重试后重新连接 SSE
-    else:
-        _sse_queues.pop(run_id, None)
 
 
 async def start_run(params: dict) -> str:

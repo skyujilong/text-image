@@ -7,13 +7,17 @@ from typing import TypedDict
 class ChapterStatus(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
-    PLANNED = "planned"  # 规划阶段完成：script/storyboard 已落盘并审核通过
-    RENDERED = "rendered"  # 渲染批次完成：场景图+TTS+timeline 已生成
+    PLANNED = "planned"  # 规划完成：稿件已入 render_batch，待渲染
+    IMAGES_DONE = "images_done"  # 本章场景图合成完
+    AUDIO_DONE = "audio_done"  # 本章音频合成完
+    RENDERED = "rendered"  # 本章视频/timeline 合成完
     DONE = "done"  # 旧流程遗留枚举值，新流程不再写入（保留以兼容历史 checkpoint）
     EXPORTED = "exported"  # 已导出为剪映草稿
 
 
 class ChapterArtifactsRequired(TypedDict):
+    """章节渲染产物路径（媒体产物落盘，稿件不入此表——见 render_batch）。"""
+
     audio_path: str
     subtitles_path: str
     timeline_path: str
@@ -21,11 +25,11 @@ class ChapterArtifactsRequired(TypedDict):
 
 
 class ChapterArtifacts(ChapterArtifactsRequired, total=False):
-    """章节产物路径。script_path/storyboard_path 为规划阶段落盘的不可变版本化文件路径，
-    渲染阶段从盘读回（不依赖 state 标量），故设为可选。"""
+    """章节产物路径。仅含媒体产物（音频/字幕/timeline）落盘路径。
 
-    script_path: str  # <ch>/script.json 路径（adapt_script 落盘）
-    storyboard_path: str  # <ch>/storyboard.json 路径（generate_storyboard 落盘）
+    script/storyboard 稿件不再落盘，改存 render_batch（主图 state），
+    渲染阶段从 state 读，故本表不再含 script_path/storyboard_path。"""
+
 
 
 class CharacterProfileRequired(TypedDict):
@@ -39,8 +43,8 @@ class CharacterProfileRequired(TypedDict):
 class CharacterProfile(CharacterProfileRequired, total=False):
     """角色完整档案。tri_view/voice_params 为 setup 阶段逐步补齐的可选字段。"""
 
-    tri_view: str  # 三视图上传后的 comfyui_name（渲染阶段场景图作 reference；小角色可缺省跳过）
-    voice_params: dict  # 音色参数（voice_params_manual/voice_card_draw 写入）
+    tri_view: str  # 三视图本地相对路径（渲染阶段再 upload_image 到 ComfyUI；小角色可缺省跳过）
+    voice_params: dict  # 音色参数（保留字段；setup 不再写入，留作未来 per-character 扩展）
 
 
 # ---------------------------------------------------------------------------
@@ -74,38 +78,46 @@ class MainGraphState(TypedDict):
     # 角色管理
     characters_profile: dict[str, CharacterProfile]  # 角色完整档案（唯一真相），key 为角色名（name-based，无 id）
     # characters_profile[name] 字段：name/appearance/tri_view_prompt（必填）+
-    # tri_view(上传后 comfyui_name)/voice_params(可选)。详见 CharacterProfile。
+    # tri_view(本地相对路径)/voice_params(可选)。详见 CharacterProfile。
     ignored_characters: list[str]  # 已忽略角色名列表
+
+    # 全局音频配置（单播：整本书一份音色参数，渲染阶段共用）。
+    # 由 chapter 子图 render 前的 configure_audio 节点配置一次，已配则跳过 interrupt 回填。
+    # 子图通过同名字段读写冒泡到主图 checkpoint，跨章节/跨批次持久。
+    audio_config: dict  # {voice_type, speed, pitch, volume}
 
     # 章节状态与产物（历史章节数据累积存储，支持跨章导出）
     chapters_status: dict[str, str]  # chapter_id → ChapterStatus
     chapters_artifacts: dict[str, ChapterArtifacts]  # chapter_id → 产物路径
 
+    # 渲染批次稿件缓存：规划阶段把每章 script/storyboard 入此数组，
+    # 渲染阶段逐章读取。一批渲染完成（无 planned 章）后清空、重新积累。
+    # 替代旧版 <ch>/script.json + <ch>/storyboard.json 落盘——稿件聚合到
+    # state，重跑/等待状态更清晰，不散落各章目录。
+    render_batch: list[dict]  # [{chapter_id, script, storyboard}]
+
 
 class SetupSubgraphState(TypedDict):
-    """character_setup_subgraph 专用 state（完全闭环）。
+    """character_setup_subgraph 专用 state（完全闭环，批量化）。
 
     与父图（init/chapter）通过同名字段通信：novel_dir、characters_profile、
     setup_* 在父图 schema 中同名声明即可自动传递。
+
+    批量化后不再逐个 pop 角色：setup_queue 一次性传给 batch_upload_tri_view，
+    由 batch_fix_profiles 批量落盘后清空。无 per-character 中间态。
     """
 
     novel_dir: str  # 文件操作根目录
     characters_profile: dict[str, CharacterProfile]  # 写回父图（角色档案更新）
-    # character_setup_subgraph 内部状态（子图自驱动队列循环）
-    setup_queue: list[CharacterProfile]  # 待设定角色队列，dispatcher 逐个弹出
-    setup_current_character: CharacterProfile  # 当前待处理的单个角色信息
-    setup_image_candidates: list[str]  # 当前角色的候选图片路径列表
-    setup_voice_candidates: list[dict]  # 当前角色的候选音色列表（seed + 样本路径）
+    # 待批量配置三视图的角色列表（批量化：一次 interrupt 传全部，不再逐个弹出）
+    setup_queue: list[CharacterProfile]
+    setup_image_candidates: list[str]  # 候选图片路径列表（保留供未来扩展）
     # init parse_characters_llm / chapter detect_new_characters_llm 中间结果
     pending_new_characters: list[CharacterProfile]  # 待人工决策的新角色列表
 
-    # 路由控制字段（下划线前缀，interrupt 节点写回驱动条件边）。
+    # 通用路由复用字段（下划线前缀，interrupt 节点写回驱动条件边）。
     # 显式声明：窄 schema 子图会丢弃未声明字段，不补则路由读不到用户决策。
     # 默认值在各节点/路由函数用 state.get(..., 默认) 兜底，此处声明仅为持久化。
-    _voice_route: str  # voice_params_choice 路由：manual / draw
-    _manual_review: str  # voice_params_manual 审核：pass / revise
-    _manual_retry: str  # manual revise 后重试方向：adjust / redraw
-    _card_selected: bool  # voice_card_draw 是否选定音色
     _route: str  # 通用路由复用字段（如 check_needs_visual 分支）
 
 

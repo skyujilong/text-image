@@ -6,6 +6,7 @@ from novel2media.nodes.chapter_nodes import (
     adapt_script,
     build_timeline,
     chapter_advance_decision,
+    configure_audio,
     detect_new_characters_llm,
     export_to_jianying,
     final_decision,
@@ -13,6 +14,8 @@ from novel2media.nodes.chapter_nodes import (
     load_chapter,
     render_build_timeline,
     render_dispatch,
+    render_generate_images,
+    render_synthesize_audio,
     review_chapter,
 )
 
@@ -85,21 +88,21 @@ def test_load_chapter_resumes_processing_chapter(tmp_path):
 
 
 def test_load_chapter_clears_control_fields(tmp_path):
-    """R3：load_chapter 清空残留的章节级控制字段，避免串扰下一章路由。"""
+    """R3：load_chapter 清空残留的章节级控制字段，避免串扰下一章路由。
+
+    audio_config 是全局持久字段，不在章节级重置范围内（已配则跨章保留，由 configure_audio 节点管理）。
+    """
     novel_dir = _make_novel(tmp_path)
     state = {
         "novel_dir": str(novel_dir),
         "chapters_status": {},
         "chapters_artifacts": {},
+        "audio_config": {"voice_type": "zh_female_xxx"},  # 全局已配，不应被本章重置
         "_review_decision": "revise",
         "_chapter_advance": "render",
         "_final_decision": "done",
         "_init_characters_review": "pass",
         "_export_now": True,
-        "_card_selected": True,
-        "_manual_review": "revise",
-        "_manual_retry": "adjust",
-        "_voice_route": "manual",
     }
     result = load_chapter(state)
     assert result["_review_decision"] == ""
@@ -107,10 +110,8 @@ def test_load_chapter_clears_control_fields(tmp_path):
     assert result["_final_decision"] == ""
     assert result["_init_characters_review"] == ""
     assert result["_export_now"] is False
-    assert result["_card_selected"] is False
-    assert result["_manual_review"] == ""
-    assert result["_manual_retry"] == ""
-    assert result["_voice_route"] == ""
+    # audio_config 不在 load_chapter 返回的重置字段中（全局持久，跨章保留）
+    assert "audio_config" not in result
 
 
 def test_load_chapter_no_pending_returns_sentinel(tmp_path):
@@ -167,7 +168,8 @@ def _mock_llm(monkeypatch, payload):
     return mock
 
 
-def test_adapt_script_writes_script_and_artifact(tmp_path, monkeypatch):
+def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
+    """adapt_script：生成 script 写入 current_script（不落盘，稿件由 review_chapter 收入 render_batch）。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {"appearance": "黑发"}})
     fake_script = [{"speaker": "主角", "text": "你好", "action": "挥手"}]
     _mock_llm(monkeypatch, fake_script)
@@ -175,12 +177,14 @@ def test_adapt_script_writes_script_and_artifact(tmp_path, monkeypatch):
     result = adapt_script(state)
 
     assert result["current_script"] == fake_script
-    script_path = result["chapters_artifacts"]["chapter_01"]["script_path"]
-    assert Path(script_path).exists()
-    assert json.loads(Path(script_path).read_text(encoding="utf-8")) == fake_script
+    # 不落盘：<ch>/script.json 不应存在
+    assert not (tmp_path / "novel" / "chapter_01" / "script.json").exists()
+    # 不写 chapters_artifacts（稿件入 render_batch，非 artifacts）
+    assert "chapters_artifacts" not in result
 
 
-def test_generate_storyboard_forces_first_scene_change_and_persists(tmp_path, monkeypatch):
+def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
+    """generate_storyboard：生成分镜写入 current_storyboard（不落盘），首条强制 scene_change=True。"""
     state = _make_chapter_state(tmp_path)
     state["current_script"] = [{"speaker": "主角", "text": "你好", "action": "挥手"}]
     # LLM 返回首条 scene_change=False，节点应强制改为 True
@@ -194,11 +198,10 @@ def test_generate_storyboard_forces_first_scene_change_and_persists(tmp_path, mo
 
     storyboard = result["current_storyboard"]
     assert storyboard[0]["scene_change"] is True
-    sb_path = result["chapters_artifacts"]["chapter_01"]["storyboard_path"]
-    assert Path(sb_path).exists()
-    persisted = json.loads(Path(sb_path).read_text(encoding="utf-8"))
-    assert persisted[0]["scene_change"] is True
-    assert persisted[0]["scene_prompt"] == "a scene"
+    assert storyboard[0]["scene_prompt"] == "a scene"
+    # 不落盘
+    assert not (tmp_path / "novel" / "chapter_01" / "storyboard.json").exists()
+    assert "chapters_artifacts" not in result
 
 
 def test_detect_new_characters_llm_returns_name_based_list(tmp_path, monkeypatch):
@@ -274,24 +277,33 @@ def test_review_chapter_revise_writes_decision_only(tmp_path, monkeypatch):
 
 
 def test_review_chapter_pass_marks_planned_and_queues_new_characters(tmp_path, monkeypatch):
-    """pass：标 planned + 新角色进 setup_queue + 清空 pending_new_characters。"""
+    """pass：标 planned + 稿件入 render_batch + 新角色进 setup_queue + 清空 pending_new_characters。"""
     _mock_interrupt(monkeypatch, "pass")
     pending = [
         {"name": "李雷", "appearance": "黑发", "tri_view_prompt": "p1"},
         {"name": "韩梅梅", "appearance": "", "tri_view_prompt": "p2"},
     ]
+    script = [{"speaker": "主角", "text": "你好"}]
+    storyboard = [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "p"}]
     state = {
         "current_chapter_id": "chapter_01",
-        "current_script": [],
-        "current_storyboard": [],
+        "current_script": script,
+        "current_storyboard": storyboard,
         "pending_new_characters": pending,
         "chapters_status": {"chapter_01": "processing"},
+        "render_batch": [],
     }
     result = review_chapter(state)
     assert result["_review_decision"] == "pass"
     assert result["chapters_status"]["chapter_01"] == "planned"
     assert result["setup_queue"] == pending
     assert result["pending_new_characters"] == []
+    # 稿件入 render_batch（chapter_id 合并）
+    batch = result["render_batch"]
+    assert len(batch) == 1
+    assert batch[0]["chapter_id"] == "chapter_01"
+    assert batch[0]["script"] == script
+    assert batch[0]["storyboard"] == storyboard
 
 
 def test_review_chapter_pass_with_no_new_characters(tmp_path, monkeypatch):
@@ -346,6 +358,40 @@ def test_chapter_advance_decision_raises_on_invalid(tmp_path, monkeypatch):
     except ValueError:
         return
     raise AssertionError("应抛 ValueError（非法 resume 值）")
+
+
+# --- configure_audio（全局音色配置，单播）---
+
+
+def test_configure_audio_skips_when_already_configured(tmp_path, monkeypatch):
+    """audio_config 已配 → 跳过 interrupt（回填不重填），直接返回空。"""
+    _mock_interrupt(monkeypatch, {"voice_type": "should_not_be_called"})
+    state = {"audio_config": {"voice_type": "zh_female_xxx", "speed": 1.0}}
+    assert configure_audio(state) == {}
+
+
+def test_configure_audio_interrupts_and_writes_when_empty(tmp_path, monkeypatch):
+    """audio_config 空 → interrupt → resume 写回 audio_config。"""
+    _mock_interrupt(
+        monkeypatch,
+        {"voice_type": "zh_female_xxx", "speed": 1.0, "pitch": 0, "volume": 100},
+    )
+    state = {"audio_config": {}}
+    result = configure_audio(state)
+    assert result["audio_config"]["voice_type"] == "zh_female_xxx"
+    assert result["audio_config"]["speed"] == 1.0
+    assert result["audio_config"]["volume"] == 100
+
+
+def test_configure_audio_raises_on_missing_voice_type(tmp_path, monkeypatch):
+    """resume 缺 voice_type（必填）→ 抛错暴露，不静默接受。"""
+    _mock_interrupt(monkeypatch, {"speed": 1.0})
+    state = {"audio_config": {}}
+    try:
+        configure_audio(state)
+    except ValueError:
+        return
+    raise AssertionError("应抛 ValueError（缺 voice_type）")
 
 
 def test_final_decision_done(tmp_path, monkeypatch):
@@ -423,65 +469,85 @@ def test_build_timeline_matches_storyboard_and_timestamps(tmp_path):
 
 
 def _make_render_state(tmp_path, planned=("chapter_01",)):
-    """构造渲染阶段初始 state：planned 章节已落盘 storyboard.json，artifacts 含 storyboard_path。"""
+    """构造渲染阶段初始 state：planned 章节稿件已入 render_batch（不再落盘 storyboard.json）。"""
     novel_dir = tmp_path / "novel"
     (novel_dir / "chapters").mkdir(parents=True, exist_ok=True)
     chapters_status = {}
-    chapters_artifacts = {}
+    render_batch = []
     storyboard = [{"storyboard_id": "sb_001", "scene_change": True, "text": "t", "speaker": "主角", "scene_prompt": "p"}]
+    script = [{"speaker": "主角", "text": "t", "action": ""}]
     for ch in planned:
         (novel_dir / "chapters" / f"{ch}.txt").write_text("原文", encoding="utf-8")
-        sb_path = novel_dir / ch / "storyboard.json"
-        sb_path.parent.mkdir(parents=True, exist_ok=True)
-        sb_path.write_text(json.dumps(storyboard, ensure_ascii=False), encoding="utf-8")
         chapters_status[ch] = "planned"
-        chapters_artifacts[ch] = {"storyboard_path": str(sb_path), "script_path": str(novel_dir / ch / "script.json")}
+        render_batch.append({"chapter_id": ch, "script": script, "storyboard": storyboard})
     return {
         "novel_dir": str(novel_dir),
         "chapters_status": chapters_status,
-        "chapters_artifacts": chapters_artifacts,
+        "chapters_artifacts": {},
+        "render_batch": render_batch,
     }
 
 
-def test_render_dispatch_reads_storyboard_from_disk(tmp_path):
-    """render_dispatch 选取第一个 planned 章节，从盘读 storyboard.json 写入 current_storyboard。"""
+def test_render_dispatch_reads_storyboard_from_batch(tmp_path):
+    """render_dispatch 选取第一个 planned 章节，从 render_batch 读 storyboard/script 写入 current_*。"""
     state = _make_render_state(tmp_path, planned=["chapter_01", "chapter_02"])
     result = render_dispatch(state)
     assert result["current_chapter_id"] == "chapter_01"
     assert len(result["current_storyboard"]) == 1
     assert result["current_storyboard"][0]["storyboard_id"] == "sb_001"
+    assert len(result["current_script"]) == 1  # script 也从 render_batch 取
     assert result["current_image_map"] == {}
-    # 选取的章节状态保持 planned（直到 render_build_timeline 标 rendered）
+    # 选取的章节状态保持 planned（状态由后续 render_* 节点推进）
     assert "chapters_status" not in result  # 未改 status
 
 
-def test_render_dispatch_no_planned_returns_empty(tmp_path):
-    """无 planned 章节：render_dispatch 不抛（条件边负责路由到 export）。"""
+def test_render_dispatch_no_planned_clears_batch(tmp_path):
+    """无 planned 章节（本批渲染完）：清空 render_batch，current_chapter_id 置空。"""
     state = _make_render_state(tmp_path, planned=[])
     state["chapters_status"] = {"chapter_01": "rendered"}
+    state["render_batch"] = [{"chapter_id": "chapter_01", "script": [], "storyboard": []}]
     result = render_dispatch(state)
     assert result["current_chapter_id"] == ""
+    assert result["render_batch"] == []  # 本批完成，清空重新积累
 
 
-def test_render_dispatch_raises_on_missing_storyboard_path(tmp_path):
-    """planned 章节缺 storyboard_path（规划未落盘）必须抛错，不静默跳过。"""
+def test_render_dispatch_raises_on_missing_batch_item(tmp_path):
+    """planned 章节在 render_batch 中无稿件（review_chapter 未入）必须抛错，不静默跳过。"""
     novel_dir = tmp_path / "novel"
     (novel_dir / "chapters").mkdir(parents=True, exist_ok=True)
     (novel_dir / "chapters" / "chapter_01.txt").write_text("原文", encoding="utf-8")
     state = {
         "novel_dir": str(novel_dir),
         "chapters_status": {"chapter_01": "planned"},
-        "chapters_artifacts": {"chapter_01": {}},  # 缺 storyboard_path
+        "render_batch": [],  # 缺该章稿件
     }
     try:
         render_dispatch(state)
     except ValueError:
         return
-    raise AssertionError("应抛 ValueError（planned 章节缺 storyboard_path）")
+    raise AssertionError("应抛 ValueError（planned 章节在 render_batch 无稿件）")
 
 
-def test_render_build_timeline_marks_rendered_and_preserves_paths(tmp_path):
-    """R8：render_build_timeline 标 rendered + timeline.json 落盘 + 保留 script_path/storyboard_path。"""
+def test_render_generate_images_marks_images_done(tmp_path):
+    """render_generate_images 完成后推进状态 planned → images_done。"""
+    state = _make_render_state(tmp_path)
+    state.update({"current_chapter_id": "chapter_01", "current_storyboard": []})
+    result = render_generate_images(state)
+    assert result["current_image_map"] == {}
+    assert result["chapters_status"]["chapter_01"] == "images_done"
+
+
+def test_render_synthesize_audio_marks_audio_done(tmp_path):
+    """render_synthesize_audio 完成后推进状态 images_done → audio_done。"""
+    state = _make_render_state(tmp_path)
+    state["chapters_status"]["chapter_01"] = "images_done"
+    state.update({"current_chapter_id": "chapter_01"})
+    result = render_synthesize_audio(state)
+    assert result["chapters_status"]["chapter_01"] == "audio_done"
+
+
+def test_render_build_timeline_marks_rendered(tmp_path):
+    """R8：render_build_timeline 标 rendered + timeline.json 落盘。"""
     state = _make_render_state(tmp_path)
     # 模拟 render_dispatch 已选取该章 + 渲染子节点空走通后的中间态
     state.update(
@@ -497,11 +563,10 @@ def test_render_build_timeline_marks_rendered_and_preserves_paths(tmp_path):
     result = render_build_timeline(state)
     assert result["chapters_status"]["chapter_01"] == "rendered"
     assert Path(result["current_timeline_path"]).exists()
-    # build_timeline merge 后应保留规划阶段落盘的 script_path/storyboard_path
+    # build_timeline merge 写入媒体产物路径（稿件不入 artifacts）
     art = result["chapters_artifacts"]["chapter_01"]
-    assert "script_path" in art
-    assert "storyboard_path" in art
     assert "timeline_path" in art
+    assert "audio_path" in art
 
 
 def test_export_to_jianying_filters_rendered_not_done(tmp_path):

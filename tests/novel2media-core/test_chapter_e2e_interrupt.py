@@ -105,7 +105,7 @@ async def test_chapter_subgraph_resume_pass_marks_planned(tmp_path, monkeypatch)
 
     # 跑到 review_chapter interrupt
     await graph.ainvoke(initial, config=config)
-    # resume "pass" → 有新角色 → 进 character_setup_subgraph → upload_tri_view interrupt
+    # resume "pass" → 有新角色 → 进 character_setup_subgraph → batch_upload_tri_view interrupt
     result = await graph.ainvoke(Command(resume="pass"), config=config)
 
     # review_chapter pass 已标 planned
@@ -113,11 +113,11 @@ async def test_chapter_subgraph_resume_pass_marks_planned(tmp_path, monkeypatch)
     # 新角色进 setup_queue（tri_view_prompt 随角色流转）
     assert result["setup_queue"][0]["name"] == "主角"
     assert result["setup_queue"][0]["tri_view_prompt"]
-    # 应停在 character_setup_subgraph 内的 upload_tri_view interrupt（setup_queue 非空）
+    # 应停在 character_setup_subgraph 内的 batch_upload_tri_view interrupt（setup_queue 非空）
     assert "__interrupt__" in result
     interrupt_payload = result["__interrupt__"][0].value
-    assert interrupt_payload["type"] == "tri_view_upload"
-    assert interrupt_payload["character"]["tri_view_prompt"]  # 上传面板参考提示词
+    assert interrupt_payload["type"] == "tri_view_upload_batch"
+    assert interrupt_payload["characters"][0]["tri_view_prompt"]  # 上传面板参考提示词
 
 
 @pytest.mark.asyncio

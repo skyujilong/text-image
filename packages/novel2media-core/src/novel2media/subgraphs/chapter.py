@@ -4,6 +4,7 @@ from langgraph.graph import END, StateGraph
 from novel2media.nodes.chapter_nodes import (
     adapt_script,
     chapter_advance_decision,
+    configure_audio,
     detect_new_characters_llm,
     export_to_jianying,
     final_decision,
@@ -35,8 +36,8 @@ def _route_review(state: GraphState) -> str:
 
 
 def _route_chapter_advance(state: GraphState) -> str:
-    """章节推进路由：render→进入批量渲染；其它（next/空）→继续规划下一章。"""
-    return "render_dispatch" if state.get("_chapter_advance") == "render" else "load_chapter"
+    """章节推进路由：render→配置音色（已配自动跳过）后进入批量渲染；其它（next/空）→继续规划下一章。"""
+    return "configure_audio" if state.get("_chapter_advance") == "render" else "load_chapter"
 
 
 def _has_planned(state: GraphState) -> bool:
@@ -64,7 +65,7 @@ def build_chapter_subgraph(checkpointer=None):
 
     规划：load_chapter → adapt_script → generate_storyboard → detect_new_characters_llm
           → review_chapter →(character_setup_subgraph | chapter_advance_decision)
-    推进：chapter_advance_decision →(load_chapter | render_dispatch)
+    推进：chapter_advance_decision →(load_chapter | configure_audio → render_dispatch)
     渲染：render_dispatch → render_generate_images → render_synthesize_audio
           → render_build_timeline →(render_dispatch | export_to_jianying)
     收尾：export_to_jianying → final_decision →(END | load_chapter)
@@ -82,6 +83,7 @@ def build_chapter_subgraph(checkpointer=None):
     builder.add_node("review_chapter", review_chapter)
     builder.add_node("character_setup_subgraph", character_setup_subgraph_compiled)
     builder.add_node("chapter_advance_decision", chapter_advance_decision)
+    builder.add_node("configure_audio", configure_audio)
     # 渲染阶段节点
     builder.add_node("render_dispatch", render_dispatch)
     builder.add_node("render_generate_images", render_generate_images)
@@ -113,8 +115,9 @@ def build_chapter_subgraph(checkpointer=None):
     builder.add_conditional_edges(
         "chapter_advance_decision",
         _route_chapter_advance,
-        {"load_chapter": "load_chapter", "render_dispatch": "render_dispatch"},
+        {"load_chapter": "load_chapter", "configure_audio": "configure_audio"},
     )
+    builder.add_edge("configure_audio", "render_dispatch")
 
     # 渲染阶段边（顺序循环 + checkpoint 续跑）
     builder.add_conditional_edges(

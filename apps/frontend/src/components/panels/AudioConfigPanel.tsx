@@ -13,28 +13,35 @@ import { api } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 
 const schema = z.object({
+  voice_type: z.string().min(1, '必填'),
   speed: z.number().min(0.5).max(2.0),
   pitch: z.number().min(-12).max(12),
-  temperature: z.number().min(0).max(1),
+  volume: z.number().min(0).max(100),
 })
 
 type FormValues = z.infer<typeof schema>
 
 interface Props {
   runId: string
-  currentParams?: Partial<FormValues>
+  current?: Partial<FormValues>
   open: boolean
   onClose: () => void
 }
 
-export default function VoiceParamsManual({ runId, currentParams, open, onClose }: Props) {
+/**
+ * 全局音色配置面板（单播，整本书一份）。
+ * 仅在 audio_config 为空时由 configure_audio 节点 interrupt 弹出；已配则节点跳过、不再弹。
+ * resume {voice_type, speed, pitch, volume} → 写回 MainGraphState.audio_config。
+ */
+export default function AudioConfigPanel({ runId, current, open, onClose }: Props) {
   const { setActiveInteraction } = useRunStore()
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
-      speed: currentParams?.speed ?? 1.0,
-      pitch: currentParams?.pitch ?? 0,
-      temperature: currentParams?.temperature ?? 0.3,
+      voice_type: current?.voice_type ?? '',
+      speed: current?.speed ?? 1.0,
+      pitch: current?.pitch ?? 0,
+      volume: current?.volume ?? 100,
     },
   })
 
@@ -52,11 +59,24 @@ export default function VoiceParamsManual({ runId, currentParams, open, onClose 
     <Sheet open={open} onOpenChange={(o: boolean) => !o && onClose()}>
       <SheetContent side="right" className="w-[400px] sm:max-w-[400px]">
         <SheetHeader>
-          <SheetTitle>语音参数设置（voice_params_manual）</SheetTitle>
+          <SheetTitle>配置音色（configure_audio · 全局单播）</SheetTitle>
         </SheetHeader>
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 py-4">
+            <FormField
+              control={form.control}
+              name="voice_type"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>音色 ID（voice_type）</FormLabel>
+                  <FormControl>
+                    <Input {...field} placeholder="如 zh_female_xxx" />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
             <FormField
               control={form.control}
               name="speed"
@@ -95,14 +115,14 @@ export default function VoiceParamsManual({ runId, currentParams, open, onClose 
             />
             <FormField
               control={form.control}
-              name="temperature"
+              name="volume"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>随机度（0 ~ 1）</FormLabel>
+                  <FormLabel>音量（0 ~ 100）</FormLabel>
                   <FormControl>
                     <Input
                       type="number"
-                      step="0.05"
+                      step="1"
                       {...field}
                       onChange={(e) => field.onChange(e.target.valueAsNumber)}
                     />

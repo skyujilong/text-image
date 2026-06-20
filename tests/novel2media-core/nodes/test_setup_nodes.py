@@ -1,19 +1,14 @@
 from novel2media.nodes.setup_nodes import (
-    fix_character_profile,
+    batch_fix_profiles,
+    batch_upload_tri_view,
     setup_dispatcher,
-    upload_tri_view,
-    voice_card_draw,
-    voice_params_choice,
-    voice_params_manual,
 )
 
 
 def _base_state(**overrides):
     state = {
         "setup_queue": [],
-        "setup_current_character": {},
         "setup_image_candidates": [],
-        "setup_voice_candidates": [],
         "characters_profile": {},
         "novel_dir": "/tmp/novel",
     }
@@ -26,188 +21,112 @@ def _mock_interrupt(monkeypatch, return_value):
     monkeypatch.setattr("novel2media.nodes.setup_nodes.interrupt", lambda payload: return_value)
 
 
-# --- setup_dispatcher ---
+# --- setup_dispatcher（批量化：只判断空否，不 pop）---
 
 
-def test_dispatcher_pops_first_character():
-    chars = [
-        {"name": "旁白", "appearance": ""},
-        {"name": "主角", "appearance": "白发"},
-    ]
+def test_dispatcher_non_empty_queue_passthrough():
+    """非空队列：透传（不 pop），由 batch_upload_tri_view 一次处理全部。"""
+    chars = [{"name": "旁白", "appearance": ""}, {"name": "主角", "appearance": "白发"}]
     state = _base_state(setup_queue=chars)
-    result = setup_dispatcher(state)
-    assert result["setup_current_character"]["name"] == "旁白"
-    assert len(result["setup_queue"]) == 1
+    assert setup_dispatcher(state) == {}
 
 
-def test_dispatcher_empty_queue_returns_sentinel():
+def test_dispatcher_empty_queue_returns_empty():
+    """空队列：返回空 setup_queue 供条件边退出子图。"""
     state = _base_state(setup_queue=[])
-    result = setup_dispatcher(state)
-    assert result["setup_current_character"] == {}
-    assert result["setup_queue"] == []
+    assert setup_dispatcher(state) == {"setup_queue": []}
 
 
-# --- upload_tri_view（R1：节点内零副作用）---
+# --- batch_upload_tri_view（R1：节点内零副作用）---
 
 
-def test_upload_tri_view_binds_comfyui_name(tmp_path, monkeypatch):
-    """上传：resume {comfyui_name} → 写入 setup_current_character.tri_view，不写盘。"""
-    _mock_interrupt(monkeypatch, {"comfyui_name": "tri_zhujue.png"})
+def test_batch_upload_binds_paths(tmp_path, monkeypatch):
+    """resume {tri_views: {name: path}} → 写回 setup_queue 各角色 tri_view，不写盘。"""
+    _mock_interrupt(
+        monkeypatch,
+        {
+            "tri_views": {"主角": "characters/novel-主角.png", "旁白": "characters/novel-旁白.png"},
+            "skipped": [],
+        },
+    )
     state = _base_state(
         novel_dir=str(tmp_path),
-        setup_current_character={"name": "主角", "appearance": "白发"},
+        setup_queue=[
+            {"name": "主角", "appearance": "白发"},
+            {"name": "旁白", "appearance": ""},
+        ],
     )
-    result = upload_tri_view(state)
-    assert result["setup_current_character"]["tri_view"] == "tri_zhujue.png"
-    # R1：节点内不写盘（上传由前端 POST /upload 完成）
+    result = batch_upload_tri_view(state)
+    by_name = {c["name"]: c for c in result["setup_queue"]}
+    assert by_name["主角"]["tri_view"] == "characters/novel-主角.png"
+    assert by_name["旁白"]["tri_view"] == "characters/novel-旁白.png"
+    # R1：节点内不写盘（上传由前端 POST /upload 完成，节点零副作用）
     assert not (tmp_path / "characters").exists()
 
 
-def test_upload_tri_view_skip_returns_empty(tmp_path, monkeypatch):
-    """跳过小角色：resume {skip:true} → 返回空，不绑定 tri_view。"""
-    _mock_interrupt(monkeypatch, {"skip": True})
-    state = _base_state(
-        novel_dir=str(tmp_path),
-        setup_current_character={"name": "路人甲"},
+def test_batch_upload_skip_character(tmp_path, monkeypatch):
+    """skipped 角色不绑 tri_view，原样保留在队列。"""
+    _mock_interrupt(
+        monkeypatch,
+        {"tri_views": {"主角": "characters/主角.png"}, "skipped": ["路人甲"]},
     )
-    assert upload_tri_view(state) == {}
-
-
-def test_upload_tri_view_raises_on_missing_comfyui_name(tmp_path, monkeypatch):
-    """非 skip 但缺 comfyui_name → 抛错暴露。"""
-    _mock_interrupt(monkeypatch, {"path": "/some/path"})
     state = _base_state(
         novel_dir=str(tmp_path),
-        setup_current_character={"name": "主角"},
+        setup_queue=[{"name": "主角"}, {"name": "路人甲"}],
+    )
+    result = batch_upload_tri_view(state)
+    by_name = {c["name"]: c for c in result["setup_queue"]}
+    assert by_name["主角"]["tri_view"] == "characters/主角.png"
+    assert "tri_view" not in by_name["路人甲"]
+
+
+def test_batch_upload_raises_on_missing_tri_view(tmp_path, monkeypatch):
+    """未 skip 但缺 tri_view → 抛错暴露（不静默当跳过）。"""
+    _mock_interrupt(monkeypatch, {"tri_views": {}, "skipped": []})
+    state = _base_state(
+        novel_dir=str(tmp_path),
+        setup_queue=[{"name": "主角"}],
     )
     try:
-        upload_tri_view(state)
+        batch_upload_tri_view(state)
     except ValueError:
         return
-    raise AssertionError("应抛 ValueError（resume 缺 comfyui_name）")
+    raise AssertionError("应抛 ValueError（resume 缺 tri_view）")
 
 
-# --- voice_params_choice（R18）---
+# --- batch_fix_profiles（R11：name-based，批量合并 + 落盘）---
 
 
-def test_voice_params_choice_manual(tmp_path, monkeypatch):
-    _mock_interrupt(monkeypatch, "manual")
-    state = _base_state(setup_current_character={"name": "主角"})
-    assert voice_params_choice(state) == {"_voice_route": "voice_params_manual"}
-
-
-def test_voice_params_choice_draw(tmp_path, monkeypatch):
-    _mock_interrupt(monkeypatch, "draw")
-    state = _base_state(setup_current_character={"name": "主角"})
-    assert voice_params_choice(state) == {"_voice_route": "voice_card_draw"}
-
-
-def test_voice_params_choice_raises_on_invalid(tmp_path, monkeypatch):
-    _mock_interrupt(monkeypatch, "other")
-    state = _base_state(setup_current_character={"name": "主角"})
-    try:
-        voice_params_choice(state)
-    except ValueError:
-        return
-    raise AssertionError("应抛 ValueError（非法 resume 值）")
-
-
-# --- voice_params_manual（R18）---
-
-
-def test_voice_params_manual_pass_writes_params(tmp_path, monkeypatch):
-    params = {"speed": 1.0, "pitch": 0}
-    _mock_interrupt(monkeypatch, params)
-    state = _base_state(setup_current_character={"name": "主角"})
-    result = voice_params_manual(state)
-    assert result["_manual_review"] == "pass"
-    assert result["setup_current_character"]["voice_params"] == params
-
-
-def test_voice_params_manual_revise_returns_retry(tmp_path, monkeypatch):
-    _mock_interrupt(monkeypatch, {"decision": "revise"})
-    state = _base_state(setup_current_character={"name": "主角"})
-    result = voice_params_manual(state)
-    assert result["_manual_review"] == "revise"
-    assert result["_manual_retry"] == "adjust"
-
-
-# --- voice_card_draw（R2/R18：TTS 空走，防死循环）---
-
-
-def test_voice_card_draw_default_selected(tmp_path, monkeypatch):
-    """TTS 空走：resume 整数 index >= 0 → 选定默认音色，_card_selected=True。"""
-    _mock_interrupt(monkeypatch, 0)
-    state = _base_state(setup_current_character={"name": "主角"})
-    result = voice_card_draw(state)
-    assert result["_card_selected"] is True
-    assert result["setup_current_character"]["voice_params"] == {"default": True}
-
-
-def test_voice_card_draw_accepts_string_index(tmp_path, monkeypatch):
-    """R2：字符串 index 转 int，不抛 TypeError。"""
-    _mock_interrupt(monkeypatch, "0")
-    state = _base_state(setup_current_character={"name": "主角"})
-    result = voice_card_draw(state)
-    assert result["_card_selected"] is True
-
-
-def test_voice_card_draw_raises_on_non_int(tmp_path, monkeypatch):
-    _mock_interrupt(monkeypatch, "abc")
-    state = _base_state(setup_current_character={"name": "主角"})
-    try:
-        voice_card_draw(state)
-    except ValueError:
-        return
-    raise AssertionError("应抛 ValueError（非整数 index）")
-
-
-def test_voice_card_draw_raises_on_negative(tmp_path, monkeypatch):
-    """idx<0（拒绝）在 TTS 未接入时不支持，抛错而非死循环。"""
-    _mock_interrupt(monkeypatch, -1)
-    state = _base_state(setup_current_character={"name": "主角"})
-    try:
-        voice_card_draw(state)
-    except ValueError:
-        return
-    raise AssertionError("应抛 ValueError（idx<0 在 TTS 未接入时不支持）")
-
-
-# --- fix_character_profile（R11：name-based）---
-
-
-def test_fix_character_profile_merges_into_profile(tmp_path):
+def test_batch_fix_profiles_merges_all(tmp_path):
     state = _base_state(
         novel_dir=str(tmp_path),
-        setup_current_character={
-            "name": "主角",
-            "voice_params": {"seed": 1234, "speed": 1.0},
-            "tri_view": "tri_zhujue.png",
-            "appearance": "白发",
-        },
+        setup_queue=[
+            {"name": "主角", "tri_view": "tri_zhujue.png", "appearance": "白发"},
+            {"name": "路人甲", "appearance": ""},
+        ],
         characters_profile={"旁白": {"appearance": ""}},
     )
-    result = fix_character_profile(state)
+    result = batch_fix_profiles(state)
     profile = result["characters_profile"]
-    # R11：name-based key
+    # R11：name-based key，批量合并
     assert "主角" in profile
+    assert "路人甲" in profile
     assert "旁白" in profile  # 原有保留
-    # value 保留 name（与 CharacterProfile 类型约定一致）；id 不入
-    assert profile["主角"]["name"] == "主角"
-    assert "id" not in profile["主角"]
-    assert profile["主角"]["voice_params"]["seed"] == 1234
     assert profile["主角"]["tri_view"] == "tri_zhujue.png"
+    assert "id" not in profile["主角"]
+    # 处理完毕清空队列
+    assert result["setup_queue"] == []
     out_file = tmp_path / "characters" / "characters_profile.json"
     assert out_file.exists()
 
 
-def test_fix_character_profile_raises_on_missing_name(tmp_path):
+def test_batch_fix_profiles_raises_on_missing_name(tmp_path):
     state = _base_state(
         novel_dir=str(tmp_path),
-        setup_current_character={"appearance": "白发"},  # 缺 name
+        setup_queue=[{"appearance": "白发"}],  # 缺 name
     )
     try:
-        fix_character_profile(state)
+        batch_fix_profiles(state)
     except ValueError:
         return
     raise AssertionError("应抛 ValueError（角色缺 name）")

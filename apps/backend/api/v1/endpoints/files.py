@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import anyio
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
@@ -27,34 +26,34 @@ async def serve_file(file_path: str):
     return FileResponse(str(target))
 
 
-def _load_comfyui_config(novel_dir: str):
-    """加载服务配置，优先小说目录 config/，回退项目根 config/。
+# OS 与 ComfyUI 通用的文件名非法字符。保留中文与空格（用户要求可读命名，不做 slug 化）。
+_FILENAME_ILLEGAL = set('/\\:*?"<>|')
 
-    与 image_nodes/setup_nodes 的 _load_config 同策略，供上传接口构造 ComfyUIClient。
+
+def _safe_filename_part(s: str) -> str:
+    """过滤文件名非法字符，去首尾空格与点；空串 fallback 为 unnamed。
+
+    用于把小说名/人物名拼成 `{小说名}-{人物名}.ext`，避免半截文件名
+    （如小说名为空时拼出 `-人物名.png`）。
     """
-    from novel2media.config import ServicesConfig
-
-    PROJECT_ROOT = Path(__file__).resolve().parents[5]
-    cfg_path = Path(novel_dir) / "config" / "services.json"
-    if not cfg_path.exists():
-        cfg_path = PROJECT_ROOT / "config" / "services.json"
-    return ServicesConfig.from_file(cfg_path)
+    cleaned = "".join(c for c in (s or "") if c not in _FILENAME_ILLEGAL).strip().strip(".")
+    return cleaned or "unnamed"
 
 
 @router.post("/upload")
 async def upload_file(
     run_id: str = Form(...),
     subdir: str = Form(...),
+    character_name: str = Form(...),
     file: UploadFile = File(...),
 ):
-    """上传文件到 run 的 novel_dir 下指定子目录，并转存到 ComfyUI input。
+    """上传三视图到 run 的 novel_dir/characters，按 `{小说名}-{人物名}.ext` 命名。
 
-    R14：前端只知 run_id，后端从 runs.db 取 novel_dir 推断落盘位置。
-    上传本身是 IO 副作用，放在 API 层（不在 graph 节点内），符合 R1
-    （upload_tri_view 节点零副作用）。返回 {path, comfyui_name}，前端拿
-    comfyui_name 后 resume 给 upload_tri_view 节点。
+    本端点只做本地落盘，**不调用 ComfyUI**——三视图转存到 ComfyUI input 推迟到
+    渲染阶段批量进行（避免 setup 环节强依赖 ComfyUI 可达）。返回本地相对路径，
+    前端拿 path 后 resume {tri_views: {name: path}, skipped: [...]} 给 batch_upload_tri_view 节点。
 
-    subdir 用于隔离不同用途的文件（如 characters/<name>）。
+    命名带小说名前缀，防多小说角色名相同时在（未来渲染上传的）ComfyUI input 目录冲突。
     """
     # 路径越界校验：subdir 不允许绝对路径或上跳
     if Path(subdir).is_absolute() or ".." in Path(subdir).parts:
@@ -73,21 +72,14 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="invalid subdir") from e
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # 原始文件名简单清洗，避免路径穿越
-    safe_name = Path(file.filename or "upload.bin").name
-    local_path = target_dir / safe_name
+    # 命名：{小说名}-{人物名}{ext}，安全过滤后多小说不冲突
+    suffix = Path(file.filename or "upload.png").suffix or ".png"
+    filename = (
+        f"{_safe_filename_part(meta.novel_title)}-{_safe_filename_part(character_name)}{suffix}"
+    )
+    local_path = target_dir / filename
     content = await file.read()
     local_path.write_bytes(content)
 
-    # 转存到 ComfyUI input（同步 httpx 调用，放线程池避免阻塞 event loop）
-    try:
-        from novel2media.clients.comfyui import ComfyUIClient
-
-        cfg = _load_comfyui_config(meta.novel_dir)
-        client = ComfyUIClient(cfg.comfyui_url, cfg.comfyui_timeout)
-        comfyui_name = await anyio.to_thread.run_sync(client.upload_image, local_path)
-    except Exception as e:  # ComfyUI 不可达等：暴露真实错误，不静默吞错
-        raise HTTPException(status_code=502, detail=f"comfyui upload failed: {e}") from e
-
     rel_path = str(local_path.relative_to(novel_dir.resolve()))
-    return {"path": rel_path, "comfyui_name": comfyui_name}
+    return {"path": rel_path}

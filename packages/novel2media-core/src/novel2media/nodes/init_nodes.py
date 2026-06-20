@@ -70,16 +70,14 @@ def load_config(state: dict) -> dict:
         "chapters_artifacts": {},
         # setup/control 字段初始化为默认值（防旧 state/fork 残留串扰路由）
         "setup_queue": [],
-        "setup_current_character": {},
         "setup_image_candidates": [],
-        "setup_voice_candidates": [],
         "pending_new_characters": [],
         "_init_characters_review": "",
-        "_voice_route": "",
-        "_manual_review": "",
-        "_manual_retry": "",
-        "_card_selected": False,
         "_route": "",
+        # 全局音频配置（单播，整本书一份；configure_audio 节点配置，跨章节持久）
+        "audio_config": {},
+        # 渲染批次稿件缓存（规划阶段积累、渲染阶段读取、批次结束清空）
+        "render_batch": [],
     }
 
 
@@ -89,7 +87,7 @@ def parse_characters_llm(state: dict) -> dict:
     读 character_profiles（textarea 原文）+ worldview。空 textarea 直接返回空
     pending_new_characters（不调 LLM），由条件边跳过审阅直接 END。
     每个角色必含非空 name/appearance/tri_view_prompt，缺则抛错；重复 name 抛错。
-    不落盘草稿（最终档案由 fix_character_profile 落盘）。
+    不落盘草稿（最终档案由 batch_fix_profiles 落盘）。
     """
     raw = (state.get("character_profiles") or "").strip()
     if not raw:

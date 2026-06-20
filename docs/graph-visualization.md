@@ -109,11 +109,26 @@ interface GraphSchema { nodes: GraphSchemaNode[]; edges: GraphSchemaEdge[] }
 - `status_key` = `[...drillPath, nodeId].join('/')`，下钻后子图内节点 key 带父路径前缀。
 - 后端会对祖先子图节点传播同状态（`propagate=True`），因此**定位活跃节点时需 internal 优先于 subgraph**（见 4.5）。
 
-### 4.5 自动定位（`components/flow/FlowCanvas.tsx` 的 `useAutoCenter`）
+### 4.5 自动定位与自动下钻（`components/flow/FlowCanvas.tsx`）
 
 - `FlowCanvas` 必须被 `ReactFlowProvider` 包裹，内部组件才能用 `useReactFlow`。
-- `pickActiveNode`：当前可见层级中选活跃节点，优先级 `waiting_human > running`，同状态 `internal > subgraph`（避开祖先传播的虚假活跃）。
-- 仅当活跃节点**不在当前视口可见区**时 `setCenter` 平滑居中（400ms，保持当前缩放）；在视口内则不动，不打断用户手动平移/缩放。
+- `useAutoCenter` / `pickActiveNode`：当前可见层级中选活跃节点，优先级 `waiting_human > running`，同状态 `internal > subgraph`（避开祖先传播的虚假活跃）。仅当活跃节点**不在当前视口可见区**时 `setCenter` 平滑居中（400ms，保持当前缩放）；在视口内则不动，不打断用户手动平移/缩放。
+- `useAutoFollow`（自动下钻跟随运行）：当 `runStore.autoFollow === true` 时，从全局 `nodeStatuses` 选最深活跃节点（`waiting_human` 强优先 `+1000`，再按 statusKey 段数深优先，避开祖先传播的虚假活跃），把 `drillPath` 对齐到其祖先 subgraph 路径（`bestKey.split('/').slice(0, -1)`），从而自动进入正在运行的子图；下钻后由 `useAutoCenter` 在子图层定位内部活跃节点。仅当活跃节点位于子图内部（祖先路径非空）才主动下钻，顶层活跃不强制拉回，避免子图间过渡闪烁。
+- `autoFollow` 语义（`runStore`）：
+  - `pushDrill` / `popDrill`（用户手动下钻/返回）置 `autoFollow = false` —— 用户已主动选择浏览位置，停止跟随。
+  - `resetDrill`（切 run 时调用）置 `autoFollow = true` —— 新 run 应跟随运行。
+  - `setDrillPath`（整体替换 drillPath）**不触碰 `autoFollow`** —— 仅供 `useAutoFollow` 内部使用。
+  - 画布右上角「跟随运行」开关（`setAutoFollow`）让用户在手动浏览后重新开启跟随。
+- **顺序约束**：视口恢复 effect 必须声明在 `useAutoCenter` 之前（先恢复该层视口，再判断活跃节点是否在视口内、不在才 `setCenter`），否则 `setCenter` 会被视口恢复覆盖。
+
+### 4.6 视图状态持久化
+
+- **schema 缓存**：`useGraphSchema` 维护模块级 `schemaCache: Map<levelKey, GraphSchema>`（顶层 key = `ROOT_LEVEL_KEY = '__root__'`，子图 key = subgraphId）。schema 在后端构建期生成、运行时不变，可安全常驻。每个层级**首次访问才请求并 `isLoading`**；切回已访问层命中缓存、同步构建、`isLoading` 始终 false，`<ReactFlow>` 不再因 loading 卸载重挂载，从而避免 viewport 丢失。
+- **每层 viewport 记忆**：`runStore.viewports: Record<levelKey, { x, y, zoom }>`。
+  - `<ReactFlow>` 不再使用裸 `fitView` prop（会在每次重挂载时重置视口）。改用 `onMoveEnd` 回调：拖拽/缩放/编程式动画结束时调 `setViewport(levelKey, getViewport())` 记录。
+  - 切层 effect（依赖 `levelKey`、`nodes`、`isLoading`）：有记忆视口则 `setViewport(saved, { duration: 400 })` 恢复，否则 `fitView({ duration: 400 })`（首次进入该层）。
+  - 不在 render 中订阅整个 `viewports`（避免每次拖拽写 store 触发重渲染），effect 内用 `useRunStore.getState().viewports[levelKey]` 按需读取。
+- 节点布局仍由 dagre 每次 build 计算（布局对同一 schema 稳定），不持久化用户拖拽位置。
 
 ---
 
@@ -125,7 +140,13 @@ interface GraphSchema { nodes: GraphSchemaNode[]; edges: GraphSchemaEdge[] }
 - `apps/frontend/src/hooks/useGraphSchema.ts` — handle 命名、边样式、状态高亮派生。
 - `apps/frontend/src/components/flow/multiHandles.tsx` — handle 渲染，id 必须与 `assignHandles` 一致。
 - `apps/frontend/src/components/flow/{InternalNode,SubgraphNode}.tsx` — data 类型与 `renderHandles` 调用。
-- `apps/frontend/src/components/flow/FlowCanvas.tsx` — ReactFlowProvider 包裹、自动定位。
+- `apps/frontend/src/components/flow/FlowCanvas.tsx` — ReactFlowProvider 包裹、自动定位、自动下钻、视口恢复。
+- `apps/frontend/src/store/runStore.ts` — `autoFollow`/`viewports` 字段、`setDrillPath`/`setAutoFollow`/`setViewport`、`pushDrill`/`popDrill`/`resetDrill` 的 autoFollow 语义。
 - `apps/frontend/src/api/client.ts` `GraphSchemaEdge` 类型 — 后端新增字段须同步。
 
-**回归要点**：下钻 init_subgraph 后，`parse_characters_llm ↔ review_initial_characters` 的回边应为橙色虚线 U 形（底部出发绕回底部）带箭头；前向边为灰色直角折线带箭头；运行时当前流转边变蓝流动；运行节点跑出视口时自动平滑居中。
+**不可违背的硬约束（补充）**：
+- 自动跟随不得在 `autoFollow === false` 时改 `drillPath`；`setDrillPath` 仅供 `useAutoFollow` 内部使用，手动下钻/返回入口必须走 `pushDrill` / `popDrill`（会关 autoFollow）。
+- 视口恢复 effect 必须在 `useAutoCenter` 之前声明。
+- 不要给 `<ReactFlow>` 加回裸 `fitView` prop —— 会覆盖每层 viewport 记忆。
+
+**回归要点**：下钻 init_subgraph 后，`parse_characters_llm ↔ review_initial_characters` 的回边应为橙色虚线 U 形（底部出发绕回底部）带箭头；前向边为灰色直角折线带箭头；运行时当前流转边变蓝流动；运行节点跑出视口时自动平滑居中。运行进入子图内部节点时应自动下钻到该子图并定位内部活跃节点（autoFollow 开启时）；切图后视口应恢复到该层上次离开时的状态。

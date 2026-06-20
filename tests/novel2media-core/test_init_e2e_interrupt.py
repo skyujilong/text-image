@@ -1,7 +1,7 @@
 """端到端集成测试：验证 init 子图角色解析 + 人工审阅 + 进入 character_setup interrupt 链路。
 
 模拟：load_config → parse_characters_llm → review_initial_characters(interrupt) →
-resume pass → character_setup_subgraph 的 upload_tri_view interrupt。
+resume pass → character_setup_subgraph 的 batch_upload_tri_view interrupt。
 
 用 MemorySaver + 真实编译的 init 子图（验证 _route_after_parse /
 _route_initial_characters_review 条件边 + character_setup_subgraph 单例跨子图 interrupt）。
@@ -82,7 +82,7 @@ async def test_init_empty_characters_skips_review_to_end(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_init_resume_pass_enters_character_setup(tmp_path, monkeypatch):
-    """resume pass → 角色进 setup_queue → 跨子图停在 upload_tri_view interrupt。"""
+    """resume pass → 角色进 setup_queue → 跨子图停在 batch_upload_tri_view interrupt。"""
     novel_dir = _make_novel(tmp_path)
     fake_chars = [
         {
@@ -104,12 +104,12 @@ async def test_init_resume_pass_enters_character_setup(tmp_path, monkeypatch):
     await graph.ainvoke(initial, config=config)
     result = await graph.ainvoke(Command(resume="pass"), config=config)
 
-    # pass → setup_queue 含角色 → 进 character_setup_subgraph → 停在 upload_tri_view
+    # pass → setup_queue 含角色 → 进 character_setup_subgraph → 停在 batch_upload_tri_view
     assert "__interrupt__" in result
     payload = result["__interrupt__"][0].value
-    assert payload["type"] == "tri_view_upload"
-    assert payload["character"]["name"] == "林澈"
-    assert payload["character"]["tri_view_prompt"]  # 上传面板参考提示词
+    assert payload["type"] == "tri_view_upload_batch"
+    assert payload["characters"][0]["name"] == "林澈"
+    assert payload["characters"][0]["tri_view_prompt"]  # 上传面板参考提示词
 
 
 @pytest.mark.asyncio

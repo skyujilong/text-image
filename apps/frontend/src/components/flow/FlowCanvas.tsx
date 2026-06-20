@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import {
   ReactFlow,
   Background,
@@ -9,8 +9,9 @@ import {
   type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { useRunStore } from '@/store/runStore'
+import { useRunStore, ROOT_LEVEL_KEY } from '@/store/runStore'
 import { useGraphSchema } from '@/hooks/useGraphSchema'
+import ReopenInteractionButton from '@/components/panels/ReopenInteractionButton'
 import SubgraphNode from './SubgraphNode'
 import InternalNode from './InternalNode'
 
@@ -87,12 +88,74 @@ function useAutoCenter(nodes: Node[]) {
   }, [nodes, nodeStatuses, getNode, getViewport, setCenter, width, height])
 }
 
+/**
+ * 自动下钻跟随运行：当 autoFollow 开启时，根据全局 nodeStatuses 选出最深活跃节点，
+ * 把 drillPath 对齐到其祖先 subgraph 路径，从而自动进入正在运行的子图。
+ * - waiting_human 强优先（+1000），其次按 statusKey 段数深优先，避开祖先传播的虚假活跃。
+ * - 仅当活跃节点位于子图内部（desiredDrill 非空）才主动下钻；顶层活跃不强制拉回，
+ *   避免子图间过渡时在顶层与子图间反复闪烁。
+ * - 用户手动 pushDrill/popDrill 会关 autoFollow，本 hook 即停手；setDrillPath 不改 autoFollow。
+ */
+function useAutoFollow() {
+  const nodeStatuses = useRunStore((s) => s.nodeStatuses)
+  const drillPath = useRunStore((s) => s.drillPath)
+  const autoFollow = useRunStore((s) => s.autoFollow)
+  const setDrillPath = useRunStore((s) => s.setDrillPath)
+
+  useEffect(() => {
+    if (!autoFollow) return
+    let bestKey: string | null = null
+    let bestScore = -1
+    for (const [key, st] of Object.entries(nodeStatuses)) {
+      if (st !== 'running' && st !== 'waiting_human') continue
+      const depth = key.split('/').length
+      const score = (st === 'waiting_human' ? 1000 : 0) + depth
+      if (score > bestScore) {
+        bestScore = score
+        bestKey = key
+      }
+    }
+    if (!bestKey) return
+    const desiredDrill = bestKey.split('/').slice(0, -1)
+    if (desiredDrill.length === 0) return
+    if (drillPath.join('/') !== desiredDrill.join('/')) {
+      setDrillPath(desiredDrill)
+    }
+  }, [nodeStatuses, drillPath, autoFollow, setDrillPath])
+}
+
 function FlowCanvasInner() {
-  const { drillPath, popDrill, runError, setRunError } = useRunStore()
+  const { drillPath, popDrill, runError, setRunError, autoFollow, setAutoFollow } =
+    useRunStore()
   const currentSubgraph = drillPath[drillPath.length - 1] ?? null
+  const levelKey = currentSubgraph ?? ROOT_LEVEL_KEY
 
   const { nodes, edges, isLoading } = useGraphSchema(currentSubgraph, drillPath)
+
+  // 视口恢复必须先于 useAutoCenter：先恢复该层记忆视口（或首次 fitView），
+  // 再由 useAutoCenter 判断活跃节点是否在视口内、不在才 setCenter 跟随。
+  const { getViewport, setViewport, fitView } = useReactFlow()
+  const setViewportStore = useRunStore((s) => s.setViewport)
+
+  // 切层（或该层 nodes 首次就绪）时：有记忆视口则恢复，否则 fitView。
+  // 不订阅整个 viewports（避免每次拖拽写 store 触发重渲染），在 effect 内按需 getState 读取。
+  useEffect(() => {
+    if (isLoading) return
+    const saved = useRunStore.getState().viewports[levelKey]
+    if (saved) {
+      setViewport(saved, { duration: 400 })
+    } else {
+      fitView({ duration: 400 })
+    }
+  }, [levelKey, nodes, isLoading, setViewport, fitView])
+
   useAutoCenter(nodes)
+  useAutoFollow()
+
+  // 用户拖拽/缩放结束（含编程式动画结束）时记录当前视口，供切回该层时恢复。
+  const handleMoveEnd = useCallback(() => {
+    setViewportStore(levelKey, getViewport())
+  }, [getViewport, levelKey, setViewportStore])
 
   return (
     <div className="relative w-full h-full">
@@ -105,6 +168,22 @@ function FlowCanvasInner() {
           <span>{currentSubgraph}</span>
         </div>
       )}
+      {/* 右上角顶栏：重开审阅入口（有待处理交互且抽屉被关时出现）+ 跟随运行开关 */}
+      <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+        <ReopenInteractionButton />
+        {/* 跟随运行开关：手动下钻/返回会自动暂停，此处可重新开启 */}
+        <button
+          onClick={() => setAutoFollow(!autoFollow)}
+          className={`rounded shadow px-3 py-1 text-sm ${
+            autoFollow
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'bg-white text-gray-500 hover:text-gray-700'
+          }`}
+          title={autoFollow ? '自动跟随运行节点下钻（点击暂停）' : '已暂停跟随（点击恢复）'}
+        >
+          {autoFollow ? '跟随运行 ●' : '已暂停 ○'}
+        </button>
+      </div>
       {isLoading ? (
         <div className="w-full h-full flex items-center justify-center text-gray-400 text-sm">
           加载中...
@@ -114,7 +193,7 @@ function FlowCanvasInner() {
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
-          fitView
+          onMoveEnd={handleMoveEnd}
         >
           <Background />
           <Controls />
