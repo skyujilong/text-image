@@ -1,8 +1,9 @@
 import { memo } from 'react'
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
+import { type Node, type NodeProps } from '@xyflow/react'
 import { useRunStore, type NodeStatus } from '@/store/runStore'
 import { api } from '@/api/client'
 import { cn } from '@/lib/utils'
+import { renderHandles } from './multiHandles'
 
 const STATUS_COLORS: Record<NodeStatus, string> = {
   pending: 'border-gray-300 bg-gray-50',
@@ -12,7 +13,7 @@ const STATUS_COLORS: Record<NodeStatus, string> = {
   error: 'border-red-400 bg-red-50',
 }
 
-export type SubgraphNodeData = Node<{ label: string; subgraphId: string; statusKey: string }, 'subgraph'>
+export type SubgraphNodeData = Node<{ label: string; subgraphId: string; statusKey: string; sourceCount?: number; targetCount?: number; hasBackOut?: boolean; hasBackIn?: boolean }, 'subgraph'>
 type SubgraphNodeProps = NodeProps<SubgraphNodeData>
 
 function SubgraphNode({ data }: SubgraphNodeProps) {
@@ -63,11 +64,10 @@ function SubgraphNode({ data }: SubgraphNodeProps) {
         }}
         onDoubleClick={() => pushDrill(data.subgraphId)}
       >
-        <Handle type="target" position={Position.Left} />
+        {renderHandles(data.sourceCount ?? 0, data.targetCount ?? 0, data.hasBackOut ?? false, data.hasBackIn ?? false)}
         <div className="font-semibold text-sm">{data.label}</div>
         <div className="text-xs text-gray-500 mt-1">{status}</div>
         <div className="text-xs text-gray-400 mt-1">双击下钻</div>
-        <Handle type="source" position={Position.Right} />
       </div>
     </div>
   )

@@ -192,3 +192,20 @@ def node_name(state: GraphState) -> dict:
 - `packages/novel2media-core/src/novel2media/state.py` - 状态字段变更
 - `apps/backend/services/graph_runner.py` - Runner 核心逻辑变更
 - `packages/novel2media-core/src/novel2media/workflows.py` - Workflow 模板路径变更
+
+---
+
+## Graph 可视化规范
+
+> 修改 Graph 可视化（节点/边渲染、布局、状态联动、后端 schema 导出）前**必读** `docs/graph-visualization.md`。
+> 历史上踩过的坑：边重合看不出方向、回边飘出画布、缺箭头、回边虚线被流动动画覆盖变实线。
+
+**何时触发阅读**：改动 `apps/backend/api/v1/endpoints/graph.py`、`apps/frontend/src/hooks/useGraphSchema.ts`、`apps/frontend/src/components/flow/*`、或 `GraphSchemaEdge` 类型时。
+
+不可违背的硬约束（详见 docs）：
+
+- **后端只导出拓扑**：节点/边序列化过滤 `__start__/__end__`，子图节点标 `type=subgraph`，条件边带 `label`。**回边检测（DFS 标 `is_back_edge`）必须保留**——这是前端回边走底部的前提。
+- **前后端契约**：`is_back_edge` 是区分前向/回边的唯一依据；后端新增 edge 字段必须同步前端 `GraphSchemaEdge` 类型。
+- **前端 handle 命名是硬约定**：前向 `source-i`/`target-i`（左右分散），回边 `back-source`/`back-target`（底部回环）；`useGraphSchema.assignHandles` 与 `multiHandles.renderHandles` 的 id 必须一致，否则边连不上。
+- **边必须有箭头**：统一 `smoothstep` + `markerEnd: ArrowClosed`。回边橙色虚线**不**叠加 `animated`（会覆盖虚线）；前向活跃边蓝色 + 流动。
+- **自动定位**：`FlowCanvas` 必须 `ReactFlowProvider` 包裹；活跃节点（internal 优先于 subgraph，避开祖先传播）不在视口内时才 `setCenter`，不打断手动操作。
