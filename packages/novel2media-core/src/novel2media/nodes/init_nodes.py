@@ -4,7 +4,7 @@ from pathlib import Path
 
 from langgraph.types import interrupt
 from novel2media.chapters import chapter_sort_key
-from novel2media.llm import get_llm
+from novel2media.llm import invoke_llm
 from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.init_prompts import build_parse_initial_characters_prompt
 from novel2media_logging import get_logger
@@ -101,7 +101,7 @@ def parse_characters_llm(state: dict) -> dict:
 
     feedback = state.get("_init_characters_feedback", "") or ""
     prompt = build_parse_initial_characters_prompt(raw, state.get("worldview", ""), feedback)
-    resp = get_llm().invoke(prompt)
+    resp = invoke_llm(prompt, node="parse_characters_llm")
     parsed = parse_json_array(resp)  # [{name, appearance, tri_view_prompt}]
 
     seen: set[str] = set()

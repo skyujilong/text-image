@@ -5,7 +5,7 @@ from pathlib import Path
 
 from langgraph.types import interrupt
 from novel2media.chapters import chapter_sort_key
-from novel2media.llm import get_llm
+from novel2media.llm import invoke_llm
 from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.chapter_prompts import (
     build_adapt_script_prompt,
@@ -127,7 +127,7 @@ def adapt_script(state: dict) -> dict:
     feedback = state.get("_review_feedback", "") or ""
 
     prompt = build_adapt_script_prompt(chapter_text, characters_profile, feedback)
-    resp = get_llm().invoke(prompt)
+    resp = invoke_llm(prompt, node="adapt_script", label="adapt_script")
     script = parse_json_array(resp)  # [{"speaker","text","action"}]
 
     log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=bool(feedback))
@@ -145,7 +145,7 @@ def generate_storyboard(state: dict) -> dict:
     characters_profile = state.get("characters_profile", {})
 
     prompt = build_generate_storyboard_prompt(script, characters_profile)
-    resp = get_llm().invoke(prompt)
+    resp = invoke_llm(prompt, node="generate_storyboard", label="generate_storyboard")
     storyboard = parse_json_array(resp)  # [{"storyboard_id","scene_change","text","speaker","scene_prompt"}]
     if storyboard:
         storyboard[0]["scene_change"] = True  # 首条必为新场景
@@ -165,7 +165,7 @@ def detect_new_characters_llm(state: dict) -> dict:
     existing_names = set(state.get("characters_profile", {}).keys())
 
     prompt = build_detect_new_characters_prompt(chapter_text, existing_names)
-    resp = get_llm().invoke(prompt)
+    resp = invoke_llm(prompt, node="detect_new_characters_llm", label="detect_new_characters")
     pending = parse_json_array(resp)  # [{"name","appearance","tri_view_prompt"}]
     for c in pending:
         for field in ("name", "appearance", "tri_view_prompt"):

@@ -27,18 +27,16 @@ def _make_novel(tmp_path):
 
 
 def _mock_llm_sequence(monkeypatch, payloads):
-    """按调用顺序返回不同 payload 的 LLM mock。"""
+    """按调用顺序返回不同 payload 的 LLM mock（mock invoke_llm 统一封装）。"""
     calls = iter(payloads)
-    mock = MagicMock()
 
-    def _invoke(prompt):
+    def _invoke_llm(prompt, *, node, temperature=0.8, label=None):
         resp = MagicMock()
         resp.content = json.dumps(next(calls), ensure_ascii=False)
         return resp
 
-    mock.invoke.side_effect = _invoke
-    monkeypatch.setattr("novel2media.nodes.chapter_nodes.get_llm", lambda: mock)
-    return mock
+    monkeypatch.setattr("novel2media.nodes.chapter_nodes.invoke_llm", _invoke_llm)
+    return _invoke_llm
 
 
 @pytest.mark.asyncio

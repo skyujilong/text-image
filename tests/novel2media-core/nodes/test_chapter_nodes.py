@@ -163,10 +163,10 @@ def _make_chapter_state(tmp_path, text="原文内容", profile=None):
 
 
 def _mock_llm(monkeypatch, payload):
-    """把 chapter_nodes.get_llm 替换为返回 mock 的工厂；invoke 返回带 .content 的对象。"""
+    """mock chapter_nodes.invoke_llm（llm.py 统一封装）；返回带 .content 的对象，并记录调用入参 prompt。"""
     mock = MagicMock()
-    mock.invoke.return_value = MagicMock(content=json.dumps(payload, ensure_ascii=False))
-    monkeypatch.setattr("novel2media.nodes.chapter_nodes.get_llm", lambda: mock)
+    mock.return_value = MagicMock(content=json.dumps(payload, ensure_ascii=False))
+    monkeypatch.setattr("novel2media.nodes.chapter_nodes.invoke_llm", mock)
     return mock
 
 
@@ -180,7 +180,7 @@ def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
 
     assert result["current_script"] == fake_script
     # 无 feedback 时 prompt 不含修改意见段
-    assert "修改意见" not in mock.invoke.call_args.args[0]
+    assert "修改意见" not in mock.call_args.args[0]
     # 用完清空 feedback，避免串到下一章
     assert result["_review_feedback"] == ""
     # 不落盘：<ch>/script.json 不应存在
@@ -197,7 +197,7 @@ def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
 
     result = adapt_script(state)
 
-    prompt = mock.invoke.call_args.args[0]
+    prompt = mock.call_args.args[0]
     assert "对白太书面、节奏太快" in prompt
     assert result["_review_feedback"] == ""
 
@@ -262,8 +262,8 @@ def test_detect_new_characters_llm_raises_on_missing_tri_view_prompt(tmp_path, m
 def test_adapt_script_raises_on_malformed_llm_output(tmp_path, monkeypatch):
     state = _make_chapter_state(tmp_path)
     mock = MagicMock()
-    mock.invoke.return_value = MagicMock(content="这不是JSON")
-    monkeypatch.setattr("novel2media.nodes.chapter_nodes.get_llm", lambda: mock)
+    mock.return_value = MagicMock(content="这不是JSON")
+    monkeypatch.setattr("novel2media.nodes.chapter_nodes.invoke_llm", mock)
     try:
         adapt_script(state)
     except ValueError:

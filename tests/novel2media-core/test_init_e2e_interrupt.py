@@ -25,10 +25,11 @@ def _make_novel(tmp_path, chapters=("chapter_01.txt",)):
 
 
 def _mock_llm(monkeypatch, payload):
-    mock = MagicMock()
-    mock.invoke.return_value = MagicMock(content=json.dumps(payload, ensure_ascii=False))
-    monkeypatch.setattr("novel2media.nodes.init_nodes.get_llm", lambda: mock)
-    return mock
+    """mock invoke_llm（llm.py 统一封装），返回带 content 的 AIMessage 替身。"""
+    def _invoke_llm(prompt, *, node, temperature=0.8, label=None):
+        return MagicMock(content=json.dumps(payload, ensure_ascii=False))
+    monkeypatch.setattr("novel2media.nodes.init_nodes.invoke_llm", _invoke_llm)
+    return _invoke_llm
 
 
 @pytest.mark.asyncio
@@ -125,13 +126,12 @@ async def test_init_resume_revise_loops_back_to_parse(tmp_path, monkeypatch):
     )
     mock = MagicMock()
 
-    def _invoke(prompt):
+    def _invoke_llm(prompt, *, node, temperature=0.8, label=None):
         resp = MagicMock()
         resp.content = json.dumps(next(calls), ensure_ascii=False)
         return resp
 
-    mock.invoke.side_effect = _invoke
-    monkeypatch.setattr("novel2media.nodes.init_nodes.get_llm", lambda: mock)
+    monkeypatch.setattr("novel2media.nodes.init_nodes.invoke_llm", _invoke_llm)
 
     graph = build_init_subgraph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "i4"}}

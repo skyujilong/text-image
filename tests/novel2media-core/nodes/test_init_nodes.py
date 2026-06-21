@@ -19,10 +19,10 @@ def _make_novel(tmp_path, chapters=("chapter_01.txt",)):
 
 
 def _mock_llm(monkeypatch, payload):
-    """把 init_nodes.get_llm 替换为返回 mock 的工厂；invoke 返回带 .content 的对象。"""
+    """mock init_nodes.invoke_llm（llm.py 统一封装）；返回带 .content 的对象，并记录调用入参 prompt。"""
     mock = MagicMock()
-    mock.invoke.return_value = MagicMock(content=json.dumps(payload, ensure_ascii=False))
-    monkeypatch.setattr("novel2media.nodes.init_nodes.get_llm", lambda: mock)
+    mock.return_value = MagicMock(content=json.dumps(payload, ensure_ascii=False))
+    monkeypatch.setattr("novel2media.nodes.init_nodes.invoke_llm", mock)
     return mock
 
 
@@ -109,7 +109,7 @@ def test_parse_characters_llm_parses_main_characters(tmp_path, monkeypatch):
     assert result["pending_new_characters"] == fake
     assert result["pending_new_characters"][0]["tri_view_prompt"]
     # 无 feedback 时 prompt 不含修改意见段；用完清空
-    assert "修改意见" not in mock.invoke.call_args.args[0]
+    assert "修改意见" not in mock.call_args.args[0]
     assert result["_init_characters_feedback"] == ""
 
 
@@ -124,7 +124,7 @@ def test_parse_characters_llm_passes_review_feedback_to_prompt(tmp_path, monkeyp
         "_init_characters_feedback": "漏了重要角色、外观太简略",
     }
     result = parse_characters_llm(state)
-    prompt = mock.invoke.call_args.args[0]
+    prompt = mock.call_args.args[0]
     assert "漏了重要角色、外观太简略" in prompt
     assert result["_init_characters_feedback"] == ""
 
@@ -132,10 +132,10 @@ def test_parse_characters_llm_passes_review_feedback_to_prompt(tmp_path, monkeyp
 def test_parse_characters_llm_empty_text_skips_llm(tmp_path, monkeypatch):
     """空 character_profiles → 不调 LLM，直接返回空 pending。"""
     mock = MagicMock()
-    monkeypatch.setattr("novel2media.nodes.init_nodes.get_llm", lambda: mock)
+    monkeypatch.setattr("novel2media.nodes.init_nodes.invoke_llm", mock)
     result = parse_characters_llm({"character_profiles": "", "worldview": ""})
     assert result["pending_new_characters"] == []
-    mock.invoke.assert_not_called()  # 空 textarea 不调 LLM
+    mock.assert_not_called()  # 空 textarea 不调 LLM
 
 
 def test_parse_characters_llm_raises_on_missing_field(tmp_path, monkeypatch):
