@@ -430,39 +430,90 @@ async def get_node_state(run_id: str, node_path: str) -> dict | None:
     定位方式与 restart_from_node 一致:遍历历史(最新在前),找
     snap.next 包含目标节点的快照——即该节点即将执行前的状态。
     不依赖 metadata.writes(在 AsyncSqliteSaver 下该字段为空)。
+
+    node_path 形如 `top/sub1/.../leaf`，层数 = len(parts)。
+    LangGraph 子图 checkpoint_ns 按层累积:每层 `<node名>:<uuid>`，层间用 `|`
+    拼接。故 leaf 所在 ns 的层数 = len(parts)-1，且各层节点名须依次匹配
+    parts[:-1]。循环图（章节循环）会让同一节点在多个不同 uuid 的 ns 里
+    各有一份历史，全部搜索后取 created_at 最近的一份。
+
+    历史坑:曾用 `checkpoint_ns LIKE 'top:%'` + `ns_rows[-1]` 取单一 ns,
+    但 LIKE 会误匹配更深的嵌套 ns（如 `top:X|character_setup_subgraph:Y`）,
+    取到的 ns 里没有目标叶子节点 → 误报 404。
     """
     if _compiled_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     parts = node_path.split("/")
-    top_node = parts[0]
-    leaf_node = parts[-1] if len(parts) > 1 else top_node
+    leaf_node = parts[-1]
 
-    config = {"configurable": {"thread_id": run_id}}
+    def _ns_matches(ns: str) -> bool:
+        """ns 的层级节点名是否与 parts[:-1] 依次一致且层数正确。"""
+        levels = ns.split("|") if ns else []
+        if len(levels) != len(parts) - 1:
+            return False
+        for level, expected in zip(levels, parts[:-1]):
+            # 每层形如 `node_name:uuid`，取首个 `:` 前的节点名
+            name = level.split(":", 1)[0]
+            if name != expected:
+                return False
+        return True
 
+    # 收集所有候选命名空间（leaf 所在层），循环图可能有多份
+    top_config = {"configurable": {"thread_id": run_id}}
+    candidate_configs: list[dict] = []
     if len(parts) == 1:
-        # 顶层节点:找 next 包含该节点的最新快照(= 该节点执行前)
-        async for snap in _compiled_graph.aget_state_history(config):
-            snap_next = list(getattr(snap, "next", []) or [])
-            if top_node in snap_next:
-                return {"node": top_node, "values": getattr(snap, "values", {})}
+        # 顶层节点:leaf 在根命名空间
+        candidate_configs.append(top_config)
     else:
-        # 子图内节点:在子命名空间历史里找 next 包含 leaf_node 的最新快照
-        async with (
-            aiosqlite.connect(CHECKPOINT_DB) as db,
-            db.execute(
-                "SELECT DISTINCT checkpoint_ns FROM checkpoints WHERE thread_id=? AND checkpoint_ns LIKE ?",
-                (run_id, f"{top_node}:%"),
-            ) as cur,
-        ):
-            ns_rows = list(await cur.fetchall())
-        if not ns_rows:
-            return None
-        sub_ns = ns_rows[-1][0]  # type: ignore
-        sub_config = {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns}}
-        async for snap in _compiled_graph.aget_state_history(sub_config):
+        async with aiosqlite.connect(CHECKPOINT_DB) as db:
+            async with db.execute(
+                "SELECT DISTINCT checkpoint_ns FROM checkpoints WHERE thread_id=? AND checkpoint_ns != ''",
+                (run_id,),
+            ) as cur:
+                rows = [r[0] for r in await cur.fetchall()]
+        for ns in rows:
+            if _ns_matches(ns):
+                candidate_configs.append(
+                    {"configurable": {"thread_id": run_id, "checkpoint_ns": ns}}
+                )
+
+    # 在所有候选 ns 的历史里找 next 含 leaf_node 的最近快照
+    best: tuple[Any, Any] | None = None  # (created_at, snap)
+    for cfg in candidate_configs:
+        async for snap in _compiled_graph.aget_state_history(cfg):
             snap_next = list(getattr(snap, "next", []) or [])
             if leaf_node in snap_next:
-                return {"node": leaf_node, "values": getattr(snap, "values", {})}
+                created_at = getattr(snap, "created_at", None)
+                if best is None or (created_at is not None and (best[0] is None or created_at > best[0])):
+                    best = (created_at, snap)
+                # 该 ns 的历史已按时间倒序，命中后无需再看更旧的
+                break
+
+    if best is not None:
+        return {"node": leaf_node, "values": getattr(best[1], "values", {})}
+
+    # interrupt 节点（review_script/review_storyboard/review_new_characters 等）没有
+    # next=[node] 快照——interrupt() 暂停时该节点快照的 next 为 []，其状态只存在于
+    # 暂停快照。若 run 当前正暂停在本节点（_resolve_interrupted 解析路径匹配），
+    # 返回叶子 ns 的最新（暂停）快照 values。
+    try:
+        snap_sub = await _compiled_graph.aget_state(top_config, subgraphs=True)
+        resolved = await _resolve_interrupted(snap_sub)
+    except Exception as exc:
+        # 解析失败不静默吞：记录后按「未暂停在本节点」处理，上层返回 404。
+        log.warning("get_node_state 解析当前 interrupt 失败 run=%s path=%s err=%s", run_id, node_path, exc)
+        resolved = None
+    if resolved and resolved[1] == node_path:
+        latest: tuple[Any, Any] | None = None  # (created_at, snap)
+        for cfg in candidate_configs:
+            snap = await _compiled_graph.aget_state(cfg)
+            if snap is None:
+                continue
+            ca = getattr(snap, "created_at", None)
+            if latest is None or (ca is not None and (latest[0] is None or ca > latest[0])):
+                latest = (ca, snap)
+        if latest is not None:
+            return {"node": leaf_node, "values": getattr(latest[1], "values", {})}
 
     return None
 

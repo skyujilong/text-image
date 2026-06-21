@@ -2,57 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { GitBranch, RotateCcw } from 'lucide-react'
 import { api, type CheckpointEntry } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
+import { formatNodePathLabel } from '@/constants/nodeLabels'
 
 const ITEM_HEIGHT = 36 // px，每行高度（需与实际 py-1.5 + border 对齐）
 const OVERSCAN = 5   // 视窗外额外渲染行数，避免快速滚动白屏
-
-// 节点路径（最后一段 leaf）→ 中文友好名称
-// 路径形如 "init_subgraph/load_config"，取最后一段匹配
-const NODE_LABELS: Record<string, string> = {
-  // 顶层
-  init_subgraph: '初始化阶段',
-  chapter_loop_subgraph: '章节处理阶段',
-  // init 子图
-  load_config: '加载配置',
-  parse_characters_llm: 'LLM 解析角色',
-  review_initial_characters: '👤 审阅初始角色',
-  // character_setup 子图
-  character_setup_subgraph: '角色设定',
-  setup_dispatcher: '角色队列调度',
-  batch_upload_tri_view: '📸 上传角色三视图',
-  batch_fix_profiles: '修正角色档案',
-  // chapter 子图
-  load_chapter: '加载章节',
-  adapt_script: '剧本改编',
-  review_script: '📖 审阅剧本',
-  generate_storyboard: '生成分镜',
-  review_storyboard: '📖 审阅分镜',
-  detect_new_characters_llm: 'LLM 检测新角色',
-  review_new_characters: '📖 审阅新角色',
-  commit_chapter: '提交章节规划',
-  chapter_advance_decision: '章节推进决策',
-  configure_audio: '配置音频',
-  render_dispatch: '渲染调度',
-  render_generate_images: '生成图片',
-  render_synthesize_audio: '合成音频',
-  render_build_timeline: '构建时间轴',
-  export_to_jianying: '导出剪映草稿',
-  final_decision: '收尾决策',
-}
-
-function formatNodeLabel(nodePath: string | null): string {
-  if (!nodePath) return '(初始化)'
-  const leaf = nodePath.split('/').pop() ?? nodePath
-  const label = NODE_LABELS[leaf]
-  if (!label) return nodePath
-  // 子图路径加前缀展示层级，如 "init_subgraph / 加载配置"
-  const parts = nodePath.split('/')
-  if (parts.length > 1) {
-    const parentLabel = NODE_LABELS[parts[0]] ?? parts[0]
-    return `${parentLabel}  /  ${label}`
-  }
-  return label
-}
 
 interface Props {
   runId: string
@@ -153,7 +106,7 @@ export default function CheckpointTimeline({ runId }: Props) {
                 className="group flex items-center gap-1.5 px-3 border-b border-border/60 hover:bg-accent"
               >
                 <div className="flex-1 truncate text-foreground" title={e.node ?? ''}>
-                  {formatNodeLabel(e.node)}
+                  {formatNodePathLabel(e.node)}
                 </div>
                 <div className="text-muted-foreground/70 shrink-0 tabular-nums">
                   {e.created_at ? new Date(e.created_at).toLocaleTimeString() : '—'}

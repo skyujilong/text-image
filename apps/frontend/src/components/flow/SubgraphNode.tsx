@@ -1,9 +1,9 @@
 import { memo } from 'react'
 import { type Node, type NodeProps } from '@xyflow/react'
 import { useRunStore, type NodeStatus } from '@/store/runStore'
-import { api } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { renderHandles } from './multiHandles'
+import { getNodeLabel } from '@/constants/nodeLabels'
 
 const STATUS_COLORS: Record<NodeStatus, string> = {
   pending: 'border-gray-300 bg-gray-50',
@@ -17,43 +17,16 @@ export type SubgraphNodeData = Node<{ label: string; subgraphId: string; statusK
 type SubgraphNodeProps = NodeProps<SubgraphNodeData>
 
 function SubgraphNode({ data }: SubgraphNodeProps) {
-  const { nodeStatuses, currentRunId, runs, pushDrill, resetNodeStatuses, upsertRun, incrementStreamGeneration, setRunError } = useRunStore()
+  const { nodeStatuses, pushDrill } = useRunStore()
   const status = (nodeStatuses[data.statusKey] ?? 'pending') as NodeStatus
 
-  const handleRestartFrom = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!currentRunId) return
-    console.log('[RESTART] 点重跑 statusKey=', data.statusKey, 'runId=', currentRunId)
-    try {
-      setRunError(null) // 重新运行前先清空旧错误
-      await api.restartFrom(currentRunId, data.statusKey)
-      console.log('[RESTART] restartFrom 返回，清空状态 + 重连 SSE')
-      resetNodeStatuses()
-      const run = runs[currentRunId]
-      if (run) upsertRun({ ...run, status: 'running' })
-      incrementStreamGeneration() // 触发 SSE 重新连接
-    } catch (err) {
-      console.error('[RESTART] 失败', err)
-    }
-  }
-
-  const canRestart = (status === 'done' || status === 'error') && currentRunId
+  // 中文名（前端映射）；后端 label 即英文 subgraph id。两者都展示：
+  // 有中文映射时主显示中文、副显示英文 id；无映射时只显示英文 id，不重复。
+  const zhLabel = getNodeLabel(data.subgraphId)
+  const enLabel = data.subgraphId
 
   return (
     <div className="group relative">
-      {canRestart && (
-        <button
-          className={cn(
-            'absolute -top-2 -right-2 z-10 text-xs w-5 h-5 flex items-center justify-center rounded-full bg-white border shadow-sm cursor-pointer',
-            status === 'done' && 'opacity-0 group-hover:opacity-100 transition-opacity text-gray-500 hover:text-blue-600 border-gray-300',
-            status === 'error' && 'opacity-100 text-red-600 border-red-300',
-          )}
-          title="从此节点重新运行"
-          onClick={handleRestartFrom}
-        >
-          ↺
-        </button>
-      )}
       <div
         className={cn(
           'rounded-lg border-2 px-4 py-3 cursor-pointer min-w-[160px] text-center',
@@ -64,7 +37,10 @@ function SubgraphNode({ data }: SubgraphNodeProps) {
         onDoubleClick={() => pushDrill(data.subgraphId)}
       >
         {renderHandles(data.sourceCount ?? 0, data.targetCount ?? 0, data.hasBackOut ?? false, data.hasBackIn ?? false)}
-        <div className="font-semibold text-sm">{data.label}</div>
+        <div className="font-semibold text-sm">{zhLabel ?? enLabel}</div>
+        {zhLabel && zhLabel !== enLabel && (
+          <div className="text-[10px] text-gray-500 font-mono">{enLabel}</div>
+        )}
         <div className="text-xs text-gray-500 mt-1">{status}</div>
         <div className="text-xs text-gray-400 mt-1">双击下钻</div>
       </div>
