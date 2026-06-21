@@ -46,7 +46,7 @@ def _ancestor_keys(path: str) -> list[str]:
     return ["/".join(parts[: i + 1]) for i in range(len(parts))]
 
 
-def _resolve_interrupted(snap: object) -> tuple[str, str, Any] | None:
+async def _resolve_interrupted(snap: object) -> tuple[str, str, Any] | None:
     """从顶层 snap 递归下钻 task tree，找到带 interrupts 的叶子 task。
 
     返回 (leaf_name, leaf_path, interrupt_value)；任一层无带 interrupts 的 task
@@ -56,6 +56,12 @@ def _resolve_interrupted(snap: object) -> tuple[str, str, Any] | None:
     必须在稳态调用（astream 已退出、interrupt 已完全冒泡到顶层 task tree）。
     流中收到 __interrupt__ 的瞬间调用曾出现顶层 task 未挂 interrupts → 解析 None，
     故 interrupt 解析统一推迟到 astream 结束后做（见 _run_graph 结尾）。
+
+    子图未展开兜底：aget_state(subgraphs=True) 在三层嵌套子图（顶层→init_subgraph
+    →character_setup_subgraph→叶子）下偶发只展开一层，中间层 task.state.tasks 为空，
+    导致把中间层（init_subgraph）误当叶子返回、node 名错误（前端 Dispatcher 匹配不到
+    节点 → 抽屉/常驻区不渲染）。此时用该层 state.config 的 checkpoint_ns 主动
+    aget_state 下钻一层，恢复完整 task tree 再继续递归。
     """
     parts: list[str] = []
     cur = snap
@@ -92,12 +98,50 @@ def _resolve_interrupted(snap: object) -> tuple[str, str, Any] | None:
         if cur is None or not hasattr(cur, "tasks"):
             log.info("_resolve_interrupted STOP state 无 tasks，已收集 parts=%s", parts)
             break
+        # 子图未展开兜底：本层 task 挂了 interrupts（已收集进 parts），但其下钻
+        # state.tasks 为空 → 子图未展开，真正的叶子在更深处。用 state.config 的
+        # checkpoint_ns 主动 aget_state 下钻一层，恢复 task tree 后继续递归。
+        # 否则会把当前中间层当叶子返回，node 名错误（如 init_subgraph 而非
+        # batch_upload_tri_view），前端匹配不到节点无法渲染。
+        if not (getattr(cur, "tasks", []) or []):
+            expanded = await _expand_subgraph_state(cur)
+            if expanded is not None:
+                log.info("_resolve_interrupted 子图未展开，已主动下钻恢复 task tree")
+                cur = expanded
+            else:
+                log.info("_resolve_interrupted STOP 子图未展开且无法下钻，已收集 parts=%s", parts)
+                break
     if not parts:
         log.warning("_resolve_interrupted RETURN None（未解析到任何 interrupt task）")
         return None
     result = (parts[-1], "/".join(parts), interrupt_value)
     log.info("_resolve_interrupted RETURN leaf=%s path=%s payload_type=%s", result[0], result[1], type(result[2]).__name__)
     return result
+
+
+async def _expand_subgraph_state(state_snap: object) -> object | None:
+    """子图 task tree 未展开时，用 state.config 的 checkpoint_ns 主动 aget_state 下钻。
+
+    aget_state(subgraphs=True) 偶发只展开一层、中间层 state.tasks 为空。此时该层
+    state 自身的 config 仍带 checkpoint_ns（如 'init_subgraph:<uuid>'），用它作为
+    subgraph 配置再 aget_state(subgraphs=True) 即可拿到下一层 task tree。
+
+    返回展开后的 StateSnapshot；无 checkpoint_ns 或下钻失败返回 None。
+    """
+    if _compiled_graph is None or state_snap is None:
+        return None
+    cfg = getattr(state_snap, "config", None) or {}
+    configurable = (cfg.get("configurable") or {}) if isinstance(cfg, dict) else {}
+    ns = configurable.get("checkpoint_ns")
+    if not ns:
+        return None
+    sub_config = {"configurable": dict(configurable)}
+    try:
+        return await _compiled_graph.aget_state(sub_config, subgraphs=True)
+    except Exception as exc:
+        # 下钻失败不静默吞：记录暴露，让上层按「无法下钻」处理（返回中间层叶子）。
+        log.warning("_expand_subgraph_state 下钻失败 ns=%s err=%s", ns, exc)
+        return None
 
 
 async def init_runner():
@@ -214,7 +258,7 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
             # 而非流中收到 __interrupt__ 的瞬间——那时冒泡未完成，曾解析为 None，
             # 导致前端节点卡 running、弹不出审阅窗。
             snap_sub = await _compiled_graph.aget_state(config, subgraphs=True)
-            resolved = _resolve_interrupted(snap_sub)
+            resolved = await _resolve_interrupted(snap_sub)
             await _runs_db.update_status(run_id, "waiting_human")
             log.info("_run_graph waiting_human resolved=%s", resolved)
             if resolved:
@@ -270,66 +314,47 @@ async def retry_run(run_id: str) -> None:
 
 
 async def restart_from_node(run_id: str, node_path: str) -> None:
+    """从指定节点重跑（覆盖当前分支）—— LangGraph 官方 checkpoint_id 续跑方案。
+
+    node_path 的第一段（top_node）决定重跑范围：找顶层 checkpoint 中 next 含 top_node
+    的快照（即 top_node 执行前），用其 checkpoint_id 续跑，LangGraph 从该点恢复并重新执行。
+
+    子图内叶子（如 init_subgraph/character_setup_subgraph/batch_upload_tri_view）映射到
+    其所属顶层子图节点（init_subgraph）的 checkpoint 续跑 = 重跑整个该子图。这是 LangGraph
+    固有约束：纯 checkpoint_id 续跑无法精准到子图内某叶子（顶层 checkpoint 的 next 只含顶层
+    节点，不含子图内叶子）。
+
+    __start__/__end__ 为虚拟节点，无重跑语义，显式拒绝。
+
+    旧实现用 aupdate_state 试图"拨回子图指针"是错误用法（aupdate_state 语义是写入新
+    superstep，非回拨），且不带 as_node 时多 writer 报 Ambiguous update。已弃用。
+    """
     if _compiled_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     parts = node_path.split("/")
-    top_node = parts[0]
-    leaf_node = parts[-1] if len(parts) > 1 else None
-    log.info("restart_from_node START run_id=%s node_path=%s top=%s leaf=%s", run_id, node_path, top_node, leaf_node)
+    top_node = parts[0]  # 重跑范围由顶层节点决定；子图叶子映射到其顶层子图重跑整个
+    log.info("restart_from_node START run_id=%s node_path=%s top=%s", run_id, node_path, top_node)
+
+    if top_node in ("__start__", "__end__"):
+        raise ValueError(f"不能从虚拟节点 {top_node!r} 重跑（无执行前 checkpoint）")
 
     config = {"configurable": {"thread_id": run_id}}
 
-    # 顶层：找到 next 包含 top_node 的最新 checkpoint（即该节点执行前的快照）
-    top_cid = None
+    # 找 top_node 执行前的顶层 checkpoint（其 next 含 top_node）
+    target_cid = None
     async for snap in _compiled_graph.aget_state_history(config):
         snap_next = getattr(snap, "next", []) or []
-        snap_config = getattr(snap, "config", {}) or {}
         if top_node in snap_next:
-            top_cid = snap_config.get("configurable", {}).get("checkpoint_id")
-            if top_cid:
+            target_cid = (
+                (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id")
+            )
+            if target_cid:
                 break
-    if top_cid is None:
-        raise ValueError(f"node {top_node!r} not found in checkpoint history")
-    log.info("restart_from_node top_cid=%s", top_cid)
+    if target_cid is None:
+        raise ValueError(f"未找到节点 {top_node!r} 执行前的 checkpoint（无法重跑）")
+    log.info("restart_from_node top=%s target_cid=%s", top_node, target_cid)
 
-    replay_config = {"configurable": {"thread_id": run_id, "checkpoint_id": top_cid}}
-
-    # 子图内节点：把子图 namespace 的指针拨回到 leaf_node 之前
-    if leaf_node and leaf_node != top_node:
-        async with (
-            aiosqlite.connect(CHECKPOINT_DB) as db,
-            db.execute(
-                "SELECT DISTINCT checkpoint_ns FROM checkpoints WHERE thread_id=? AND checkpoint_ns LIKE ?",
-                (run_id, f"{top_node}:%"),
-            ) as cur,
-        ):
-            ns_rows = list(await cur.fetchall())
-        log.info("restart_from_node 子图 ns_rows=%s", [r[0] for r in ns_rows])
-        if ns_rows:
-            sub_ns = ns_rows[-1][0]  # type: ignore
-            sub_cid = None
-            sub_config = {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns}}
-            async for snap in _compiled_graph.aget_state_history(sub_config):
-                snap_next = getattr(snap, "next", []) or []
-                snap_config = getattr(snap, "config", {}) or {}
-                if leaf_node in snap_next:
-                    sub_cid = snap_config.get("configurable", {}).get("checkpoint_id")
-                    if sub_cid:
-                        break
-            log.info("restart_from_node sub_ns=%s sub_cid=%s", sub_ns, sub_cid)
-            if sub_cid:
-                target_snap = await _compiled_graph.aget_state(
-                    {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns, "checkpoint_id": sub_cid}}
-                )
-                await _compiled_graph.aupdate_state(
-                    {"configurable": {"thread_id": run_id, "checkpoint_ns": sub_ns, "checkpoint_id": sub_cid}},
-                    getattr(target_snap, "values", {}),
-                )
-            else:
-                log.warning("restart_from_node 未找到 leaf=%s 在 next 的子图快照，跳过子图回拨", leaf_node)
-    else:
-        log.info("restart_from_node 无子图回拨（leaf==top 或无 leaf）")
-
+    replay_config = {"configurable": {"thread_id": run_id, "checkpoint_id": target_cid}}
     get_or_create_sse_queue(run_id)
     asyncio.create_task(_run_graph(None, replay_config, run_id))
 
@@ -446,9 +471,11 @@ async def get_checkpoints(run_id: str) -> list[dict]:
     """返回 run 的全部 checkpoint 历史条目(顶层 + 各子命名空间)。
 
     节点定位用 snap.next(该快照之后将执行的节点),不再依赖
-    metadata.writes(AsyncSqliteSaver 下为空)。next 为空的快照
-    是入口/END 态,以 node=None 保留,前端可标记为初始化或结束。
+    metadata.writes(AsyncSqliteSaver 下为空)。next 为空、或 next 指向
+    __start__/__end__ 虚拟节点的快照是入口/END 态,以 node=None 保留,
+    前端不渲染重跑按钮(虚拟节点无重跑语义,见 restart_from_node)。
     """
+    _VIRTUAL = ("__start__", "__end__")
     if _compiled_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     config = {"configurable": {"thread_id": run_id}}
@@ -458,7 +485,8 @@ async def get_checkpoints(run_id: str) -> list[dict]:
         meta = getattr(snap, "metadata", {}) or {}
         step = meta.get("step", -1)
         snap_next = list(getattr(snap, "next", []) or [])
-        node_name = snap_next[0] if snap_next else None
+        # 虚拟节点（__start__/__end__）不作为可重跑节点暴露，置 None
+        node_name = snap_next[0] if snap_next and snap_next[0] not in _VIRTUAL else None
         created_at = getattr(snap, "created_at", None)
         result.append(
             {
@@ -487,7 +515,8 @@ async def get_checkpoints(run_id: str) -> list[dict]:
             meta = getattr(snap, "metadata", {}) or {}
             step = meta.get("step", -1)
             snap_next = list(getattr(snap, "next", []) or [])
-            leaf_node = snap_next[0] if snap_next else None
+            # 虚拟叶子节点不暴露为可重跑路径
+            leaf_node = snap_next[0] if snap_next and snap_next[0] not in _VIRTUAL else None
             node_path = f"{top_node}/{leaf_node}" if leaf_node else top_node
             created_at = getattr(snap, "created_at", None)
             result.append(

@@ -22,11 +22,9 @@ interface RunStore {
   runs: Record<string, RunMeta>
   currentRunId: string | null
   nodeStatuses: Record<string, NodeStatus>
-  // 后端 interrupt 的交互数据（node + payload）。关闭抽屉时不清空，
-  // 仅在 resume 成功 / 切 run 时变化，保证用户关掉抽屉后仍能重新打开。
+  // 后端 interrupt 的交互数据（node + payload）。仅在 resume 成功 / 切 run 时变化，
+  // 由右侧常驻交互区渲染：非空时按 node 切换对应输入 UI，空时显示占位态。
   activeInteraction: ActiveInteraction | null
-  // 抽屉显隐（与 activeInteraction 解耦）。关闭只置 false，重新打开入口置 true。
-  interactionVisible: boolean
   drillPath: string[]
   // 是否自动跟随运行节点下钻。手动 pushDrill/popDrill 会关闭，resetDrill（切 run）会重开。
   autoFollow: boolean
@@ -42,7 +40,6 @@ interface RunStore {
   setNodeStatus: (node: string, status: NodeStatus) => void
   resetNodeStatuses: () => void
   setActiveInteraction: (interaction: ActiveInteraction | null) => void
-  setInteractionVisible: (v: boolean) => void
   pushDrill: (subgraph: string) => void
   popDrill: () => void
   resetDrill: () => void
@@ -60,7 +57,6 @@ export const useRunStore = create<RunStore>((set) => ({
   currentRunId: null,
   nodeStatuses: {},
   activeInteraction: null,
-  interactionVisible: true,
   drillPath: [],
   autoFollow: true,
   viewports: {},
@@ -79,20 +75,17 @@ export const useRunStore = create<RunStore>((set) => ({
   setNodeStatus: (node, status) =>
     set((s) => ({ nodeStatuses: { ...s.nodeStatuses, [node]: status } })),
 
-  resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null, interactionVisible: true }),
+  resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null }),
 
   setRunError: (msg) => set({ runError: msg }),
 
   setInspectingNode: (path) => set({ inspectingNode: path }),
 
-  // 新交互到达（非空）时自动弹出抽屉；resume 成功清空时归零。
-  // 关闭抽屉走 setInteractionVisible(false)，不应清空 activeInteraction。
+  // 新交互到达（非空）时右侧常驻区切换到对应输入 UI；resume 成功清空时切回占位态。
   setActiveInteraction: (interaction) =>
     set(interaction
-      ? { activeInteraction: interaction, interactionVisible: true }
+      ? { activeInteraction: interaction }
       : { activeInteraction: null }),
-
-  setInteractionVisible: (v) => set({ interactionVisible: v }),
 
   // 用户手动下钻：追加路径并关闭自动跟随（用户已主动选择浏览位置）。
   pushDrill: (subgraph) =>

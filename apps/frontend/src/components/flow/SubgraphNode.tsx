@@ -17,7 +17,7 @@ export type SubgraphNodeData = Node<{ label: string; subgraphId: string; statusK
 type SubgraphNodeProps = NodeProps<SubgraphNodeData>
 
 function SubgraphNode({ data }: SubgraphNodeProps) {
-  const { nodeStatuses, currentRunId, runs, pushDrill, resetNodeStatuses, upsertRun, setInspectingNode, incrementStreamGeneration, setRunError } = useRunStore()
+  const { nodeStatuses, currentRunId, runs, pushDrill, resetNodeStatuses, upsertRun, incrementStreamGeneration, setRunError } = useRunStore()
   const status = (nodeStatuses[data.statusKey] ?? 'pending') as NodeStatus
 
   const handleRestartFrom = async (e: React.MouseEvent) => {
@@ -59,11 +59,8 @@ function SubgraphNode({ data }: SubgraphNodeProps) {
           'rounded-lg border-2 px-4 py-3 cursor-pointer min-w-[160px] text-center',
           STATUS_COLORS[status]
         )}
-        onClick={(e) => {
-          if (e.detail === 1 && (status === 'done' || status === 'error')) {
-            setInspectingNode(data.statusKey)
-          }
-        }}
+        // 只保留双击下钻：原先单击还会打开 inspect 面板，与双击触发时序冲突
+        // （双击时单击先触发一次），已移除单击逻辑。
         onDoubleClick={() => pushDrill(data.subgraphId)}
       >
         {renderHandles(data.sourceCount ?? 0, data.targetCount ?? 0, data.hasBackOut ?? false, data.hasBackIn ?? false)}

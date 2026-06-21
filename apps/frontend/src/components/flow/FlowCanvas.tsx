@@ -11,7 +11,6 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useRunStore, ROOT_LEVEL_KEY } from '@/store/runStore'
 import { useGraphSchema } from '@/hooks/useGraphSchema'
-import ReopenInteractionButton from '@/components/panels/ReopenInteractionButton'
 import SubgraphNode from './SubgraphNode'
 import InternalNode from './InternalNode'
 
@@ -168,9 +167,8 @@ function FlowCanvasInner() {
           <span>{currentSubgraph}</span>
         </div>
       )}
-      {/* 右上角顶栏：重开审阅入口（有待处理交互且抽屉被关时出现）+ 跟随运行开关 */}
+      {/* 右上角顶栏：跟随运行开关（交互区已常驻右侧，无需重开入口） */}
       <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
-        <ReopenInteractionButton />
         {/* 跟随运行开关：手动下钻/返回会自动暂停，此处可重新开启 */}
         <button
           onClick={() => setAutoFollow(!autoFollow)}
