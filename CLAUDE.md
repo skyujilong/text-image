@@ -81,6 +81,50 @@ novel2media/
 
 ---
 
+## 前端 UI 规范
+
+> 新增/修改前端组件前必读。历史上踩过的坑：手写 `<button>` + 硬编码 `text-gray-500 hover:text-blue-600` 与 shadcn 主题色脱节、各处状态配色不一致、重复造按钮样式。
+
+### 技术栈
+
+- **组件库**：shadcn/ui（`components.json` style=`base-nova`，baseColor=`neutral`，cssVariables=true）。组件源码在 `apps/frontend/src/components/ui/`（已落库的：`button`/`input`/`textarea`/`label`/`badge`/`form`/`sheet`），按需用 `pnpm dlx shadcn@latest add <component>` 添加，**不要手写等价组件**。
+- **底层原语**：Radix UI（`@radix-ui/react-*`：dialog/select/label/separator/slot）+ `@base-ui/react`。
+- **样式**：Tailwind CSS v4（`@tailwindcss/vite`，无 `tailwind.config.js`，主题靠 `src/index.css` 的 `@theme inline` + CSS 变量）。`tw-animate-css` 提供动画工具类。
+- **图标**：`lucide-react`（`components.json` 的 `iconLibrary: "lucide"`）。统一从 lucide 引入，**禁止用 emoji/字符**（如 `✎ ↺ ▼`）当图标。
+- **工具函数**：`@/lib/utils` 的 `cn()`（`clsx` + `tailwind-merge`），拼接条件 className 必走 `cn()`。
+- **字体**：`@fontsource-variable/geist`（Geist Variable）。
+- **表单**：`react-hook-form` + `zod`（`@hookform/resolvers`）+ shadcn `form` 组件。
+- **图可视化**：`@xyflow/react`（React Flow）+ `@dagrejs/dagre` 自动布局。
+
+### 风格硬约束
+
+1. **统一用语义化主题色，禁止硬编码 `gray/blue/red-xxx`**。用 Tailwind 语义 token：
+   - 文本：`text-foreground` / `text-muted-foreground`（次级文本）
+   - 背景/悬停：`bg-background` / `bg-accent` / `hover:bg-accent`
+   - 边框：`border-border` / `border-input`
+   - 危险/破坏：`text-destructive` / `hover:bg-destructive/10`
+   - 侧栏专用：`bg-sidebar` / `border-sidebar-border` / `bg-sidebar-accent`
+   - 状态色（运行中蓝/待审橙/完成绿/出错红）等业务语义色可保留具体 `blue-500` 等，但需集中定义常量（参考 `Sidebar.tsx` 的 `STATUS_META`），不要散落各处。
+2. **按钮统一用 `<Button>` 组件**，按场景选 `variant`/`size`：
+   - 主操作 `variant="default"`；次级/图标按钮 `variant="ghost"`；危险操作 `variant="destructive"` 或 ghost + `text-destructive`。
+   - 纯图标按钮 `size="icon"`（默认 `size-9`），紧凑场景用 `className="size-7"`/`size-8` 覆盖。
+   - **禁止**手写 `<button className="text-xs text-gray-500 underline ...">`，要么用 `<Button variant="ghost" size="sm">`，要么用带图标的结构。
+3. **图标 + 文字组合**：`<Icon className="size-4" /> 文案`，按钮内 gap 由 Button 默认 `gap-2` 提供。
+4. **hover 才显示的操作按钮**：父容器加 `group`，按钮 `opacity-0 group-hover:opacity-100 transition`（列表项内的删除/重跑按钮统一这套）。
+5. **加载态**：用 `lucide-react` 的 `RotateCcw`/`Loader` + `animate-spin`，不要写「重试中...」纯文本占位。
+6. **状态展示统一语义**：圆点（`size-2 rounded-full` + 状态色）+ 中文标签，跨面板共用同一套映射（`STATUS_META` 模式），避免各处 Badge 配色不一致。
+
+### 新增 shadcn 组件流程
+
+```bash
+cd apps/frontend
+pnpm dlx shadcn@latest add <component>   # 自动写入 src/components/ui/ 并注册
+```
+
+添加后提交落库的组件源码（本项目不走 node_modules 黑盒，UI 源码进版本控制便于改 variant）。
+
+---
+
 ## 常用命令
 
 ### Python 后端
