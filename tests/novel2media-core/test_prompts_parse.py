@@ -13,9 +13,9 @@ def test_parse_json_array_strips_code_fence():
 def test_parse_json_array_accepts_aimessage():
     """兼容 AIMessage（取 .content）。"""
     msg = MagicMock()
-    msg.content = '[{"speaker": "旁白", "text": "夜深", "action": ""}]'
+    msg.content = '[{"text": "夜深人静", "action": "旁白：夜色笼罩街道"}]'
     result = parse_json_array(msg)
-    assert result[0]["speaker"] == "旁白"
+    assert result[0]["text"] == "夜深人静"
 
 
 def test_parse_json_array_raises_on_non_array():

@@ -41,10 +41,10 @@ def _mock_llm_sequence(monkeypatch, payloads):
 
 
 def _initial_planning_payloads():
-    """一次完整规划的三次 LLM 输出：剧本 / 分镜 / 新角色。"""
+    """一次完整规划的三次 LLM 输出：口播脚本 / 分镜 / 新角色。"""
     return [
-        [{"speaker": "主角", "text": "你好", "action": "挥手"}],
-        [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "a room"}],
+        [{"text": "主角挥手示意", "action": "主角挥手"}],
+        [{"storyboard_id": "sb_001", "scene_change": True, "text": "主角挥手示意", "speaker": "主角", "scene_prompt": "a room"}],
         [{"name": "主角", "appearance": "黑发青年", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, black hair young man, consistent outfit, plain background"}],
     ]
 
@@ -129,8 +129,8 @@ async def test_chapter_subgraph_resume_revise_loops_back(tmp_path, monkeypatch):
     _mock_llm_sequence(
         monkeypatch,
         [
-            [{"speaker": "主角", "text": "v1", "action": ""}],
-            [{"speaker": "主角", "text": "v2-revised", "action": "点头"}],
+            [{"text": "v1", "action": "主角站立"}],
+            [{"text": "v2-revised", "action": "主角点头"}],
         ],
     )
 

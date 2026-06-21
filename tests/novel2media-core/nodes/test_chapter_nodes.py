@@ -182,9 +182,9 @@ def _mock_llm(monkeypatch, payload):
 
 
 def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
-    """adapt_script：生成 script 写入 current_script（不落盘，稿件由 review_chapter 收入 render_batch）。"""
+    """adapt_script：生成口播 script 写入 current_script（不落盘，稿件由 commit_chapter 收入 render_batch）。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {"appearance": "黑发"}})
-    fake_script = [{"speaker": "主角", "text": "你好", "action": "挥手"}]
+    fake_script = [{"text": "主角挥手示意", "action": "主角挥手"}]
     mock = _mock_llm(monkeypatch, fake_script)
 
     result = adapt_script(state)
@@ -204,7 +204,7 @@ def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
     """revise 回环：adapt_script 读 _script_review_feedback 拼进 prompt，用完清空。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {"appearance": "黑发"}})
     state["_script_review_feedback"] = "对白太书面、节奏太快"
-    mock = _mock_llm(monkeypatch, [{"speaker": "主角", "text": "嗨", "action": ""}])
+    mock = _mock_llm(monkeypatch, [{"text": "主角点头", "action": "主角点头"}])
 
     result = adapt_script(state)
 
@@ -216,11 +216,11 @@ def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
 def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
     """generate_storyboard：生成分镜写入 current_storyboard（不落盘），首条强制 scene_change=True。"""
     state = _make_chapter_state(tmp_path)
-    state["current_script"] = [{"speaker": "主角", "text": "你好", "action": "挥手"}]
+    state["current_script"] = [{"text": "主角挥手", "action": "主角挥手"}]
     # LLM 返回首条 scene_change=False，节点应强制改为 True
     fake_sb = [
-        {"storyboard_id": "sb_001", "scene_change": False, "text": "你好", "speaker": "主角", "scene_prompt": "a scene"},
-        {"storyboard_id": "sb_002", "scene_change": True, "text": "再见", "speaker": "主角", "scene_prompt": "another"},
+        {"storyboard_id": "sb_001", "scene_change": False, "text": "主角挥手", "speaker": "主角", "scene_prompt": "a scene"},
+        {"storyboard_id": "sb_002", "scene_change": True, "text": "主角离开", "speaker": "主角", "scene_prompt": "another"},
     ]
     _mock_llm(monkeypatch, fake_sb)
 
@@ -295,7 +295,7 @@ def test_review_script_revise_writes_decision_only(tmp_path, monkeypatch):
     _mock_interrupt(monkeypatch, "revise")
     state = {
         "current_chapter_id": "chapter_01",
-        "current_script": [{"speaker": "主角", "text": "你好"}],
+        "current_script": [{"text": "主角挥手", "action": "主角挥手"}],
     }
     result = review_script(state)
     assert result == {"_script_review_decision": "revise", "_script_review_feedback": ""}
@@ -308,7 +308,7 @@ def test_review_script_revise_with_feedback(tmp_path, monkeypatch):
     _mock_interrupt(monkeypatch, {"decision": "revise", "feedback": "对白太书面"})
     state = {
         "current_chapter_id": "chapter_01",
-        "current_script": [{"speaker": "主角", "text": "你好"}],
+        "current_script": [{"text": "主角挥手", "action": "主角挥手"}],
     }
     result = review_script(state)
     assert result["_script_review_decision"] == "revise"
@@ -320,7 +320,7 @@ def test_review_script_pass_clears_feedback(tmp_path, monkeypatch):
     _mock_interrupt(monkeypatch, "pass")
     state = {
         "current_chapter_id": "chapter_01",
-        "current_script": [{"speaker": "主角", "text": "你好"}],
+        "current_script": [{"text": "主角挥手", "action": "主角挥手"}],
     }
     result = review_script(state)
     assert result == {"_script_review_decision": "pass", "_script_review_feedback": ""}
@@ -358,8 +358,8 @@ def test_commit_chapter_marks_planned_and_queues_new_characters(tmp_path):
         {"name": "李雷", "appearance": "黑发", "tri_view_prompt": "p1"},
         {"name": "韩梅梅", "appearance": "", "tri_view_prompt": "p2"},
     ]
-    script = [{"speaker": "主角", "text": "你好"}]
-    storyboard = [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "p"}]
+    script = [{"text": "主角挥手", "action": "主角挥手"}]
+    storyboard = [{"storyboard_id": "sb_001", "scene_change": True, "text": "主角挥手", "speaker": "主角", "scene_prompt": "p"}]
     state = {
         "current_chapter_id": "chapter_01",
         "current_script": script,
@@ -398,9 +398,9 @@ def test_commit_chapter_with_no_new_characters(tmp_path):
 def test_generate_storyboard_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
     """revise 回环：generate_storyboard 读 _storyboard_review_feedback 拼进 prompt，用完清空。"""
     state = _make_chapter_state(tmp_path)
-    state["current_script"] = [{"speaker": "主角", "text": "你好", "action": ""}]
+    state["current_script"] = [{"text": "主角挥手", "action": "主角挥手"}]
     state["_storyboard_review_feedback"] = "分镜太碎、scene_prompt 太简单"
-    mock = _mock_llm(monkeypatch, [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "p"}])
+    mock = _mock_llm(monkeypatch, [{"storyboard_id": "sb_001", "scene_change": True, "text": "主角挥手", "speaker": "主角", "scene_prompt": "p"}])
 
     result = generate_storyboard(state)
 
@@ -559,7 +559,7 @@ def _make_render_state(tmp_path, planned=("chapter_01",)):
     chapters_status = {}
     render_batch = []
     storyboard = [{"storyboard_id": "sb_001", "scene_change": True, "text": "t", "speaker": "主角", "scene_prompt": "p"}]
-    script = [{"speaker": "主角", "text": "t", "action": ""}]
+    script = [{"text": "t", "action": "主角站立"}]
     for ch in planned:
         (novel_dir / "chapters" / f"{ch}.txt").write_text("原文", encoding="utf-8")
         chapters_status[ch] = "planned"

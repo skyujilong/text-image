@@ -121,7 +121,7 @@ def load_chapter(state: dict) -> dict:
 
 
 def adapt_script(state: dict) -> dict:
-    """LLM 改写剧本 → current_script（不落盘，稿件由 commit_chapter 收入 render_batch）。
+    """LLM 改写口播漫剧脚本 → current_script（不落盘，稿件由 commit_chapter 收入 render_batch）。
 
     读 current_chapter_text_path 原文 + characters_profile（name-based）。LLM 输出 JSON 数组，
     解析失败抛错暴露。结果存 current_script 供 review_script 展示 + 后续入 render_batch。
@@ -136,7 +136,7 @@ def adapt_script(state: dict) -> dict:
 
     prompt = build_adapt_script_prompt(chapter_text, characters_profile, feedback)
     resp = invoke_llm(prompt, node="adapt_script", label="adapt_script")
-    script = parse_json_array(resp)  # [{"speaker","text","action"}]
+    script = parse_json_array(resp)  # [{"text","action"}]
 
     log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=bool(feedback))
     return {"current_script": script, "_script_review_feedback": ""}
@@ -145,17 +145,19 @@ def adapt_script(state: dict) -> dict:
 def generate_storyboard(state: dict) -> dict:
     """LLM 生成分镜 → current_storyboard（不落盘，稿件由 commit_chapter 收入 render_batch）。
 
-    读 current_script + characters_profile。强制首条 scene_change=True。解析失败抛错。
+    双输入：current_chapter_text_path 原文（画面细节）+ current_script 口播脚本（节奏/画面角色名）
+    + characters_profile。强制首条 scene_change=True。解析失败抛错。
     scene_prompt 字段名与 image_nodes.generate_images 的读取对齐（渲染阶段复用）。
 
     revise 回环时读 _storyboard_review_feedback（review_storyboard 写入）拼进 prompt，用完清空。
     """
     ch_id = state["current_chapter_id"]
     script = state.get("current_script", [])
+    chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
     characters_profile = state.get("characters_profile", {})
     feedback = state.get("_storyboard_review_feedback", "") or ""
 
-    prompt = build_generate_storyboard_prompt(script, characters_profile, feedback)
+    prompt = build_generate_storyboard_prompt(script, chapter_text, characters_profile, feedback)
     resp = invoke_llm(prompt, node="generate_storyboard", label="generate_storyboard")
     storyboard = parse_json_array(resp)  # [{"storyboard_id","scene_change","text","speaker","scene_prompt"}]
     if storyboard:

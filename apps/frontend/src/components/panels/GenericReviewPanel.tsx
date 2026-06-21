@@ -9,9 +9,9 @@ type ReviewType = 'script_review' | 'storyboard_review' | 'new_characters_review
 /** 各审阅类型的展示元信息（标题 / 产物名 / 打回说明）。 */
 const META: Record<ReviewType, { title: string; artifactLabel: string; reviseHint: string }> = {
   script_review: {
-    title: '剧本审阅',
-    artifactLabel: '剧本',
-    reviseHint: '打回将回到 adapt_script 重写剧本，并据此意见调整',
+    title: '口播脚本审阅',
+    artifactLabel: '口播脚本',
+    reviseHint: '打回将回到 adapt_script 重写口播脚本，并据此意见调整',
   },
   storyboard_review: {
     title: '分镜审阅',
@@ -26,7 +26,6 @@ const META: Record<ReviewType, { title: string; artifactLabel: string; reviseHin
 }
 
 interface ScriptLine {
-  speaker?: string
   text?: string
   action?: string
 }
@@ -112,20 +111,21 @@ export default function GenericReviewPanel({
   )
 }
 
-/** 剧本区块渲染。 */
+/** 口播脚本区块渲染：画面行（action，含角色名）+ 口播行（text）。 */
 function ScriptSection({ script }: { script: ScriptLine[] }) {
   return (
     <section>
-      <h3 className="text-sm font-semibold mb-2 text-foreground">剧本（{script.length} 条）</h3>
+      <h3 className="text-sm font-semibold mb-2 text-foreground">口播脚本（{script.length} 条）</h3>
       <div className="flex flex-col gap-1 text-xs">
         {script.map((line, i) => (
           <div key={i} className="border border-border rounded p-2 bg-accent/40">
-            <span className="font-medium text-foreground">{line.speaker ?? '?'}</span>
-            ：{line.text}
-            {line.action && <span className="text-muted-foreground"> （{line.action}）</span>}
+            <div className="text-foreground">{line.text}</div>
+            {line.action && (
+              <div className="text-muted-foreground mt-0.5">画面：{line.action}</div>
+            )}
           </div>
         ))}
-        {script.length === 0 && <p className="text-muted-foreground">无剧本</p>}
+        {script.length === 0 && <p className="text-muted-foreground">无口播脚本</p>}
       </div>
     </section>
   )
