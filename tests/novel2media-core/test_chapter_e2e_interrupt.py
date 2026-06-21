@@ -45,7 +45,7 @@ def _initial_planning_payloads():
     return [
         [{"text": "主角挥手示意", "action": "主角挥手"}],
         [{"storyboard_id": "sb_001", "scene_change": True, "text": "主角挥手示意", "speaker": "主角", "scene_prompt": "a room"}],
-        [{"name": "主角", "appearance": "黑发青年", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, black hair young man, consistent outfit, plain background"}],
+        [{"name": "主角", "appearance": "黑发青年", "character_trait": "黑发青年男性", "visual_trait": "young man with black hair", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, black hair young man, consistent outfit, plain background", "tri_view_prompt_cn": "三视图中文"}],
     ]
 
 

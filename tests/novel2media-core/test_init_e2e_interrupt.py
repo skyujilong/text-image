@@ -40,7 +40,10 @@ async def test_init_stops_at_review_initial_characters(tmp_path, monkeypatch):
         {
             "name": "林澈",
             "appearance": "黑发少年",
+            "character_trait": "黑色短发的少年",
+            "visual_trait": "young man with black short hair",
             "tri_view_prompt": "character turnaround sheet, front side back, black hair",
+            "tri_view_prompt_cn": "三视图，正面侧面背面，黑发少年",
         }
     ]
     _mock_llm(monkeypatch, fake_chars)
@@ -89,7 +92,10 @@ async def test_init_resume_pass_enters_character_setup(tmp_path, monkeypatch):
         {
             "name": "林澈",
             "appearance": "黑发少年",
+            "character_trait": "黑色短发的少年",
+            "visual_trait": "young man with black short hair",
             "tri_view_prompt": "character turnaround sheet, front side back",
+            "tri_view_prompt_cn": "三视图中文",
         }
     ]
     _mock_llm(monkeypatch, fake_chars)
@@ -120,8 +126,8 @@ async def test_init_resume_revise_loops_back_to_parse(tmp_path, monkeypatch):
     # 两次 LLM 返回（revise 后重跑 parse）
     calls = iter(
         [
-            [{"name": "林澈", "appearance": "v1", "tri_view_prompt": "p1"}],
-            [{"name": "林澈", "appearance": "v2", "tri_view_prompt": "p2"}],
+            [{"name": "林澈", "appearance": "v1", "character_trait": "c1", "visual_trait": "vt1", "tri_view_prompt": "p1", "tri_view_prompt_cn": "中1"}],
+            [{"name": "林澈", "appearance": "v2", "character_trait": "c2", "visual_trait": "vt2", "tri_view_prompt": "p2", "tri_view_prompt_cn": "中2"}],
         ]
     )
     mock = MagicMock()

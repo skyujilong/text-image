@@ -7,7 +7,10 @@ import { useRunStore } from '@/store/runStore'
 interface Character {
   name?: string
   appearance?: string
+  character_trait?: string
+  visual_trait?: string
   tri_view_prompt?: string
+  tri_view_prompt_cn?: string
 }
 interface Props {
   runId: string
@@ -95,17 +98,17 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-4">
-        <p className="text-xs text-gray-400">
+        <p className="text-xs text-muted-foreground">
           为每个角色上传一张三视图（正面/侧面/背面），用于渲染阶段场景图作角色参考；小角色可勾选跳过。
         </p>
         {characters.map((c) => {
           const name = c.name ?? '未命名角色'
           const row = rows[name]
           return (
-            <div key={name} className="flex flex-col gap-2 rounded border p-3">
+            <div key={name} className="flex flex-col gap-2 rounded border border-border p-3">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">{name}</span>
-                <label className="flex items-center gap-1 text-xs text-gray-500">
+                <span className="text-sm font-medium text-foreground">{name}</span>
+                <label className="flex items-center gap-1 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
                     checked={row?.skipped ?? false}
@@ -114,9 +117,18 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
                   跳过（小角色）
                 </label>
               </div>
-              {c.appearance && <p className="text-xs text-gray-500">外观：{c.appearance}</p>}
+              {c.appearance && <p className="text-xs text-muted-foreground">外观：{c.appearance}</p>}
+              {c.character_trait && (
+                <p className="text-xs text-muted-foreground">人物特征：{c.character_trait}</p>
+              )}
+              {c.visual_trait && (
+                <p className="text-xs text-muted-foreground">特征（英）：{c.visual_trait}</p>
+              )}
+              {c.tri_view_prompt_cn && (
+                <p className="text-xs text-muted-foreground">三视图参考：{c.tri_view_prompt_cn}</p>
+              )}
               {c.tri_view_prompt && (
-                <p className="text-xs text-gray-400">三视图参考：{c.tri_view_prompt}</p>
+                <p className="text-xs text-muted-foreground/70">三视图参考（英）：{c.tri_view_prompt}</p>
               )}
               <Input
                 type="file"
@@ -125,9 +137,9 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
                 onChange={(e) => setRow(name, { file: e.target.files?.[0] ?? null })}
               />
               {row?.uploadedPath && (
-                <p className="text-xs text-green-600">已上传：{row.uploadedPath}</p>
+                <p className="text-xs text-emerald-600">已上传：{row.uploadedPath}</p>
               )}
-              {row?.uploading && <p className="text-xs text-gray-400">上传中...</p>}
+              {row?.uploading && <p className="text-xs text-muted-foreground">上传中...</p>}
             </div>
           )
         })}

@@ -36,8 +36,11 @@ class CharacterProfileRequired(TypedDict):
     """角色档案必填字段（name-based，全局唯一 key=角色名）。"""
 
     name: str  # 角色名（与 characters_profile 的 key 一致，value 内冗余保留便于序列化/展示）
-    appearance: str  # 外观描述
-    tri_view_prompt: str  # 三视图生成提示词（LLM 产出，人工上传三视图时参考；正面/侧面/背面）
+    appearance: str  # 外观描述（性别/年龄/发色/发型/眼镜/瞳色/体型/服饰等，强调鲜明可辨识、角色间互不混淆）
+    character_trait: str  # 中文人物特征短语（性别+标志特征，供审核阅读与分镜引用）
+    visual_trait: str  # 英文特征短语（带性别词，供分镜 scene_prompt 替换角色名，ComfyUI 可直接理解）
+    tri_view_prompt: str  # 三视图英文提示词（日漫风+白底+画质词；LLM 产出，人工上传三视图时参考；正面/侧面/背面）
+    tri_view_prompt_cn: str  # 三视图提示词中文翻译版（供审核阅读）
 
 
 class CharacterProfile(CharacterProfileRequired, total=False):
@@ -77,8 +80,9 @@ class MainGraphState(TypedDict):
 
     # 角色管理
     characters_profile: dict[str, CharacterProfile]  # 角色完整档案（唯一真相），key 为角色名（name-based，无 id）
-    # characters_profile[name] 字段：name/appearance/tri_view_prompt（必填）+
-    # tri_view(本地相对路径)/voice_params(可选)。详见 CharacterProfile。
+    # characters_profile[name] 字段：name/appearance/character_trait/visual_trait/
+    # tri_view_prompt/tri_view_prompt_cn（必填）+ tri_view(本地相对路径)/voice_params(可选)。
+    # 详见 CharacterProfile。
     ignored_characters: list[str]  # 已忽略角色名列表
 
     # 全局音频配置（单播：整本书一份音色参数，渲染阶段共用）。

@@ -39,7 +39,10 @@ interface StoryboardShot {
 interface NewCharacter {
   name?: string
   appearance?: string
+  character_trait?: string
+  visual_trait?: string
   tri_view_prompt?: string
+  tri_view_prompt_cn?: string
 }
 interface Props {
   runId: string
@@ -167,8 +170,17 @@ function NewCharactersSection({ characters }: { characters: NewCharacter[] }) {
           <div key={i} className="border border-border rounded p-2 bg-accent/40">
             <span className="font-medium text-foreground">{c.name ?? '未命名'}</span>
             {c.appearance && <span className="text-muted-foreground">：{c.appearance}</span>}
+            {c.character_trait && (
+              <div className="text-muted-foreground mt-1">人物特征：{c.character_trait}</div>
+            )}
+            {c.visual_trait && (
+              <div className="text-muted-foreground mt-1">特征（英）：{c.visual_trait}</div>
+            )}
+            {c.tri_view_prompt_cn && (
+              <div className="text-muted-foreground mt-1">三视图参考：{c.tri_view_prompt_cn}</div>
+            )}
             {c.tri_view_prompt && (
-              <div className="text-muted-foreground mt-1">三视图参考：{c.tri_view_prompt}</div>
+              <div className="text-muted-foreground/70 mt-1">三视图参考（英）：{c.tri_view_prompt}</div>
             )}
           </div>
         ))}

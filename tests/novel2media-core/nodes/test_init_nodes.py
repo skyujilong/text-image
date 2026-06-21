@@ -100,7 +100,10 @@ def test_parse_characters_llm_parses_main_characters(tmp_path, monkeypatch):
         {
             "name": "林澈",
             "appearance": "黑发少年",
+            "character_trait": "黑色短发的少年",
+            "visual_trait": "young man with black short hair",
             "tri_view_prompt": "character turnaround sheet, front side back, black hair",
+            "tri_view_prompt_cn": "三视图，正面侧面背面，黑发少年",
         }
     ]
     mock = _mock_llm(monkeypatch, fake)
@@ -115,7 +118,7 @@ def test_parse_characters_llm_parses_main_characters(tmp_path, monkeypatch):
 
 def test_parse_characters_llm_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
     """revise 回环：parse_characters_llm 读 _init_characters_feedback 拼进 prompt，用完清空。"""
-    fake = [{"name": "林澈", "appearance": "黑发", "tri_view_prompt": "p"}]
+    fake = [{"name": "林澈", "appearance": "黑发", "character_trait": "黑发少年", "visual_trait": "young man with black hair", "tri_view_prompt": "p", "tri_view_prompt_cn": "三视图中文"}]
     mock = _mock_llm(monkeypatch, fake)
     state = {
         "character_profiles": "林澈：黑发",
@@ -139,8 +142,9 @@ def test_parse_characters_llm_empty_text_skips_llm(tmp_path, monkeypatch):
 
 
 def test_parse_characters_llm_raises_on_missing_field(tmp_path, monkeypatch):
-    """缺必填字段（name/appearance/tri_view_prompt）→ 抛错。"""
-    _mock_llm(monkeypatch, [{"name": "林澈", "appearance": "黑发"}])  # 缺 tri_view_prompt
+    """缺必填字段（六字段）→ 抛错。"""
+    # 补齐 character_trait/visual_trait，仅缺 tri_view_prompt，确保校验走到 tri_view_prompt 抛错
+    _mock_llm(monkeypatch, [{"name": "林澈", "appearance": "黑发", "character_trait": "黑发少年", "visual_trait": "young man with black hair"}])
     state = {"character_profiles": "林澈", "worldview": ""}
     with pytest.raises(ValueError, match="tri_view_prompt"):
         parse_characters_llm(state)
@@ -151,8 +155,8 @@ def test_parse_characters_llm_raises_on_duplicate_name(tmp_path, monkeypatch):
     _mock_llm(
         monkeypatch,
         [
-            {"name": "林澈", "appearance": "a", "tri_view_prompt": "p"},
-            {"name": "林澈", "appearance": "b", "tri_view_prompt": "q"},
+            {"name": "林澈", "appearance": "a", "character_trait": "ca", "visual_trait": "va", "tri_view_prompt": "p", "tri_view_prompt_cn": "中p"},
+            {"name": "林澈", "appearance": "b", "character_trait": "cb", "visual_trait": "vb", "tri_view_prompt": "q", "tri_view_prompt_cn": "中q"},
         ],
     )
     state = {"character_profiles": "林澈", "worldview": ""}

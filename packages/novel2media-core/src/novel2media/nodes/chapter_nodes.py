@@ -172,8 +172,8 @@ def detect_new_characters_llm(state: dict) -> dict:
 
     读章节原文 + 现有 characters_profile 的 name 集。只输出新角色，不进 setup_queue
     （留给 review_new_characters 审 + commit_chapter 转 setup_queue + batch_upload_tri_view）。
-    每个元素必须含 name/appearance/tri_view_prompt 三字段（与 init parse_characters_llm 角色模型
-    一致），缺则抛错。
+    每个元素必须含 name/appearance/character_trait/visual_trait/tri_view_prompt/tri_view_prompt_cn
+    六字段（与 init parse_characters_llm 角色模型一致），缺则抛错。
 
     revise 回环时读 _characters_review_feedback（review_new_characters 写入）拼进 prompt，用完清空。
     """
@@ -183,9 +183,10 @@ def detect_new_characters_llm(state: dict) -> dict:
 
     prompt = build_detect_new_characters_prompt(chapter_text, existing_names, feedback)
     resp = invoke_llm(prompt, node="detect_new_characters_llm", label="detect_new_characters")
-    pending = parse_json_array(resp)  # [{"name","appearance","tri_view_prompt"}]
+    pending = parse_json_array(resp)  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn"}]
+    # 字段模型与 init parse_characters_llm 一致（六字段必填，无 id）
     for c in pending:
-        for field in ("name", "appearance", "tri_view_prompt"):
+        for field in ("name", "appearance", "character_trait", "visual_trait", "tri_view_prompt", "tri_view_prompt_cn"):
             if not c.get(field):
                 raise ValueError(f"detect_new_characters_llm: 角色缺 {field} 字段: {c}")
 

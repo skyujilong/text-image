@@ -12,7 +12,14 @@ from novel2media_logging import get_logger
 log = get_logger("init_nodes")
 
 # 角色档案必填字段（与 state.CharacterProfileRequired 对齐）
-_REQUIRED_CHAR_FIELDS = ("name", "appearance", "tri_view_prompt")
+_REQUIRED_CHAR_FIELDS = (
+    "name",
+    "appearance",
+    "character_trait",
+    "visual_trait",
+    "tri_view_prompt",
+    "tri_view_prompt_cn",
+)
 
 
 def load_config(state: dict) -> dict:

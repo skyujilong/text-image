@@ -237,7 +237,7 @@ def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
 def test_detect_new_characters_llm_returns_name_based_list(tmp_path, monkeypatch):
     state = _make_chapter_state(tmp_path, profile={"主角": {}})
     fake_pending = [
-        {"name": "李雷", "appearance": "青年男性，黑发", "tri_view_prompt": "character turnaround sheet, front view"}
+        {"name": "李雷", "appearance": "青年男性，黑发", "character_trait": "黑发青年男性", "visual_trait": "young man with black hair", "tri_view_prompt": "character turnaround sheet, front view", "tri_view_prompt_cn": "三视图中文"}
     ]
     _mock_llm(monkeypatch, fake_pending)
 
@@ -260,9 +260,10 @@ def test_detect_new_characters_llm_raises_on_missing_name(tmp_path, monkeypatch)
 
 
 def test_detect_new_characters_llm_raises_on_missing_tri_view_prompt(tmp_path, monkeypatch):
-    """缺 tri_view_prompt 字段 → 抛错（角色模型三字段必填）。"""
+    """缺 tri_view_prompt 字段 → 抛错（角色模型六字段必填）。"""
     state = _make_chapter_state(tmp_path)
-    _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发"}])
+    # 补齐 character_trait/visual_trait，仅缺 tri_view_prompt，确保校验走到 tri_view_prompt 抛错
+    _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发", "character_trait": "黑发青年", "visual_trait": "young man with black hair"}])
     try:
         detect_new_characters_llm(state)
     except ValueError:
@@ -413,7 +414,7 @@ def test_detect_new_characters_passes_review_feedback_to_prompt(tmp_path, monkey
     """revise 回环：detect_new_characters_llm 读 _characters_review_feedback 拼进 prompt，用完清空。"""
     state = _make_chapter_state(tmp_path)
     state["_characters_review_feedback"] = "漏了配角王五"
-    mock = _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发", "tri_view_prompt": "p"}])
+    mock = _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发", "character_trait": "黑发青年", "visual_trait": "young man with black hair", "tri_view_prompt": "p", "tri_view_prompt_cn": "三视图中文"}])
 
     result = detect_new_characters_llm(state)
 
