@@ -205,13 +205,11 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
         )}
       </div>
 
-      {/* 执行历史：占据剩余空间，往上扩展可见条目 */}
+      {/* 执行历史：占据剩余空间，滚动由 CheckpointTimeline 内部虚拟滚动容器负责 */}
       {currentRunId ? (
         <div className="flex-1 flex flex-col min-h-0">
           <div className="px-3 py-2 text-xs font-semibold text-gray-500 border-b">执行历史</div>
-          <div className="flex-1 overflow-y-auto min-h-0">
-            <CheckpointTimeline runId={currentRunId} />
-          </div>
+          <CheckpointTimeline runId={currentRunId} />
         </div>
       ) : (
         <div className="flex-1 flex items-center justify-center text-xs text-gray-400">

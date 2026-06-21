@@ -68,18 +68,20 @@ export default function CheckpointTimeline({ runId }: Props) {
   } = useRunStore()
 
   // 虚拟滚动状态
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const roRef = useRef<ResizeObserver | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewHeight, setViewHeight] = useState(300)
 
-  useEffect(() => {
-    const el = scrollRef.current
+  // ref callback：容器 DOM 出现/消失时立即挂/卸 ResizeObserver
+  const scrollRef = (el: HTMLDivElement | null) => {
+    roRef.current?.disconnect()
+    roRef.current = null
     if (!el) return
+    setViewHeight(el.clientHeight)
     const ro = new ResizeObserver(() => setViewHeight(el.clientHeight))
     ro.observe(el)
-    setViewHeight(el.clientHeight)
-    return () => ro.disconnect()
-  }, [])
+    roRef.current = ro
+  }
 
   // 初次加载 + runId 变化时拉取
   useEffect(() => {
