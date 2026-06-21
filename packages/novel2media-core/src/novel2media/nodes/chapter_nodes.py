@@ -138,7 +138,8 @@ def adapt_script(state: dict) -> dict:
     resp = invoke_llm(prompt, node="adapt_script", label="adapt_script")
     script = parse_json_array(resp)  # [{"text","action"}]
 
-    log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=bool(feedback))
+    # feedback 记录原文（与 prompt_chars 同条，便于核对 revise 意见是否真拼进 prompt）
+    log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=feedback)
     return {"current_script": script, "_script_review_feedback": ""}
 
 
@@ -163,7 +164,8 @@ def generate_storyboard(state: dict) -> dict:
     if storyboard:
         storyboard[0]["scene_change"] = True  # 首条必为新场景
 
-    log.info("generate_storyboard: 完成", chapter=ch_id, shots=len(storyboard), feedback=bool(feedback))
+    # feedback 记录原文（与 prompt_chars 同条，便于核对 revise 意见是否真拼进 prompt）
+    log.info("generate_storyboard: 完成", chapter=ch_id, shots=len(storyboard), feedback=feedback)
     return {"current_storyboard": storyboard, "_storyboard_review_feedback": ""}
 
 
@@ -190,7 +192,8 @@ def detect_new_characters_llm(state: dict) -> dict:
             if not c.get(field):
                 raise ValueError(f"detect_new_characters_llm: 角色缺 {field} 字段: {c}")
 
-    log.info("detect_new_characters_llm: 完成", count=len(pending), feedback=bool(feedback))
+    # feedback 记录原文（与 prompt_chars 同条，便于核对 revise 意见是否真拼进 prompt）
+    log.info("detect_new_characters_llm: 完成", count=len(pending), feedback=feedback)
     return {"pending_new_characters": pending, "_characters_review_feedback": ""}
 
 
@@ -244,7 +247,8 @@ def _make_review_node(name, payload_type, artifact_key, artifact_field, decision
             feedback = ""
 
         if decision == "revise":
-            log.info(f"{name}: 打回重做", chapter=ch_id, feedback=bool(feedback))
+            # 记录 feedback 原文（feedback 进 state 的源头，便于排查"为何没拼进 prompt"）
+            log.info(f"{name}: 打回重做", chapter=ch_id, feedback=feedback)
             return {decision_field: "revise", feedback_field: feedback}
 
         if decision != "pass":

@@ -127,7 +127,8 @@ def parse_characters_llm(state: dict) -> dict:
             raise ValueError(f"parse_characters_llm: 重复角色名: {name}")
         seen.add(name)
 
-    log.info("parse_characters_llm: 完成", count=len(parsed), feedback=bool(feedback))
+    # feedback 记录原文（与 prompt_chars 同条，便于核对 revise 意见是否真拼进 prompt）
+    log.info("parse_characters_llm: 完成", count=len(parsed), feedback=feedback)
     return {"pending_new_characters": parsed, "_init_characters_feedback": ""}
 
 
@@ -159,7 +160,8 @@ def review_initial_characters(state: dict) -> dict:
         feedback = ""
 
     if decision == "revise":
-        log.info("review_initial_characters: 打回重解析", feedback=bool(feedback))
+        # 记录 feedback 原文（feedback 进 state 的源头，便于排查"为何没拼进 prompt"）
+        log.info("review_initial_characters: 打回重解析", feedback=feedback)
         return {"_init_characters_review": "revise", "_init_characters_feedback": feedback}
 
     if decision != "pass":
