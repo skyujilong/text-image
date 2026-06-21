@@ -49,7 +49,7 @@ export default function InteractionDispatcher({ runId }: Props) {
   const activeInteraction = useRunStore((s) => s.activeInteraction)
 
   return (
-    <aside className="w-[480px] shrink-0 border-l border-gray-200 bg-white flex flex-col h-full overflow-hidden">
+    <aside className="flex-1 border-l border-gray-200 bg-white flex flex-col h-full overflow-hidden">
       {activeInteraction ? (
         <InteractionBody key={activeInteraction.node} runId={runId} interaction={activeInteraction} />
       ) : (

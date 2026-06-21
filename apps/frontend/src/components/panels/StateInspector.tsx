@@ -24,7 +24,7 @@ export default function StateInspector({ open, nodePath, runId, onClose }: Props
 
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
-      <SheetContent side="right" className="w-[420px] overflow-y-auto">
+      <SheetContent side="right" className="w-[70%] sm:max-w-[70%] overflow-y-auto">
         <SheetHeader>
           <SheetTitle>State: {nodePath}</SheetTitle>
         </SheetHeader>
