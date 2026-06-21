@@ -532,9 +532,19 @@ async def get_checkpoints(run_id: str) -> list[dict]:
                 }
             )
 
+    # 同一 (checkpoint_ns, node) 只保留最新一条（step 最大）
+    # 循环图中同一节点会在多个 step 重复出现，全部展示无意义且造成列表膨胀
+    seen: dict[tuple[str, str | None], dict] = {}
+    for entry in result:
+        key = (entry["checkpoint_ns"], entry["node"])
+        existing = seen.get(key)
+        if existing is None or entry["step"] > existing["step"]:
+            seen[key] = entry
+    deduped = list(seen.values())
+
     # 按 step 排序更可靠，created_at 可能不存在
-    result.sort(key=lambda r: r["step"] if r["step"] >= 0 else 999999)
-    return result
+    deduped.sort(key=lambda r: r["step"] if r["step"] >= 0 else 999999)
+    return deduped
 
 
 async def get_current_run_state(run_id: str) -> dict:
