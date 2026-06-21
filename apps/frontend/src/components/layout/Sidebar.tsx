@@ -55,7 +55,6 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
 
   const handleSelectRun = (runId: string) => {
     setCurrentRunId(runId)
-    resetNodeStatuses()
     resetDrill()
     setRunError(null) // 切换 Run 时清空错误
     setPickerOpen(false)

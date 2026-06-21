@@ -31,6 +31,16 @@ export interface RunMeta {
   fork_source_checkpoint_id?: string | null
 }
 
+export interface RunCurrentState {
+  status: string
+  node_statuses: Record<string, string>
+  active_interaction: {
+    node: string
+    path: string
+    payload: unknown
+  } | null
+}
+
 export interface CheckpointEntry {
   checkpoint_id: string
   step: number
@@ -123,6 +133,9 @@ export const api = {
 
   getCheckpoints: (runId: string) =>
     request<CheckpointEntry[]>(`/runs/${runId}/checkpoints`),
+
+  getRunCurrentState: (runId: string) =>
+    request<RunCurrentState>(`/runs/${runId}/current-state`),
 
   // 上传文件（如角色三视图）到 run 的 novel_dir/characters，按 {小说名}-{人物名}.ext 命名。
   // 仅本地落盘（不调 ComfyUI）；返回 { path }，前端拿 path 后 resume { tri_views: {name: path}, skipped: [...] } 给 batch_upload_tri_view 节点。

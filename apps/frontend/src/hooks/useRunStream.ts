@@ -1,9 +1,32 @@
 import { useEffect, useRef } from 'react'
+import { api } from '@/api/client'
+import type { NodeStatus } from '@/store/runStore'
 import { useRunStore } from '@/store/runStore'
 
 export function useRunStream(runId: string | null) {
-  const { setNodeStatus, setActiveInteraction, upsertRun, setRunError, streamGeneration } = useRunStore()
+  const { setNodeStatus, setActiveInteraction, upsertRun, setRunError, streamGeneration, batchSetNodeStatuses } = useRunStore()
   const esRef = useRef<EventSource | null>(null)
+
+  // 切换 run 或刷新页面后，从 checkpoint 历史恢复节点展示状态
+  useEffect(() => {
+    if (!runId) return
+    api.getRunCurrentState(runId)
+      .then((state) => {
+        batchSetNodeStatuses(state.node_statuses as Record<string, NodeStatus>)
+        if (state.active_interaction) {
+          setActiveInteraction({
+            node: state.active_interaction.node,
+            payload: state.active_interaction.payload,
+          })
+        } else {
+          setActiveInteraction(null)
+        }
+        console.log('[restore] run_id=%s status=%s restored %d node statuses', runId, state.status, Object.keys(state.node_statuses).length)
+      })
+      .catch((err) => console.warn('[restore] failed to restore run state:', err))
+  // runs[runId] 依赖确保刷新列表后（如 fork）也能正确恢复
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId])
 
   useEffect(() => {
     if (!runId) return
@@ -57,6 +80,7 @@ export function useRunStream(runId: string | null) {
           novel_title: '',
           status: 'done',
           created_at: new Date().toISOString(),
+          params: {},
         })
         es.close()
       }
@@ -71,6 +95,7 @@ export function useRunStream(runId: string | null) {
           novel_title: '',
           status: 'error',
           created_at: new Date().toISOString(),
+          params: {},
         })
         // 出错时不关闭 SSE，用户重试后可以继续接收事件
       }

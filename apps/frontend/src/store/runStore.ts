@@ -38,6 +38,7 @@ interface RunStore {
   upsertRun: (run: RunMeta) => void
   setCurrentRunId: (id: string | null) => void
   setNodeStatus: (node: string, status: NodeStatus) => void
+  batchSetNodeStatuses: (statuses: Record<string, NodeStatus>) => void
   resetNodeStatuses: () => void
   setActiveInteraction: (interaction: ActiveInteraction | null) => void
   pushDrill: (subgraph: string) => void
@@ -74,6 +75,9 @@ export const useRunStore = create<RunStore>((set) => ({
 
   setNodeStatus: (node, status) =>
     set((s) => ({ nodeStatuses: { ...s.nodeStatuses, [node]: status } })),
+
+  batchSetNodeStatuses: (statuses) =>
+    set((s) => ({ nodeStatuses: { ...statuses, ...s.nodeStatuses } })),
 
   resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null }),
 

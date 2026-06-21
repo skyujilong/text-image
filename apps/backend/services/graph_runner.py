@@ -537,6 +537,120 @@ async def get_checkpoints(run_id: str) -> list[dict]:
     return result
 
 
+async def get_current_run_state(run_id: str) -> dict:
+    """从 checkpoint 历史重建当前 run 的节点展示状态，用于页面刷新/切换 run 后恢复前端 UI。
+
+    返回结构：
+    {
+        "status": "<run status>",
+        "node_statuses": { "<status_key>": "done" | "waiting_human" },
+        "active_interaction": { "node": "...", "path": "...", "payload": ... } | None
+    }
+
+    逻辑：
+    1. 遍历顶层历史，所有 snap.next 中有节点名的快照意味着该节点"即将执行前"，
+       即其前一个节点已完成。对最新快照取 snap.next[0] → waiting_human 或 done。
+    2. 遍历各子图命名空间历史，同样重建子图内节点 done 状态。
+    3. 如果 run 状态为 waiting_human，调用 _resolve_interrupted 拿到叶子节点 + payload，
+       将其标为 waiting_human 并返回 active_interaction。
+    """
+    if _compiled_graph is None or _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+
+    run_meta = await _runs_db.get(run_id)
+    run_status = run_meta.status if run_meta else "unknown"
+
+    config = {"configurable": {"thread_id": run_id}}
+    node_statuses: dict[str, str] = {}
+    _VIRTUAL = ("__start__", "__end__")
+
+    # 1. 遍历顶层历史：已执行完成的顶层节点 → done
+    #    aget_state_history 从最新到最旧；snap.next 是"该快照之后将执行的节点"
+    #    即 snap.next[0] 是"还未执行"的，其之前的所有节点都已 done。
+    #    我们收集所有已出现在 snap.next 里的节点名（即在某时刻"即将执行"），
+    #    然后用最新快照的 snap.next 判断当前暂停点。
+    latest_top_snap = None
+    seen_top_nodes: set[str] = set()
+    async for snap in _compiled_graph.aget_state_history(config):
+        snap_next = list(getattr(snap, "next", []) or [])
+        real_next = [n for n in snap_next if n not in _VIRTUAL]
+        if latest_top_snap is None and real_next:
+            latest_top_snap = snap
+        seen_top_nodes.update(real_next)
+
+    # 已见过的顶层节点：除了最新暂停点，其余都已 done
+    latest_top_next = (
+        [n for n in (getattr(latest_top_snap, "next", []) or []) if n not in _VIRTUAL]
+        if latest_top_snap is not None
+        else []
+    )
+    for node in seen_top_nodes:
+        if node not in latest_top_next:
+            node_statuses[node] = "done"
+
+    # 2. 遍历各子图命名空间历史
+    async with (
+        aiosqlite.connect(CHECKPOINT_DB) as db,
+        db.execute(
+            "SELECT DISTINCT checkpoint_ns FROM checkpoints WHERE thread_id=? AND checkpoint_ns != ''",
+            (run_id,),
+        ) as cur,
+    ):
+        nss = [r[0] for r in await cur.fetchall()]
+
+    for ns in nss:
+        top_node = ns.split(":")[0]
+        sub_config = {"configurable": {"thread_id": run_id, "checkpoint_ns": ns}}
+        latest_sub_snap = None
+        seen_sub_nodes: set[str] = set()
+        async for snap in _compiled_graph.aget_state_history(sub_config):
+            snap_next = list(getattr(snap, "next", []) or [])
+            real_next = [n for n in snap_next if n not in _VIRTUAL]
+            if latest_sub_snap is None and real_next:
+                latest_sub_snap = snap
+            seen_sub_nodes.update(real_next)
+
+        latest_sub_next = (
+            [n for n in (getattr(latest_sub_snap, "next", []) or []) if n not in _VIRTUAL]
+            if latest_sub_snap is not None
+            else []
+        )
+        for leaf in seen_sub_nodes:
+            path = f"{top_node}/{leaf}"
+            if leaf not in latest_sub_next:
+                node_statuses[path] = "done"
+
+    # 3. 如果是 waiting_human，用 _resolve_interrupted 找叶子节点 + payload
+    active_interaction = None
+    if run_status == "waiting_human":
+        snap_sub = await _compiled_graph.aget_state(config, subgraphs=True)
+        resolved = await _resolve_interrupted(snap_sub)
+        if resolved:
+            leaf_name, leaf_path, interrupt_val = resolved
+            node_statuses[leaf_path] = "waiting_human"
+            # 同时把祖先路径也标 waiting_human（与 _emit propagate=True 对齐）
+            parts = leaf_path.split("/")
+            for i in range(1, len(parts)):
+                ancestor = "/".join(parts[:i])
+                node_statuses[ancestor] = "waiting_human"
+            active_interaction = {
+                "node": leaf_name,
+                "path": leaf_path,
+                "payload": interrupt_val,
+            }
+            log.info("get_current_run_state waiting_human leaf=%s path=%s", leaf_name, leaf_path)
+
+    log.info(
+        "get_current_run_state run_id=%s status=%s node_statuses_count=%d has_interaction=%s",
+        run_id, run_status, len(node_statuses), active_interaction is not None,
+    )
+    return {
+        "status": run_status,
+        "node_statuses": node_statuses,
+        "active_interaction": active_interaction,
+    }
+
+
 async def list_runs():
     if _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")

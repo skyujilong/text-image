@@ -84,6 +84,15 @@ async def get_checkpoints(run_id: str):
     return await runner.get_checkpoints(run_id)
 
 
+@router.get("/runs/{run_id}/current-state")
+async def get_current_run_state(run_id: str):
+    """从 checkpoint 历史重建当前 run 的节点展示状态，用于页面刷新/切换 run 后恢复前端 UI。"""
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return await runner.get_current_run_state(run_id)
+
+
 @router.get("/runs/{run_id}/stream")
 async def stream_run(run_id: str):
     q = runner.get_or_create_sse_queue(run_id)
