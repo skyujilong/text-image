@@ -231,9 +231,10 @@ def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
     # storyboard_id 由代码赋整数序号（0-based），覆盖 LLM 的 "sb_001"
     assert storyboard[0]["storyboard_id"] == 0
     assert storyboard[1]["storyboard_id"] == 1
-    # scene_prompt 由代码包装画风/画质常量
+    # scene_prompt 由代码包装画风/画质/人体防崩常量
     assert "a scene" in storyboard[0]["scene_prompt"]
     assert storyboard[0]["scene_prompt"].startswith("Japanese anime style")
+    assert "perfect anatomy" in storyboard[0]["scene_prompt"]
     # 不落盘
     assert not (tmp_path / "novel" / "chapter_01" / "storyboard.json").exists()
     assert "chapters_artifacts" not in result
