@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from novel2media.prompts.init_prompts import _TRI_VIEW_PROMPT_RULE
+
 
 def build_adapt_script_prompt(chapter_text: str, characters_profile: dict, feedback: str = "") -> str:
     """构造口播漫剧解说脚本提示词。
@@ -124,14 +126,14 @@ def build_detect_new_characters_prompt(chapter_text: str, existing_names: set[st
 3. appearance（外观描述）：性别、年龄、身高/体型（如高挑清瘦、娇小玲珑、中等身材魁梧等，不同角色身高体型尽量有区分）、发色、发型、是否戴眼镜、瞳色、服饰标志物等；原文未提及则据上下文合理补全。每个角色必须有鲜明、可辨识、与其他角色明显区分的外观特征，不同角色的关键特征（发色/发型/眼镜/身高体型等）尽量不重复，便于后期 ComfyUI 基于特征匹配参考图。
 4. character_trait（中文人物特征短语）：把该角色最鲜明的外观特征浓缩成一句中文，须含性别、身高体型与标志性特征，如"高挑清瘦、金色卷发、戴圆框眼镜的少年"。供审核阅读与后期分镜引用。
 5. visual_trait（英文特征短语）：character_trait 的英文版，须包含性别词（man/woman/boy/girl 等）与身高体型词（tall/short/petite/lanky/average height + slim/stocky build 等），如"tall lanky young man with golden curly hair and round glasses"。供分镜 scene_prompt 替换角色名使用，ComfyUI 可直接理解。
-6. tri_view_prompt（三视图英文提示词）：用于生成角色三视图（全身照），必须包含 Japanese anime style, anime art style（日系动漫画风）、character turnaround sheet、full body、front view / side view / back view、consistent outfit / hairstyle / body shape、plain white background（白色空白背景）、masterpiece, best quality, ultra detailed, highres（画质词）；并把 appearance 的鲜明特征翻译成英文关键词写入。基于 appearance 推导。
+{_TRI_VIEW_PROMPT_RULE}
 7. tri_view_prompt_cn：tri_view_prompt 的中文翻译版，供审核时阅读。
 8. 不要输出 id 字段。
 9. 若本章无新角色，输出空数组 []。
 10. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
 
 输出格式示例：
-[{{"name": "李雷", "appearance": "青年男性，高挑清瘦，金色卷发，戴圆框眼镜，穿白色衬衫", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的青年男性", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, character turnaround sheet, full body, front view, side view, back view, young male, tall lanky build, golden curly hair, round glasses, white shirt, consistent outfit and hairstyle, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，角色三视图，全身照，正面/侧面/背面，青年男性，高挑清瘦身形，金色卷发，圆框眼镜，白色衬衫，服饰发型一致，纯白背景，杰作，最高画质，超高细节，高分辨率"}}]
+[{{"name": "李雷", "appearance": "青年男性，高挑清瘦，金色卷发，戴圆框眼镜，穿白色衬衫，脚踩白色运动鞋", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的青年男性", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, highly detailed facial features, young male, tall lanky build, golden curly hair, round glasses, white shirt, white sneakers, consistent outfit, hairstyle, footwear and body shape, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，青年男性，高挑清瘦身形，金色卷发，圆框眼镜，白色衬衫，白色运动鞋，服饰发型鞋子体型一致，纯白背景，杰作，最高画质，超高细节，高分辨率"}}]
 
 章节原文：
 {chapter_text}

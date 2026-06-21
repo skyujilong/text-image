@@ -1,10 +1,20 @@
+import io
 from unittest.mock import AsyncMock
+
+from PIL import Image
 
 from schemas.models import RunMeta
 
 
+def _png_bytes(size: tuple[int, int]) -> bytes:
+    """生成指定尺寸的真实 PNG 字节，供上传端点缩放逻辑处理。"""
+    buf = io.BytesIO()
+    Image.new("RGB", size, (8, 16, 24)).save(buf, "PNG")
+    return buf.getvalue()
+
+
 async def test_upload_writes_file_with_novel_char_name(client, mock_runner, tmp_path):
-    """上传成功：按 {小说名}-{人物名}.ext 命名落盘，返回本地相对路径，不调 ComfyUI。"""
+    """上传成功：按 {小说名}-{人物名}.ext 命名落盘，等比缩放到高度 1536，返回本地相对路径，不调 ComfyUI。"""
     mock_runner.get_run = AsyncMock(
         return_value=RunMeta(run_id="r1", novel_dir=str(tmp_path), novel_title="丧尸围校2024")
     )
@@ -12,7 +22,7 @@ async def test_upload_writes_file_with_novel_char_name(client, mock_runner, tmp_
     resp = await client.post(
         "/upload",
         data={"run_id": "r1", "subdir": "characters", "character_name": "林辰"},
-        files={"file": ("tri.png", b"\x89PNGdata", "image/png")},
+        files={"file": ("tri.png", _png_bytes((1000, 2000)), "image/png")},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -20,8 +30,9 @@ async def test_upload_writes_file_with_novel_char_name(client, mock_runner, tmp_
     assert data["path"] == "characters/丧尸围校2024-林辰.png"
     assert "comfyui_name" not in data
 
-    # 文件落盘到 novel_dir/characters/{小说名}-{人物名}.png（扁平，不再按人物名分子目录）
-    assert (tmp_path / "characters" / "丧尸围校2024-林辰.png").read_bytes() == b"\x89PNGdata"
+    # 落盘文件为有效 PNG，且等比缩放后高度=1536（原 1000x2000 → 768x1536）
+    saved = Image.open(tmp_path / "characters" / "丧尸围校2024-林辰.png")
+    assert saved.size == (768, 1536)
 
 
 async def test_upload_unknown_run_returns_404(client, mock_runner):
@@ -30,7 +41,7 @@ async def test_upload_unknown_run_returns_404(client, mock_runner):
     resp = await client.post(
         "/upload",
         data={"run_id": "nope", "subdir": "characters", "character_name": "x"},
-        files={"file": ("a.png", b"data", "image/png")},
+        files={"file": ("a.png", _png_bytes((10, 10)), "image/png")},
     )
     assert resp.status_code == 404
 
@@ -43,7 +54,20 @@ async def test_upload_rejects_path_traversal_subdir(client, mock_runner, tmp_pat
     resp = await client.post(
         "/upload",
         data={"run_id": "r1", "subdir": "../escape", "character_name": "x"},
-        files={"file": ("a.png", b"data", "image/png")},
+        files={"file": ("a.png", _png_bytes((10, 10)), "image/png")},
+    )
+    assert resp.status_code == 400
+
+
+async def test_upload_rejects_non_image(client, mock_runner, tmp_path):
+    """非图片/损坏文件 → 400（不静默落盘原图，保证三视图规格统一）。"""
+    mock_runner.get_run = AsyncMock(
+        return_value=RunMeta(run_id="r1", novel_dir=str(tmp_path), novel_title="T")
+    )
+    resp = await client.post(
+        "/upload",
+        data={"run_id": "r1", "subdir": "characters", "character_name": "x"},
+        files={"file": ("tri.png", b"not an image", "image/png")},
     )
     assert resp.status_code == 400
 
@@ -56,7 +80,7 @@ async def test_upload_sanitizes_illegal_chars_in_name(client, mock_runner, tmp_p
     resp = await client.post(
         "/upload",
         data={"run_id": "r1", "subdir": "characters", "character_name": "林*辰"},
-        files={"file": ("tri.png", b"data", "image/png")},
+        files={"file": ("tri.png", _png_bytes((100, 200)), "image/png")},
     )
     assert resp.status_code == 200
     # 非法字符被过滤：A/B:C -> ABC，林*辰 -> 林辰

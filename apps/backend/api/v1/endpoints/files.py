@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from PIL import Image, ImageOps
 
 import services.graph_runner as runner
 
 router = APIRouter()
+
+# 三视图统一规格：等比例缩放到固定高度，保证多角色参考图规格一致，便于后期 ComfyUI 引用。
+_TRI_VIEW_TARGET_HEIGHT = 1536
 
 
 @router.get("/files/{file_path:path}")
@@ -40,6 +45,52 @@ def _safe_filename_part(s: str) -> str:
     return cleaned or "unnamed"
 
 
+# 后缀 → Pillow 保存格式映射；JPEG 系不支持透明通道需单独处理。
+_SUFFIX_TO_FORMAT = {
+    ".png": "PNG",
+    ".jpg": "JPEG",
+    ".jpeg": "JPEG",
+    ".webp": "WEBP",
+}
+
+
+def _resize_to_height(content: bytes, suffix: str, target_height: int) -> bytes:
+    """等比例缩放图片到指定高度（宽度按原比例），返回编码后的字节。
+
+    三视图统一规格用：固定高度 1536px，宽度等比，保证多角色参考图规格一致。
+    - 按 EXIF 方向自动校正（手机拍摄常有旋转）。
+    - 高度已等于目标值则原样返回字节（避免无谓重编码损失画质）。
+    - 非 JPEG/WEBP/PNG 后缀或图片损坏 → 抛 ValueError 由端点转 400，不静默落盘原图
+      （避免规格不统一的参考图混入下游）。
+    - JPEG 不支持透明通道：mode 含 alpha（RGBA/LA/P）时转 RGB 再保存。
+    """
+    fmt = _SUFFIX_TO_FORMAT.get(suffix.lower())
+    if fmt is None:
+        raise ValueError(f"unsupported image suffix: {suffix}")
+
+    try:
+        img = Image.open(io.BytesIO(content))
+        img = ImageOps.exif_transpose(img)  # 按拍摄方向自动旋正
+        img.load()
+    except Exception as e:  # PIL 打开/解码失败：文件非图片或损坏
+        raise ValueError(f"invalid image: {e}") from e
+
+    w, h = img.size
+    if h == target_height:
+        # 高度已达标：原样落盘，不重编码
+        return content
+
+    new_w = max(1, round(w * target_height / h))
+    resized = img.resize((new_w, target_height), Image.LANCZOS)
+
+    if fmt == "JPEG" and resized.mode in ("RGBA", "LA", "P"):
+        resized = resized.convert("RGB")
+
+    out = io.BytesIO()
+    resized.save(out, format=fmt)
+    return out.getvalue()
+
+
 @router.post("/upload")
 async def upload_file(
     run_id: str = Form(...),
@@ -54,6 +105,9 @@ async def upload_file(
     前端拿 path 后 resume {tri_views: {name: path}, skipped: [...]} 给 batch_upload_tri_view 节点。
 
     命名带小说名前缀，防多小说角色名相同时在（未来渲染上传的）ComfyUI input 目录冲突。
+
+    落盘前等比例缩放到固定高度（1536px，宽度按原比例），统一三视图规格——保证多角色
+    参考图尺寸一致，便于后期 ComfyUI 引用。非图片/损坏文件 → 400，不静默落盘。
     """
     # 路径越界校验：subdir 不允许绝对路径或上跳
     if Path(subdir).is_absolute() or ".." in Path(subdir).parts:
@@ -79,6 +133,11 @@ async def upload_file(
     )
     local_path = target_dir / filename
     content = await file.read()
+    # 等比例缩放到固定高度，统一三视图规格；非图片/损坏 → 400（不静默落盘原图）
+    try:
+        content = _resize_to_height(content, suffix, _TRI_VIEW_TARGET_HEIGHT)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"image resize failed: {e}") from e
     local_path.write_bytes(content)
 
     rel_path = str(local_path.relative_to(novel_dir.resolve()))
