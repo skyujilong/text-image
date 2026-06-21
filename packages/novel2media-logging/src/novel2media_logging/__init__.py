@@ -12,10 +12,14 @@ logging 全部走同一套 root handler，按时间连贯写入同一个 data/lo
   自动同时落 structlog 与 logging 两类日志。
 - 接管 uvicorn 的 uvicorn/uvicorn.error/uvicorn.access 三个 logger：清空各自
   handler、propagate=True，让 uvicorn 日志传播到 root，与图节点日志写同一文件。
+- uvicorn.access 额外挂 _PollingAccessFilter：过滤高频轮询接口（如
+  /runs/{id}/checkpoints 每 3 秒一次）的 access 日志，避免刷屏污染 backend.log；
+  其他接口 access 日志保留。
 - data/ 已在 .gitignore，日志文件不会被提交。
 """
 
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -26,6 +30,29 @@ import structlog
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 LOG_DIR = PROJECT_ROOT / "data" / "logs"
 LOG_FILE = LOG_DIR / "backend.log"
+
+
+class _PollingAccessFilter(logging.Filter):
+    """过滤高频轮询接口的 uvicorn access 日志，避免刷屏污染 backend.log。
+
+    仅过滤明确的高频轮询 GET 接口（前端 CheckpointTimeline 运行中每 3 秒拉一次
+    /runs/{id}/checkpoints），其 access 日志无排查价值却会淹没业务节点日志。
+    其他接口 access 日志保留，便于排查 HTTP 问题。
+
+    挂在 uvicorn.access logger 上：logging 先过 logger.filter，被过滤的记录
+    不再 propagate 到 root，stdout 与 backend.log 均不写。
+    """
+
+    # 高频轮询 GET 接口路径正则：匹配 access log 完整文本中的「方法 + 路径」
+    # （形如 `GET /runs/<id>/checkpoints HTTP/1.1`）。
+    _PATTERNS = (re.compile(r"GET /runs/[^/]+/checkpoints\b"),)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        for pat in self._PATTERNS:
+            if pat.search(msg):
+                return False  # 命中轮询接口 → 丢弃
+        return True
 
 
 def setup_logging() -> None:
@@ -99,6 +126,12 @@ def setup_logging() -> None:
         uv_logger = logging.getLogger(name)
         uv_logger.handlers.clear()
         uv_logger.propagate = True
+
+    # 仅 uvicorn.access 挂轮询过滤 filter：丢弃高频轮询接口的 access 日志，
+    # 防其刷屏污染 backend.log。幂等：先清 filter 再挂，防 --reload 叠加。
+    uv_access = logging.getLogger("uvicorn.access")
+    uv_access.filters.clear()
+    uv_access.addFilter(_PollingAccessFilter())
 
 
 def get_logger(node_name: str) -> structlog.BoundLogger:

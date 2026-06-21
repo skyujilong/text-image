@@ -8,6 +8,7 @@ from novel2media.chapters import chapter_sort_key
 from novel2media.llm import invoke_llm
 from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.chapter_prompts import (
+    _SCENE_ANATOMY_GUARD,
     _SCENE_QUALITY_SUFFIX,
     _SCENE_STYLE_PREFIX,
     build_adapt_script_prompt,
@@ -162,11 +163,16 @@ def generate_storyboard(state: dict) -> dict:
 
     prompt = build_generate_storyboard_prompt(script, chapter_text, characters_profile, feedback)
     resp = invoke_llm(prompt, node="generate_storyboard", label="generate_storyboard")
-    storyboard = parse_json_array(resp)  # [{"scene_change","text","speaker","scene_prompt"}]
+    storyboard = parse_json_array(resp)  # [{"scene_change","text","speaker","subjects","scene_prompt"}]
     for i, entry in enumerate(storyboard):
         entry["storyboard_id"] = i  # 代码赋整数序号（0-based），覆盖 LLM 可能误产的 id
+        subjects = entry.get("subjects", [])
+        if isinstance(subjects, list) and len(subjects) > 2:
+            # subjects 是后续生图按名取参考图的依据；当前只记录 LLM 违规，不裁剪不伪装成功。
+            log.warning("generate_storyboard: 主体角色超 2 人（违反一致性上限）", chapter=ch_id, sid=i, subjects=subjects)
         raw_prompt = entry.get("scene_prompt", "")
-        entry["scene_prompt"] = f"{_SCENE_STYLE_PREFIX}, {raw_prompt}, {_SCENE_QUALITY_SUFFIX}"
+        # 画风/画质/人体防崩统一由代码拼接（LLM 不写这些词），头尾固定
+        entry["scene_prompt"] = f"{_SCENE_STYLE_PREFIX}, {raw_prompt}, {_SCENE_QUALITY_SUFFIX}, {_SCENE_ANATOMY_GUARD}"
     if storyboard:
         storyboard[0]["scene_change"] = True  # 首条必为换图点
 

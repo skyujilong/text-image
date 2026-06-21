@@ -30,10 +30,11 @@ interface ScriptLine {
   action?: string
 }
 interface StoryboardShot {
-  storyboard_id?: string
+  storyboard_id?: string | number
   scene_change?: boolean
   text?: string
   speaker?: string
+  subjects?: string[]
   scene_prompt?: string
 }
 interface NewCharacter {
@@ -149,6 +150,9 @@ function StoryboardSection({ storyboard }: { storyboard: StoryboardShot[] }) {
               )}
             </div>
             <div className="text-foreground">{shot.speaker ?? ''}：{shot.text}</div>
+            {shot.subjects && shot.subjects.length > 0 && (
+              <div className="text-muted-foreground mt-1">主体：{shot.subjects.join('、')}</div>
+            )}
             {shot.scene_prompt && (
               <div className="text-muted-foreground mt-1">画面：{shot.scene_prompt}</div>
             )}
