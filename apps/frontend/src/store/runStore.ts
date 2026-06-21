@@ -36,6 +36,7 @@ interface RunStore {
 
   setRuns: (runs: RunMeta[]) => void
   upsertRun: (run: RunMeta) => void
+  removeRun: (runId: string) => void
   setCurrentRunId: (id: string | null) => void
   setNodeStatus: (node: string, status: NodeStatus) => void
   batchSetNodeStatuses: (statuses: Record<string, NodeStatus>) => void
@@ -70,6 +71,25 @@ export const useRunStore = create<RunStore>((set) => ({
 
   upsertRun: (run) =>
     set((s) => ({ runs: { ...s.runs, [run.run_id]: run } })),
+
+  // 删除 run：从 runs 移除；若删的是当前 run，回退到空态（清节点状态/交互/下钻），
+  // 让 useRunStream(null) 自动关闭 SSE。
+  removeRun: (runId) =>
+    set((s) => {
+      const rest = { ...s.runs }
+      delete rest[runId]
+      if (s.currentRunId !== runId) {
+        return { runs: rest }
+      }
+      return {
+        runs: rest,
+        currentRunId: null,
+        nodeStatuses: {},
+        activeInteraction: null,
+        drillPath: [],
+        autoFollow: true,
+      }
+    }),
 
   setCurrentRunId: (id) => set({ currentRunId: id }),
 

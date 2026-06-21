@@ -86,6 +86,13 @@ class RunsDB:
         await self._conn.execute("UPDATE runs SET status=? WHERE run_id=?", (status, run_id))
         await self._conn.commit()
 
+    async def delete(self, run_id: str) -> None:
+        """删除 run 元信息记录（不清理 checkpoint，checkpoint 由 graph_runner 层负责）。"""
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        await self._conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+        await self._conn.commit()
+
     async def get(self, run_id: str) -> RunMeta | None:
         if self._conn is None:
             raise RuntimeError("RunsDB not initialized. Use async context manager.")

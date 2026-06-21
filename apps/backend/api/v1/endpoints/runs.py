@@ -65,6 +65,22 @@ async def update_run(run_id: str, req: UpdateRunRequest):
     return {"ok": True}
 
 
+@router.delete("/runs/{run_id}")
+async def delete_run(run_id: str):
+    """删除废弃 run：清理 checkpoint + SSE 队列 + runs.db 记录（不动 novel_dir）。
+
+    running 状态不可删（无法安全取消正在执行的任务）→ 409。
+    """
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        await runner.delete_run(run_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"ok": True}
+
+
 @router.get("/runs/{run_id}/state")
 async def get_node_state(run_id: str, node_path: str = Query(...)):
     meta = await runner.get_run(run_id)

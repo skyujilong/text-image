@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { GitBranch, RotateCcw } from 'lucide-react'
 import { api, type CheckpointEntry } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 
@@ -133,7 +134,7 @@ export default function CheckpointTimeline({ runId }: Props) {
   return (
     <div className="text-xs flex flex-col h-full">
       {entries.length === 0 ? (
-        <div className="px-3 py-2 text-gray-400">暂无执行记录</div>
+        <div className="px-3 py-3 text-muted-foreground text-center">暂无执行记录</div>
       ) : (
         <div
           ref={scrollRef}
@@ -146,26 +147,28 @@ export default function CheckpointTimeline({ runId }: Props) {
               <div
                 key={e.checkpoint_id}
                 style={{ position: 'absolute', top: (startIdx + i) * ITEM_HEIGHT, left: 0, right: 0, height: ITEM_HEIGHT }}
-                className="flex items-center gap-2 px-3 border-b hover:bg-gray-50"
+                className="group flex items-center gap-1.5 px-3 border-b border-border/60 hover:bg-accent"
               >
-                <div className="flex-1 truncate text-gray-700" title={e.node ?? ''}>{formatNodeLabel(e.node)}</div>
-                <div className="text-gray-400 shrink-0">
+                <div className="flex-1 truncate text-foreground" title={e.node ?? ''}>
+                  {formatNodeLabel(e.node)}
+                </div>
+                <div className="text-muted-foreground/70 shrink-0 tabular-nums">
                   {e.created_at ? new Date(e.created_at).toLocaleTimeString() : '—'}
                 </div>
                 <button
-                  className="shrink-0 text-gray-400 hover:text-blue-600"
+                  className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-blue-600 hover:bg-blue-500/10 transition-colors"
                   title="从此节点重跑（覆盖当前分支）"
                   onClick={() => e.node && handleRestartFrom(e.node)}
                 >
-                  ↺
+                  <RotateCcw className="size-3.5" />
                 </button>
                 {e.checkpoint_ns === '' && (
                   <button
-                    className="shrink-0 text-gray-400 hover:text-green-600"
+                    className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-green-600 hover:bg-green-500/10 transition-colors"
                     title="从此点分叉新 Run（保留原历史）"
                     onClick={() => handleFork(e.checkpoint_id)}
                   >
-                    分叉
+                    <GitBranch className="size-3.5" />
                   </button>
                 )}
               </div>

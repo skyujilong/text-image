@@ -677,3 +677,44 @@ async def update_run_title(run_id: str, novel_title: str):
     if _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     await _runs_db.update_title(run_id, novel_title)
+
+
+async def delete_run(run_id: str) -> None:
+    """删除废弃 run：清理 checkpoint 数据 + 内存 SSE 队列 + runs.db 记录。
+
+    边界：
+    - running 状态不可删（后端未保存 asyncio task handle，无法安全取消正在执行的任务）→ 抛 ValueError，端点转 409。
+    - 仅删 DB 记录与 checkpoint，**不动 novel_dir**（用户小说工程目录可能被多 run 共享）。
+
+    checkpoint 清理与 fork_from_checkpoint 的复制逻辑对称：删除该 thread_id 在
+    checkpoints / writes / checkpoint_blobs（若存在）中的全部记录。
+    """
+    if _compiled_graph is None or _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+
+    run_meta = await _runs_db.get(run_id)
+    if run_meta is None:
+        # 端点层已做 404，这里防御性静默返回，避免重复抛错
+        return
+    if run_meta.status == "running":
+        raise ValueError("run is running, cannot delete")
+
+    # 1. 清理 checkpoints.db：删除该 thread_id 的全部 checkpoint 相关记录
+    #    checkpoint_blobs 表在不同 LangGraph 版本可能不存在，按表存在性兜底
+    async with aiosqlite.connect(CHECKPOINT_DB) as db:
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('checkpoints','writes','checkpoint_blobs')"
+        ) as cur:
+            existing = {r[0] for r in await cur.fetchall()}
+        for table in ("checkpoints", "writes", "checkpoint_blobs"):
+            if table in existing:
+                await db.execute(f"DELETE FROM {table} WHERE thread_id=?", (run_id,))
+        await db.commit()
+
+    # 2. 清理内存 SSE 队列（error 状态 run 的队列会残留）
+    _sse_queues.pop(run_id, None)
+
+    # 3. 删 runs.db 记录
+    await _runs_db.delete(run_id)
+    log.info("delete_run: 已删除 run_id=%s", run_id)

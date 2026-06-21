@@ -115,6 +115,10 @@ export const api = {
       body: JSON.stringify({ novel_title: novelTitle }),
     }),
 
+  // 删除废弃 run（清理 checkpoint + 记录，不动 novel_dir）；running 状态后端会 409
+  deleteRun: (runId: string) =>
+    request<{ ok: boolean }>(`/runs/${runId}`, { method: 'DELETE' }),
+
   validatePath: (path: string) =>
     request<{ exists: boolean }>(`/validate/path?path=${encodeURIComponent(path)}`),
 
