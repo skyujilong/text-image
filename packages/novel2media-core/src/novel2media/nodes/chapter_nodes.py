@@ -8,6 +8,8 @@ from novel2media.chapters import chapter_sort_key
 from novel2media.llm import invoke_llm
 from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.chapter_prompts import (
+    _SCENE_QUALITY_SUFFIX,
+    _SCENE_STYLE_PREFIX,
     build_adapt_script_prompt,
     build_detect_new_characters_prompt,
     build_generate_storyboard_prompt,
@@ -160,9 +162,13 @@ def generate_storyboard(state: dict) -> dict:
 
     prompt = build_generate_storyboard_prompt(script, chapter_text, characters_profile, feedback)
     resp = invoke_llm(prompt, node="generate_storyboard", label="generate_storyboard")
-    storyboard = parse_json_array(resp)  # [{"storyboard_id","scene_change","text","speaker","scene_prompt"}]
+    storyboard = parse_json_array(resp)  # [{"scene_change","text","speaker","scene_prompt"}]
+    for i, entry in enumerate(storyboard):
+        entry["storyboard_id"] = i  # 代码赋整数序号（0-based），覆盖 LLM 可能误产的 id
+        raw_prompt = entry.get("scene_prompt", "")
+        entry["scene_prompt"] = f"{_SCENE_STYLE_PREFIX}, {raw_prompt}, {_SCENE_QUALITY_SUFFIX}"
     if storyboard:
-        storyboard[0]["scene_change"] = True  # 首条必为新场景
+        storyboard[0]["scene_change"] = True  # 首条必为换图点
 
     # feedback 记录原文（与 prompt_chars 同条，便于核对 revise 意见是否真拼进 prompt）
     log.info("generate_storyboard: 完成", chapter=ch_id, shots=len(storyboard), feedback=feedback)

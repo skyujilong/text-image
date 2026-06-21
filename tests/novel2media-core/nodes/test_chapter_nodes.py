@@ -228,7 +228,12 @@ def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
 
     storyboard = result["current_storyboard"]
     assert storyboard[0]["scene_change"] is True
-    assert storyboard[0]["scene_prompt"] == "a scene"
+    # storyboard_id 由代码赋整数序号（0-based），覆盖 LLM 的 "sb_001"
+    assert storyboard[0]["storyboard_id"] == 0
+    assert storyboard[1]["storyboard_id"] == 1
+    # scene_prompt 由代码包装画风/画质常量
+    assert "a scene" in storyboard[0]["scene_prompt"]
+    assert storyboard[0]["scene_prompt"].startswith("Japanese anime style")
     # 不落盘
     assert not (tmp_path / "novel" / "chapter_01" / "storyboard.json").exists()
     assert "chapters_artifacts" not in result
@@ -360,7 +365,7 @@ def test_commit_chapter_marks_planned_and_queues_new_characters(tmp_path):
         {"name": "韩梅梅", "appearance": "", "tri_view_prompt": "p2"},
     ]
     script = [{"text": "主角挥手", "action": "主角挥手"}]
-    storyboard = [{"storyboard_id": "sb_001", "scene_change": True, "text": "主角挥手", "speaker": "主角", "scene_prompt": "p"}]
+    storyboard = [{"storyboard_id": 0, "scene_change": True, "text": "主角挥手", "speaker": "主角", "scene_prompt": "p"}]
     state = {
         "current_chapter_id": "chapter_01",
         "current_script": script,
@@ -529,12 +534,12 @@ def test_build_timeline_matches_storyboard_and_timestamps(tmp_path):
             },
         ],
         "current_timestamps": [
-            {"storyboard_id": "sb_001", "text": "开头", "speaker": "narrator", "start_time": 0.0, "end_time": 2.0},
-            {"storyboard_id": "sb_002", "text": "对话", "speaker": "char_001", "start_time": 2.2, "end_time": 3.5},
+            {"storyboard_id": 0, "text": "开头", "speaker": "narrator", "start_time": 0.0, "end_time": 2.0},
+            {"storyboard_id": 1, "text": "对话", "speaker": "char_001", "start_time": 2.2, "end_time": 3.5},
         ],
         "current_image_map": {
-            "sb_001": str(ch_dir / "images" / "scene_001.png"),
-            "sb_002": str(ch_dir / "images" / "scene_001.png"),
+            0: str(ch_dir / "images" / "scene_001.png"),
+            1: str(ch_dir / "images" / "scene_001.png"),
         },
         "current_audio_path": "",
         "current_subtitles_path": "",
@@ -546,7 +551,7 @@ def test_build_timeline_matches_storyboard_and_timestamps(tmp_path):
     assert timeline_path.exists()
     timeline = json.loads(timeline_path.read_text())
     assert len(timeline) == 2
-    assert timeline[0]["image_path"] == state["current_image_map"]["sb_001"]
+    assert timeline[0]["image_path"] == state["current_image_map"][0]
     assert "chapter_01" in result["chapters_artifacts"]
 
 
@@ -559,7 +564,7 @@ def _make_render_state(tmp_path, planned=("chapter_01",)):
     (novel_dir / "chapters").mkdir(parents=True, exist_ok=True)
     chapters_status = {}
     render_batch = []
-    storyboard = [{"storyboard_id": "sb_001", "scene_change": True, "text": "t", "speaker": "主角", "scene_prompt": "p"}]
+    storyboard = [{"storyboard_id": 0, "scene_change": True, "text": "t", "speaker": "主角", "scene_prompt": "p"}]
     script = [{"text": "t", "action": "主角站立"}]
     for ch in planned:
         (novel_dir / "chapters" / f"{ch}.txt").write_text("原文", encoding="utf-8")
@@ -579,7 +584,7 @@ def test_render_dispatch_reads_storyboard_from_batch(tmp_path):
     result = render_dispatch(state)
     assert result["current_chapter_id"] == "chapter_01"
     assert len(result["current_storyboard"]) == 1
-    assert result["current_storyboard"][0]["storyboard_id"] == "sb_001"
+    assert result["current_storyboard"][0]["storyboard_id"] == 0
     assert len(result["current_script"]) == 1  # script 也从 render_batch 取
     assert result["current_image_map"] == {}
     # 选取的章节状态保持 planned（状态由后续 render_* 节点推进）
@@ -638,7 +643,7 @@ def test_render_build_timeline_marks_rendered(tmp_path):
     state.update(
         {
             "current_chapter_id": "chapter_01",
-            "current_storyboard": [{"storyboard_id": "sb_001"}],
+            "current_storyboard": [{"storyboard_id": 0}],
             "current_image_map": {},
             "current_audio_path": "",
             "current_subtitles_path": "",

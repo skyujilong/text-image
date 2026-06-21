@@ -7,7 +7,7 @@ from typing import Any
 
 @dataclass
 class AudioSegment:
-    storyboard_id: str
+    storyboard_id: int
     speaker: str
     duration: float  # 秒
     raw_timestamps: list[dict[str, Any]]  # TTS 返回的原始时间戳（从 0 开始）

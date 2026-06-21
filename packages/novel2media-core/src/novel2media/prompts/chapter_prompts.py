@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from novel2media.prompts.init_prompts import _TRI_VIEW_PROMPT_RULE
 
+# 画风与画质常量（与三视图日漫风格对齐），由代码统一拼接到每条 scene_prompt 头尾；
+# LLM 不写这些词，避免重复叠加或风格不一致。
+_SCENE_STYLE_PREFIX = "Japanese anime style, anime art style"
+_SCENE_QUALITY_SUFFIX = "masterpiece, best quality, ultra detailed, highres"
+
 
 def build_adapt_script_prompt(chapter_text: str, characters_profile: dict, feedback: str = "") -> str:
     """构造有声漫剧单播脚本提示词。
@@ -62,16 +67,18 @@ def build_generate_storyboard_prompt(
     """构造分镜生成提示词（原文 + 口播脚本双输入）。
 
     输出 schema：JSON 数组，每个元素
-    {{"storyboard_id": str, "scene_change": bool, "text": str, "speaker": str, "scene_prompt": str}}。
+    {{"scene_change": bool, "text": str, "speaker": str, "scene_prompt": str}}。
     首条 scene_change 固定为 True（由节点强制保证）。
 
     双输入设计：原文提供画面细节/角色/景物/神态，口播脚本提供节奏/结构/文案/画面角色名。
     - text：取自对应口播 text。
     - speaker：画面角色名，从口播 action 的角色名识别（已知角色用其名，无角色用"旁白"）。
-    - scene_prompt：综合口播 action 画面描述 + 原文画面细节推导的 ComfyUI 文生图正向提示词；
-      提到画面角色时必须用该角色的 visual_trait（英文特征短语，含性别与身高体型词）替代中文名，
-      ComfyUI 不认识中文人名；多角色同框时须据各自 visual_trait 的身高体型显式体现身高差，
-      避免不同角色生成出同样身高。
+    - scene_change：此处是否需要换一张新图（换图点）。换图不仅指换场景，也包括同场景内切换
+      景别/机位。密度软性规则：关键段（冲突/转折/打斗/情绪爆发/震撼揭示）每 1-2 句换图；
+      非关键段（铺垫/过渡/平稳叙事）每 3-5 句共用一张图（连续 false）。
+    - scene_prompt：仅写画面内容（景别、机位、角色动作表情、场景光影），不写画风词和画质词
+      （画风/画质由代码统一拼接 _SCENE_STYLE_PREFIX / _SCENE_QUALITY_SUFFIX，LLM 不输出）；
+      提到画面角色时必须用该角色的 visual_trait 替代中文名，多角色同框时显式体现身高差。
     feedback 非空时为上一版分镜的修改意见，提示 LLM 据此调整（review_storyboard revise 回环）。
     """
     import json
@@ -88,21 +95,34 @@ def build_generate_storyboard_prompt(
         names = "（暂无已知角色）"
     script_json = json.dumps(script, ensure_ascii=False, indent=2)
     feedback_block = f"上一版分镜的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
-    return f"""你是一个专业的分镜师。根据下面的口播脚本生成分镜列表，每个口播条目对应一个分镜。
+    return f"""你是一个专业的分镜师。根据下面的口播脚本生成分镜列表，每个口播条目对应一个分镜条目（条目数必须相等，顺序一致）。
 同时参考原始章节原文补充画面细节（景物、神态、动作细节），让分镜画面更准。
 
 已知角色（括号内为该角色的英文外观特征 visual_trait，含性别与身高体型，scene_prompt 中提到该角色时必须用此特征替代中文名）：{names}
 
 {feedback_block}要求：
-1. storyboard_id 形如 "sb_001"、"sb_002" 递增，与口播条目一一对应、顺序一致。
-2. scene_change：该分镜是否是新场景的开头（首个分镜必为 true，场景切换处为 true，其余 false）。
-3. text：直接取自对应口播条目的 text。
-4. speaker：直接取自对应口播条目的 speaker 字段（旁白/角色名）。若口播条目为角色对白，则画面核心角色对应该角色；若为旁白，则画面核心角色由 action 中的角色名或场景主体决定。
-5. scene_prompt：用于文生图的正向提示词（英文为主，描述画面构图、角色外观、场景、光影），综合口播 action 画面描述与原文画面细节。**提到画面角色时，必须用已知角色花名册中该角色的 visual_trait（英文特征短语，含性别与身高体型词）替代中文名，严禁出现中文名占位**（ComfyUI 不认识中文人名）；新角色若无 visual_trait，用其外观的英文描述（如 tall young man / petite young woman + 标志特征）替代。**多个角色同框时，须据各自 visual_trait 的身高体型显式体现身高差（如 tall lanky man 与 petite short girl 并立时明确写出两者身高对比），避免不同角色生成出同样身高。**
+1. 与口播条目一一对应、顺序一致，输出条目数必须等于口播条目数。
+2. scene_change：此处是否需要换一张新图（换图点）。首条必须为 true。换图点包括：场景切换、景别/机位切换（如全景→特写）、情绪急变、重要动作跳变。密度软性区间：
+   - 关键段（冲突/对峙/打斗/情绪爆发/震撼揭示/转折高潮）：每 1-2 句换图，scene_change=true 更密集，同场景内多机位切换也算换图点。
+   - 非关键段（背景交代/铺垫过渡/平稳叙事）：每 3-5 句共用一张图，连续 scene_change=false。
+3. text：直接取自对应口播条目的 text，一字不改。
+4. speaker：直接取自对应口播条目的 speaker 字段（旁白/角色名）。
+5. scene_prompt：用于文生图的正向提示词（英文），描述景别、机位角度、角色外观与动作/表情、场景细节、光影氛围。
+   - 景别必须显式写出：close-up / medium shot / wide shot / extreme close-up / full body shot 等。
+   - 机位角度按需写：low angle / high angle / over-the-shoulder / dutch angle / eye level 等。
+   - 提到画面角色时，必须用已知角色花名册中该角色的 visual_trait 替代中文名，严禁出现中文名占位（ComfyUI 不认识中文人名）；新角色若无 visual_trait，用外观英文描述（如 tall young man / petite young woman + 标志特征）替代。
+   - 多个角色同框时，须显式体现身高差（如 tall lanky man towering over petite short girl）。
+   - 关键冲突/转折处，鼓励同场景不同景别切换制造视觉节奏。
+   - **严禁写任何画风词（anime / Japanese / cartoon 等）和画质词（masterpiece / best quality / highres / ultra detailed 等），这些由系统统一添加，你写了会重复。**
 6. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
 
-输出格式示例：
-[{{"storyboard_id": "sb_001", "scene_change": true, "text": "黑影扑来，林辰猛地后退", "speaker": "林辰", "scene_prompt": "tall lanky young man with golden curly hair and round glasses stepping back in fear, dark shadow lunging from bushes, night campus, cinematic lighting, tense atmosphere, masterpiece, best quality"}}]
+输出格式示例（体现关键处换图密、非关键处一图多句）：
+[
+  {{"scene_change": true, "text": "黑夜笼罩着废弃工厂，杀机四伏", "speaker": "旁白", "scene_prompt": "wide shot, low angle, abandoned factory at night, dark silhouettes in the distance, dramatic shadows, fog rolling across the ground, tense atmosphere"}},
+  {{"scene_change": false, "text": "林辰悄悄靠近铁门", "speaker": "旁白", "scene_prompt": "wide shot, low angle, abandoned factory at night, dark silhouettes in the distance, dramatic shadows, fog rolling across the ground, tense atmosphere"}},
+  {{"scene_change": true, "text": "黑影猛地从背后扑来", "speaker": "旁白", "scene_prompt": "medium shot, dynamic dutch angle, dark shadowy figure lunging from behind, tall lanky young man with golden curly hair and round glasses reacting in shock, motion blur on the attacker"}},
+  {{"scene_change": true, "text": "你找死！", "speaker": "林辰", "scene_prompt": "extreme close-up, low angle, tall lanky young man with golden curly hair and round glasses, furious expression, clenched jaw, cold sweat on forehead, dark background"}}
+]
 
 口播脚本：
 {script_json}

@@ -43,9 +43,18 @@ def generate_images(state: dict) -> dict:
     out_dir = novel_dir / ch_id / "images"
 
     image_map: dict[str, str] = {}
+    last_image_path: str = ""
 
     for entry in storyboard:
         sid = entry["storyboard_id"]
+        scene_change = entry.get("scene_change", True)
+
+        if not scene_change and last_image_path:
+            # 复用上一张换图点的图，不调用 ComfyUI
+            image_map[sid] = last_image_path
+            log.info("generate_images: 复用上一张图", chapter=ch_id, sid=sid, image=last_image_path)
+            continue
+
         speaker = entry.get("speaker", "")
         char = characters_profile.get(speaker, {})
 
@@ -82,8 +91,9 @@ def generate_images(state: dict) -> dict:
             },
         )
         hires_paths = client.generate(wf_hires, out_dir, 1)
-        image_map[sid] = str(hires_paths[0])
+        last_image_path = str(hires_paths[0])
+        image_map[sid] = last_image_path
         log.info("generate_images: 场景图完成", chapter=ch_id, sid=sid)
 
-    log.info("generate_images: 全章节图像生成完毕", chapter=ch_id, count=len(image_map))
+    log.info("generate_images: 全章节图像生成完毕", chapter=ch_id, total=len(storyboard), generated=sum(1 for e in storyboard if e.get("scene_change", True)))
     return {"current_image_map": image_map}

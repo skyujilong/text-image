@@ -153,7 +153,7 @@ class ChapterSubgraphState(InitSubgraphState):
     current_audio_path: str  # 当前章节合成音频文件路径
     current_subtitles_path: str  # 当前章节字幕文件路径
     current_timestamps: list[dict]  # 含全局偏移后时间戳
-    current_image_map: dict[str, str]  # storyboard_id → image_path（generate_images 中间结果）
+    current_image_map: dict[int, str]  # storyboard_id（整数序号，0-based）→ image_path（generate_images 中间结果）
     current_timeline_path: str  # 当前章节时间轴文件路径
 
     # 审核重试计数器（load_chapter 统一重置）

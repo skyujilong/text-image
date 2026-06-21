@@ -100,7 +100,7 @@ async def test_chapter_subgraph_three_reviews_pass_then_planned(tmp_path, monkey
     r = await graph.ainvoke(Command(resume="pass"), config=config)
     # 2) 停在 review_storyboard → pass
     assert r["__interrupt__"][0].value["type"] == "storyboard_review"
-    assert r["__interrupt__"][0].value["storyboard"][0]["storyboard_id"] == "sb_001"
+    assert r["__interrupt__"][0].value["storyboard"][0]["storyboard_id"] == 0
     r = await graph.ainvoke(Command(resume="pass"), config=config)
     # 3) 停在 review_new_characters → pass（有新角色 → commit_chapter → setup_queue → character_setup interrupt）
     assert r["__interrupt__"][0].value["type"] == "new_characters_review"
