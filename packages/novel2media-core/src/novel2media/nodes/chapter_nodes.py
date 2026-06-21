@@ -72,8 +72,12 @@ def load_chapter(state: dict) -> dict:
             "script_review_attempts": 0,
             "storyboard_review_attempts": 0,
             # R3：清空控制字段，避免残留串扰
-            "_review_decision": "",
-            "_review_feedback": "",
+            "_script_review_decision": "",
+            "_script_review_feedback": "",
+            "_storyboard_review_decision": "",
+            "_storyboard_review_feedback": "",
+            "_characters_review_decision": "",
+            "_characters_review_feedback": "",
             "_chapter_advance": "",
             "_final_decision": "",
             "_init_characters_review": "",
@@ -98,8 +102,12 @@ def load_chapter(state: dict) -> dict:
         "script_review_attempts": 0,
         "storyboard_review_attempts": 0,
         # R3：清空章节级控制字段，防止上一章/上一分支残留驱动本章路由
-        "_review_decision": "",
-        "_review_feedback": "",
+        "_script_review_decision": "",
+        "_script_review_feedback": "",
+        "_storyboard_review_decision": "",
+        "_storyboard_review_feedback": "",
+        "_characters_review_decision": "",
+        "_characters_review_feedback": "",
         "_chapter_advance": "",
         "_final_decision": "",
         "_init_characters_review": "",
@@ -113,58 +121,65 @@ def load_chapter(state: dict) -> dict:
 
 
 def adapt_script(state: dict) -> dict:
-    """LLM 改写剧本 → current_script（不落盘，稿件由 review_chapter 收入 render_batch）。
+    """LLM 改写剧本 → current_script（不落盘，稿件由 commit_chapter 收入 render_batch）。
 
     读 current_chapter_text_path 原文 + characters_profile（name-based）。LLM 输出 JSON 数组，
-    解析失败抛错暴露。结果存 current_script 供 review 展示 + 后续入 render_batch。
+    解析失败抛错暴露。结果存 current_script 供 review_script 展示 + 后续入 render_batch。
 
-    revise 回环时读 _review_feedback（review_chapter 写入）拼进 prompt，用完清空，
+    revise 回环时读 _script_review_feedback（review_script 写入）拼进 prompt，用完清空，
     避免串到下一章重写。
     """
     ch_id = state["current_chapter_id"]
     chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
     characters_profile = state.get("characters_profile", {})
-    feedback = state.get("_review_feedback", "") or ""
+    feedback = state.get("_script_review_feedback", "") or ""
 
     prompt = build_adapt_script_prompt(chapter_text, characters_profile, feedback)
     resp = invoke_llm(prompt, node="adapt_script", label="adapt_script")
     script = parse_json_array(resp)  # [{"speaker","text","action"}]
 
     log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=bool(feedback))
-    return {"current_script": script, "_review_feedback": ""}
+    return {"current_script": script, "_script_review_feedback": ""}
 
 
 def generate_storyboard(state: dict) -> dict:
-    """LLM 生成分镜 → current_storyboard（不落盘，稿件由 review_chapter 收入 render_batch）。
+    """LLM 生成分镜 → current_storyboard（不落盘，稿件由 commit_chapter 收入 render_batch）。
 
     读 current_script + characters_profile。强制首条 scene_change=True。解析失败抛错。
     scene_prompt 字段名与 image_nodes.generate_images 的读取对齐（渲染阶段复用）。
+
+    revise 回环时读 _storyboard_review_feedback（review_storyboard 写入）拼进 prompt，用完清空。
     """
     ch_id = state["current_chapter_id"]
     script = state.get("current_script", [])
     characters_profile = state.get("characters_profile", {})
+    feedback = state.get("_storyboard_review_feedback", "") or ""
 
-    prompt = build_generate_storyboard_prompt(script, characters_profile)
+    prompt = build_generate_storyboard_prompt(script, characters_profile, feedback)
     resp = invoke_llm(prompt, node="generate_storyboard", label="generate_storyboard")
     storyboard = parse_json_array(resp)  # [{"storyboard_id","scene_change","text","speaker","scene_prompt"}]
     if storyboard:
         storyboard[0]["scene_change"] = True  # 首条必为新场景
 
-    log.info("generate_storyboard: 完成", chapter=ch_id, shots=len(storyboard))
-    return {"current_storyboard": storyboard}
+    log.info("generate_storyboard: 完成", chapter=ch_id, shots=len(storyboard), feedback=bool(feedback))
+    return {"current_storyboard": storyboard, "_storyboard_review_feedback": ""}
 
 
 def detect_new_characters_llm(state: dict) -> dict:
     """LLM 检测本章新角色 + 外观 + 三视图提示词 → pending_new_characters（name-based，无 id）。
 
     读章节原文 + 现有 characters_profile 的 name 集。只输出新角色，不进 setup_queue
-    （留给 review_chapter 审 + batch_upload_tri_view）。每个元素必须含 name/appearance/tri_view_prompt
-    三字段（与 init parse_characters_llm 角色模型一致），缺则抛错。
+    （留给 review_new_characters 审 + commit_chapter 转 setup_queue + batch_upload_tri_view）。
+    每个元素必须含 name/appearance/tri_view_prompt 三字段（与 init parse_characters_llm 角色模型
+    一致），缺则抛错。
+
+    revise 回环时读 _characters_review_feedback（review_new_characters 写入）拼进 prompt，用完清空。
     """
     chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
     existing_names = set(state.get("characters_profile", {}).keys())
+    feedback = state.get("_characters_review_feedback", "") or ""
 
-    prompt = build_detect_new_characters_prompt(chapter_text, existing_names)
+    prompt = build_detect_new_characters_prompt(chapter_text, existing_names, feedback)
     resp = invoke_llm(prompt, node="detect_new_characters_llm", label="detect_new_characters")
     pending = parse_json_array(resp)  # [{"name","appearance","tri_view_prompt"}]
     for c in pending:
@@ -172,53 +187,114 @@ def detect_new_characters_llm(state: dict) -> dict:
             if not c.get(field):
                 raise ValueError(f"detect_new_characters_llm: 角色缺 {field} 字段: {c}")
 
-    log.info("detect_new_characters_llm: 完成", count=len(pending))
-    return {"pending_new_characters": pending}
+    log.info("detect_new_characters_llm: 完成", count=len(pending), feedback=bool(feedback))
+    return {"pending_new_characters": pending, "_characters_review_feedback": ""}
 
 
 def review_chapter(state: dict) -> dict:
-    """interrupt：纯审核（剧本+分镜+新角色候选），resume 为 {"decision","feedback"}。
+    """[已废弃] 旧单点合并审阅节点。
 
-    R1 原则：interrupt() 之后不做任何写盘副作用（fork/restart 重放会重复执行）。
-    本节点只读 state + 写 state 字段。
+    已由 review_script / review_storyboard / review_new_characters 三处细分审阅 +
+    commit_chapter 纯提交节点取代。保留此函数仅为占位避免历史 import 报错，
+    不再注册进图。新代码勿用。
+    """
+    raise NotImplementedError("review_chapter 已拆分为 review_script/review_storyboard/review_new_characters + commit_chapter")
 
-    - revise：写 `_review_decision=revise` + 用户修改意见写入 _review_feedback，
-      路由回到 adapt_script 重写剧本。
-    - pass：标当前章 chapters_status=planned + 把本章 current_script/current_storyboard
-      收入 render_batch（渲染阶段逐章读取）+ 新角色进 setup_queue（交给
-      character_setup_subgraph 批量上传三视图）+ 清空 pending_new_characters。
-    - resume 值非 pass/revise：显式抛错，不静默当 pass（避免用户决策被吞）。
 
-    resume 兼容：旧 checkpoint 可能 resume 纯字符串 "pass"/"revise"（无意见），
-    此处按 decision 解释、feedback 视为空；非法值仍抛错。
+# ─── 细分审阅节点（通用工厂）─────────────────────────────────────────────
+# 原单点 review_chapter 拆为三处细分审阅：各自只审本步产物，revise 回到对应生成
+# 节点并把指导意见注入该节点 prompt（精准回环，避免一处问题导致整章重写）。
+# pass 后由 commit_chapter 统一执行提交副作用（planned/render_batch/setup_queue），
+# 保持 R1：interrupt 之后不做写盘副作用。
+
+
+def _make_review_node(name, payload_type, artifact_key, artifact_field, decision_field, feedback_field):
+    """构造一个细分审阅 interrupt 节点。
+
+    参数：
+    - name: 节点名（供 LangGraph stream 命名 / 前端分发）
+    - payload_type: interrupt payload 的 type 字段（前端 InteractionDispatcher 据此分发）
+    - artifact_key: 从 state 取待审产物的 key（current_script / current_storyboard / pending_new_characters）
+    - artifact_field: payload 中产物字段名（script / storyboard / new_characters）
+    - decision_field / feedback_field: 写回 state 的决策 / 意见字段名
+
+    节点逻辑：interrupt 把本步产物传给前端 → resume {decision, feedback}（兼容旧字符串）→
+    revise 写 decision=revise + feedback；pass 写 decision=pass + 清空 feedback；非法值抛错。
+    """
+
+    def _node(state: dict) -> dict:
+        ch_id = state.get("current_chapter_id", "")
+        raw = interrupt(
+            {
+                "type": payload_type,
+                "chapter_id": ch_id,
+                artifact_field: state.get(artifact_key, []),
+            }
+        )
+
+        # 兼容旧字符串 resume 与新对象 resume {decision, feedback}
+        if isinstance(raw, dict):
+            decision = raw.get("decision")
+            feedback = raw.get("feedback", "") or ""
+        else:
+            decision = raw
+            feedback = ""
+
+        if decision == "revise":
+            log.info(f"{name}: 打回重做", chapter=ch_id, feedback=bool(feedback))
+            return {decision_field: "revise", feedback_field: feedback}
+
+        if decision != "pass":
+            raise ValueError(f"{name}: 非法 resume 值（应为 pass/revise）: {raw!r}")
+
+        log.info(f"{name}: 审核通过", chapter=ch_id)
+        # pass 时清空反馈，防上一轮 revise 残留串到下一次重做
+        return {decision_field: "pass", feedback_field: ""}
+
+    _node.__name__ = name
+    _node.__doc__ = f"interrupt：细分审阅 {name}，resume 为 {{decision, feedback}}。revise 回到对应生成节点并注入 feedback。"
+    return _node
+
+
+# 三个细分审阅节点：分别审剧本 / 分镜 / 新角色，revise 各自回环
+review_script = _make_review_node(
+    "review_script",
+    payload_type="script_review",
+    artifact_key="current_script",
+    artifact_field="script",
+    decision_field="_script_review_decision",
+    feedback_field="_script_review_feedback",
+)
+review_storyboard = _make_review_node(
+    "review_storyboard",
+    payload_type="storyboard_review",
+    artifact_key="current_storyboard",
+    artifact_field="storyboard",
+    decision_field="_storyboard_review_decision",
+    feedback_field="_storyboard_review_feedback",
+)
+review_new_characters = _make_review_node(
+    "review_new_characters",
+    payload_type="new_characters_review",
+    artifact_key="pending_new_characters",
+    artifact_field="new_characters",
+    decision_field="_characters_review_decision",
+    feedback_field="_characters_review_feedback",
+)
+
+
+def commit_chapter(state: dict) -> dict:
+    """章节规划纯提交节点（非 interrupt）。
+
+    三处细分审阅均 pass 后执行原 review_chapter 的 pass 副作用：标当前章
+    chapters_status=planned + 把本章 current_script/current_storyboard 收入 render_batch
+    （渲染阶段逐章读取，按 chapter_id 合并覆盖）+ 新角色进 setup_queue（交给
+    character_setup_subgraph 批量上传三视图）+ 清空 pending_new_characters。
+
+    拆出为独立非 interrupt 节点的原因：R1 要求 interrupt() 之后不做写盘副作用
+    （fork/restart 重放会重复执行），提交逻辑必须放在无 interrupt 的节点。
     """
     ch_id = state["current_chapter_id"]
-    raw = interrupt(
-        {
-            "type": "chapter_review",
-            "chapter_id": ch_id,
-            "script": state.get("current_script", []),
-            "storyboard": state.get("current_storyboard", []),
-            "new_characters": state.get("pending_new_characters", []),
-        }
-    )
-
-    # 兼容旧字符串 resume 与新对象 resume {decision, feedback}
-    if isinstance(raw, dict):
-        decision = raw.get("decision")
-        feedback = raw.get("feedback", "") or ""
-    else:
-        decision = raw
-        feedback = ""
-
-    if decision == "revise":
-        log.info("review_chapter: 打回重写", chapter=ch_id, feedback=bool(feedback))
-        return {"_review_decision": "revise", "_review_feedback": feedback}
-
-    if decision != "pass":
-        raise ValueError(f"review_chapter: 非法 resume 值（应为 pass/revise）: {raw!r}")
-
-    # pass：标 planned + 稿件入 render_batch + 新角色进 setup_queue
     chapters_status = dict(state.get("chapters_status", {}))
     chapters_status[ch_id] = "planned"
     render_batch = list(state.get("render_batch", []))
@@ -232,15 +308,12 @@ def review_chapter(state: dict) -> dict:
         }
     )
     queue = list(state.get("pending_new_characters", []))
-    log.info("review_chapter: 审核通过", chapter=ch_id, new_characters=len(queue))
+    log.info("commit_chapter: 章节规划提交", chapter=ch_id, new_characters=len(queue))
     return {
-        "_review_decision": "pass",
         "chapters_status": chapters_status,
         "render_batch": render_batch,
         "setup_queue": queue,
         "pending_new_characters": [],
-        # pass 时清空反馈，防上一轮 revise 残留串到下一章重写
-        "_review_feedback": "",
     }
 
 

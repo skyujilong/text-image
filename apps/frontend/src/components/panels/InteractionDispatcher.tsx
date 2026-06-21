@@ -1,5 +1,5 @@
 import { useRunStore, type ActiveInteraction } from '@/store/runStore'
-import ChapterReviewPanel from './ChapterReviewPanel'
+import GenericReviewPanel from './GenericReviewPanel'
 import InitialCharactersReviewPanel from './InitialCharactersReviewPanel'
 import TriViewUploadPanel from './TriViewUploadPanel'
 import ChapterAdvancePanel from './ChapterAdvancePanel'
@@ -19,7 +19,9 @@ interface Props {
 const PAYLOAD_TYPE_TO_NODE: Record<string, string> = {
   initial_characters_review: 'review_initial_characters',
   tri_view_upload_batch: 'batch_upload_tri_view',
-  chapter_review: 'review_chapter',
+  script_review: 'review_script',
+  storyboard_review: 'review_storyboard',
+  new_characters_review: 'review_new_characters',
   chapter_advance: 'chapter_advance_decision',
   final_decision: 'final_decision',
   audio_config: 'configure_audio',
@@ -67,13 +69,30 @@ function InteractionBody({ runId, interaction }: { runId: string; interaction: A
   const resolvedNode = PAYLOAD_TYPE_TO_NODE[payloadType] ?? node
 
   switch (resolvedNode) {
-    case 'review_chapter':
+    case 'review_script':
       return (
-        <ChapterReviewPanel
+        <GenericReviewPanel
           runId={runId}
+          type="script_review"
           chapterId={p.chapter_id as string | undefined}
           script={(p.script as Record<string, unknown>[]) ?? []}
+        />
+      )
+    case 'review_storyboard':
+      return (
+        <GenericReviewPanel
+          runId={runId}
+          type="storyboard_review"
+          chapterId={p.chapter_id as string | undefined}
           storyboard={(p.storyboard as Record<string, unknown>[]) ?? []}
+        />
+      )
+    case 'review_new_characters':
+      return (
+        <GenericReviewPanel
+          runId={runId}
+          type="new_characters_review"
+          chapterId={p.chapter_id as string | undefined}
           newCharacters={(p.new_characters as Record<string, unknown>[]) ?? []}
         />
       )

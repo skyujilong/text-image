@@ -248,7 +248,7 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
         # 此时绝不能标 done / 发 run_complete——否则前端在 waiting_human 弹窗后
         # 立即收到 run_complete 并关闭 SSE，用户 resume 后的新事件将无法送达。
         # 该 bug 影响所有 interrupt 节点（review_initial_characters/batch_upload_tri_view/
-        # review_chapter/...）。用 snap.next 是否为空作为唯一判定依据。
+        # review_script/review_storyboard/review_new_characters/...）。用 snap.next 是否为空作为唯一判定依据。
         snap = await _compiled_graph.aget_state(config)
         snap_next = getattr(snap, "next", None)
         log.info("_run_graph END astream 退出，snap.next=%s", snap_next)

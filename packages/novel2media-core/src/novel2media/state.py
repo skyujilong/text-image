@@ -156,12 +156,20 @@ class ChapterSubgraphState(InitSubgraphState):
     script_review_attempts: int  # 剧本审核已重试次数
     storyboard_review_attempts: int  # 分镜审核已重试次数
 
-    # 章节级路由控制字段（interrupt 节点写回，load_chapter 统一重置）。
+    # 章节级细分审阅路由控制字段（三处审阅节点写回，load_chapter 统一重置）。
     # 显式声明原因同 SetupSubgraphState：避免窄 schema 子图丢弃导致路由失控。
-    _review_decision: str  # review_chapter 审核：pass / revise
-    # 章节审阅打回时的修改意见（review_chapter revise 写回，
-    # adapt_script 读取拼进 prompt 后清空）。
-    _review_feedback: str
+    # 拆分自旧 _review_decision/_review_feedback：原 review_chapter 单点合并审阅
+    # 改为 review_script / review_storyboard / review_new_characters 三处细分审阅，
+    # 各自只审本步产物、revise 回到对应生成节点，指导意见精准注入对应 prompt。
+    _script_review_decision: str  # review_script：pass / revise
+    # 剧本审阅打回意见（review_script revise 写回，adapt_script 读取拼进 prompt 后清空）
+    _script_review_feedback: str
+    _storyboard_review_decision: str  # review_storyboard：pass / revise
+    # 分镜审阅打回意见（review_storyboard revise 写回，generate_storyboard 读取拼进 prompt 后清空）
+    _storyboard_review_feedback: str
+    _characters_review_decision: str  # review_new_characters：pass / revise
+    # 新角色审阅打回意见（review_new_characters revise 写回，detect_new_characters_llm 读取拼进 prompt 后清空）
+    _characters_review_feedback: str
     _chapter_advance: str  # chapter_advance_decision：next / render
     _final_decision: str  # final_decision：done / continue
 

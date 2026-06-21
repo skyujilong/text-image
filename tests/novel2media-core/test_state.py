@@ -51,8 +51,12 @@ def test_graph_state_shape():
         # 渲染批次稿件缓存
         "render_batch",
         # R3：章节级控制字段显式声明
-        "_review_decision",
-        "_review_feedback",
+        "_script_review_decision",
+        "_script_review_feedback",
+        "_storyboard_review_decision",
+        "_storyboard_review_feedback",
+        "_characters_review_decision",
+        "_characters_review_feedback",
         "_chapter_advance",
         "_final_decision",
         "_init_characters_review",

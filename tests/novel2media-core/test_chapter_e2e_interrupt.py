@@ -1,11 +1,12 @@
-"""端到端集成测试：验证 chapter 子图规划阶段 interrupt 链路。
+"""端到端集成测试：验证 chapter 子图规划阶段细分审阅 interrupt 链路。
 
-模拟一次完整规划流转：load_chapter → adapt_script → generate_storyboard
-→ detect_new_characters_llm → review_chapter(interrupt)。验证：
-- 流程在 review_chapter 正确停下（__interrupt__ 出现）。
-- interrupt payload 含 script/storyboard/new_characters。
-- resume "pass" 后 chapters_status[ch]=planned + 新角色进 setup_queue。
-- resume "revise" 后回到 adapt_script（重写剧本）。
+模拟一次完整规划流转：load_chapter → adapt_script → review_script(interrupt)
+→ generate_storyboard → review_storyboard(interrupt) → detect_new_characters_llm
+→ review_new_characters(interrupt) → commit_chapter。验证：
+- 流程在 review_script 正确停下（第一个细分审阅 interrupt）。
+- interrupt payload 含 script（仅本步产物）。
+- 三处细分审阅依次 resume pass 后，commit_chapter 标 planned + 新角色进 setup_queue。
+- review_script resume "revise" 后回到 adapt_script（重写剧本），再次停在 review_script。
 
 用 MemorySaver + 真实编译的 chapter 子图（验证 R4/R10 单例 + checkpoint namespace 一致性）。
 """
@@ -39,19 +40,20 @@ def _mock_llm_sequence(monkeypatch, payloads):
     return _invoke_llm
 
 
+def _initial_planning_payloads():
+    """一次完整规划的三次 LLM 输出：剧本 / 分镜 / 新角色。"""
+    return [
+        [{"speaker": "主角", "text": "你好", "action": "挥手"}],
+        [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "a room"}],
+        [{"name": "主角", "appearance": "黑发青年", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, black hair young man, consistent outfit, plain background"}],
+    ]
+
+
 @pytest.mark.asyncio
-async def test_chapter_subgraph_stops_at_review_chapter(tmp_path, monkeypatch):
-    """规划阶段在 review_chapter interrupt 停下，payload 含 script/storyboard/new_characters。"""
+async def test_chapter_subgraph_stops_at_review_script(tmp_path, monkeypatch):
+    """规划阶段第一个 interrupt 是 review_script，payload 仅含 script。"""
     novel_dir = _make_novel(tmp_path)
-    # adapt_script → 剧本；generate_storyboard → 分镜；detect_new_characters_llm → 新角色
-    _mock_llm_sequence(
-        monkeypatch,
-        [
-            [{"speaker": "主角", "text": "你好", "action": "挥手"}],
-            [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "a room"}],
-            [{"name": "主角", "appearance": "黑发青年", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, black hair young man, consistent outfit, plain background"}],
-        ],
-    )
+    _mock_llm_sequence(monkeypatch, _initial_planning_payloads())
 
     graph = build_chapter_subgraph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "t1"}}
@@ -63,34 +65,25 @@ async def test_chapter_subgraph_stops_at_review_chapter(tmp_path, monkeypatch):
     }
 
     result = await graph.ainvoke(initial, config=config)
-    # 应停在 review_chapter interrupt（未到 END）
+    # 应停在 review_script interrupt（第一个细分审阅，未到 END）
     assert "__interrupt__" in result
-    interrupt_obj = result["__interrupt__"][0]
-    payload = interrupt_obj.value
-    assert payload["type"] == "chapter_review"
+    payload = result["__interrupt__"][0].value
+    assert payload["type"] == "script_review"
     assert payload["chapter_id"] == "chapter_01"
     assert len(payload["script"]) == 1
-    assert len(payload["storyboard"]) == 1
-    assert payload["new_characters"][0]["name"] == "主角"
-    assert payload["new_characters"][0]["tri_view_prompt"]  # 角色模型三字段
+    # 剧本审阅 payload 不应含 storyboard/new_characters（只审本步产物）
+    assert "storyboard" not in payload
+    assert "new_characters" not in payload
 
-    # 章节状态在 interrupt 前仍为 processing（pass 后才标 planned）
-    # interrupt 不改 chapters_status，由 resume 后 review_chapter 完成
+    # 章节状态在 interrupt 前仍为 processing（commit_chapter 才标 planned）
     assert result["chapters_status"]["chapter_01"] == "processing"
 
 
 @pytest.mark.asyncio
-async def test_chapter_subgraph_resume_pass_marks_planned(tmp_path, monkeypatch):
-    """resume 'pass' → chapters_status=planned + 新角色进 setup_queue，推进到下一 interrupt。"""
+async def test_chapter_subgraph_three_reviews_pass_then_planned(tmp_path, monkeypatch):
+    """三处细分审阅依次 resume pass → commit_chapter 标 planned + 新角色进 setup_queue。"""
     novel_dir = _make_novel(tmp_path)
-    _mock_llm_sequence(
-        monkeypatch,
-        [
-            [{"speaker": "主角", "text": "你好", "action": "挥手"}],
-            [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "a room"}],
-            [{"name": "主角", "appearance": "黑发青年", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, black hair young man, consistent outfit, plain background"}],
-        ],
-    )
+    _mock_llm_sequence(monkeypatch, _initial_planning_payloads())
 
     graph = build_chapter_subgraph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "t2"}}
@@ -101,37 +94,43 @@ async def test_chapter_subgraph_resume_pass_marks_planned(tmp_path, monkeypatch)
         "characters_profile": {},
     }
 
-    # 跑到 review_chapter interrupt
-    await graph.ainvoke(initial, config=config)
-    # resume "pass" → 有新角色 → 进 character_setup_subgraph → batch_upload_tri_view interrupt
+    # 1) 停在 review_script → pass
+    r = await graph.ainvoke(initial, config=config)
+    assert r["__interrupt__"][0].value["type"] == "script_review"
+    r = await graph.ainvoke(Command(resume="pass"), config=config)
+    # 2) 停在 review_storyboard → pass
+    assert r["__interrupt__"][0].value["type"] == "storyboard_review"
+    assert r["__interrupt__"][0].value["storyboard"][0]["storyboard_id"] == "sb_001"
+    r = await graph.ainvoke(Command(resume="pass"), config=config)
+    # 3) 停在 review_new_characters → pass（有新角色 → commit_chapter → setup_queue → character_setup interrupt）
+    assert r["__interrupt__"][0].value["type"] == "new_characters_review"
+    assert r["__interrupt__"][0].value["new_characters"][0]["name"] == "主角"
     result = await graph.ainvoke(Command(resume="pass"), config=config)
 
-    # review_chapter pass 已标 planned
+    # commit_chapter 已标 planned + 新角色进 setup_queue
     assert result["chapters_status"]["chapter_01"] == "planned"
-    # 新角色进 setup_queue（tri_view_prompt 随角色流转）
     assert result["setup_queue"][0]["name"] == "主角"
     assert result["setup_queue"][0]["tri_view_prompt"]
-    # 应停在 character_setup_subgraph 内的 batch_upload_tri_view interrupt（setup_queue 非空）
+    # 有新角色 → 进 character_setup_subgraph → batch_upload_tri_view interrupt
     assert "__interrupt__" in result
     interrupt_payload = result["__interrupt__"][0].value
     assert interrupt_payload["type"] == "tri_view_upload_batch"
-    assert interrupt_payload["characters"][0]["tri_view_prompt"]  # 上传面板参考提示词
+    assert interrupt_payload["characters"][0]["tri_view_prompt"]
 
 
 @pytest.mark.asyncio
 async def test_chapter_subgraph_resume_revise_loops_back(tmp_path, monkeypatch):
-    """resume 'revise' → 回到 adapt_script 重写剧本，再次到 review_chapter interrupt。"""
+    """review_script resume 'revise' → 回到 adapt_script 重写剧本，再次停在 review_script。
+
+    init 阶段在 review_script（第一个审阅）即 interrupt，只消耗 1 次 LLM（剧本）；
+    revise 回到 adapt_script 再消耗 1 次 LLM（重写剧本）。故 mock 只需 v1 + v2 两个 payload。
+    """
     novel_dir = _make_novel(tmp_path)
-    # 两次完整 LLM 序列（revise 后重跑 adapt_script→storyboard→detect）
     _mock_llm_sequence(
         monkeypatch,
         [
             [{"speaker": "主角", "text": "v1", "action": ""}],
-            [{"storyboard_id": "sb_001", "scene_change": True, "text": "v1", "speaker": "主角", "scene_prompt": "p"}],
-            [{"name": "主角", "appearance": "黑发", "tri_view_prompt": "character turnaround sheet, front side back, black hair, consistent outfit"}],
             [{"speaker": "主角", "text": "v2-revised", "action": "点头"}],
-            [{"storyboard_id": "sb_001", "scene_change": True, "text": "v2", "speaker": "主角", "scene_prompt": "p2"}],
-            [{"name": "主角", "appearance": "黑发", "tri_view_prompt": "character turnaround sheet, front side back, black hair, consistent outfit"}],
         ],
     )
 
@@ -145,10 +144,10 @@ async def test_chapter_subgraph_resume_revise_loops_back(tmp_path, monkeypatch):
     }
 
     await graph.ainvoke(initial, config=config)
-    # revise → 回 adapt_script 重写 → 再次停在 review_chapter
+    # review_script revise → 回 adapt_script 重写 → 再次停在 review_script
     result = await graph.ainvoke(Command(resume="revise"), config=config)
     assert "__interrupt__" in result
     payload = result["__interrupt__"][0].value
-    assert payload["type"] == "chapter_review"
+    assert payload["type"] == "script_review"
     # 重写后的剧本应是 v2-revised
     assert payload["script"][0]["text"] == "v2-revised"

@@ -4,6 +4,7 @@ from langgraph.graph import END, StateGraph
 from novel2media.nodes.chapter_nodes import (
     adapt_script,
     chapter_advance_decision,
+    commit_chapter,
     configure_audio,
     detect_new_characters_llm,
     export_to_jianying,
@@ -14,7 +15,9 @@ from novel2media.nodes.chapter_nodes import (
     render_dispatch,
     render_generate_images,
     render_synthesize_audio,
-    review_chapter,
+    review_new_characters,
+    review_script,
+    review_storyboard,
 )
 from novel2media.state import ChapterSubgraphState, GraphState
 from novel2media.subgraphs.setup import character_setup_subgraph_compiled
@@ -25,11 +28,23 @@ def _route_load_chapter(state: GraphState) -> str:
     return END if not state.get("current_chapter_id") else "adapt_script"
 
 
-def _route_review(state: GraphState) -> str:
-    """review_chapter 审核路由：revise→重写剧本；pass+有新角色→角色设定；pass+无→推进决策。"""
-    decision = state.get("_review_decision", "")
-    if decision == "revise":
-        return "adapt_script"
+def _route_review_script(state: GraphState) -> str:
+    """剧本审阅路由：revise→重写剧本；pass→生成分镜。"""
+    return "adapt_script" if state.get("_script_review_decision") == "revise" else "generate_storyboard"
+
+
+def _route_review_storyboard(state: GraphState) -> str:
+    """分镜审阅路由：revise→重生成分镜；pass→检测新角色。"""
+    return "generate_storyboard" if state.get("_storyboard_review_decision") == "revise" else "detect_new_characters_llm"
+
+
+def _route_review_new_characters(state: GraphState) -> str:
+    """新角色审阅路由：revise→重检测角色；pass→提交本章规划。"""
+    return "detect_new_characters_llm" if state.get("_characters_review_decision") == "revise" else "commit_chapter"
+
+
+def _route_commit(state: GraphState) -> str:
+    """章节提交路由：有新角色→角色设定；无→推进决策。"""
     if state.get("setup_queue"):
         return "character_setup_subgraph"
     return "chapter_advance_decision"
@@ -61,10 +76,14 @@ def _route_final(state: GraphState) -> str:
 
 
 def build_chapter_subgraph(checkpointer=None):
-    """两阶段 chapter 子图：规划阶段（LLM+审核+推进）+ 渲染阶段（顺序循环）。
+    """两阶段 chapter 子图：规划阶段（LLM+细分审阅+推进）+ 渲染阶段（顺序循环）。
 
-    规划：load_chapter → adapt_script → generate_storyboard → detect_new_characters_llm
-          → review_chapter →(character_setup_subgraph | chapter_advance_decision)
+    规划：load_chapter → adapt_script → review_script →(adapt_script | generate_storyboard)
+          → generate_storyboard → review_storyboard →(generate_storyboard | detect_new_characters_llm)
+          → detect_new_characters_llm → review_new_characters →(detect_new_characters_llm | commit_chapter)
+          → commit_chapter →(character_setup_subgraph | chapter_advance_decision)
+    三处细分审阅各自 revise 回到对应生成节点（精准回环，注入 feedback）；
+    均 pass 后 commit_chapter 统一执行提交副作用（planned/render_batch/setup_queue）。
     推进：chapter_advance_decision →(load_chapter | configure_audio → render_dispatch)
     渲染：render_dispatch → render_generate_images → render_synthesize_audio
           → render_build_timeline →(render_dispatch | export_to_jianying)
@@ -78,9 +97,12 @@ def build_chapter_subgraph(checkpointer=None):
     # 规划阶段节点
     builder.add_node("load_chapter", load_chapter)
     builder.add_node("adapt_script", adapt_script)
+    builder.add_node("review_script", review_script)
     builder.add_node("generate_storyboard", generate_storyboard)
+    builder.add_node("review_storyboard", review_storyboard)
     builder.add_node("detect_new_characters_llm", detect_new_characters_llm)
-    builder.add_node("review_chapter", review_chapter)
+    builder.add_node("review_new_characters", review_new_characters)
+    builder.add_node("commit_chapter", commit_chapter)
     builder.add_node("character_setup_subgraph", character_setup_subgraph_compiled)
     builder.add_node("chapter_advance_decision", chapter_advance_decision)
     builder.add_node("configure_audio", configure_audio)
@@ -95,18 +117,32 @@ def build_chapter_subgraph(checkpointer=None):
 
     builder.set_entry_point("load_chapter")
 
-    # 规划阶段边
+    # 规划阶段边（每步生成后接细分审阅，审阅 revise 回到对应生成节点）
     builder.add_conditional_edges(
         "load_chapter", _route_load_chapter, {"adapt_script": "adapt_script", END: END}
     )
-    builder.add_edge("adapt_script", "generate_storyboard")
-    builder.add_edge("generate_storyboard", "detect_new_characters_llm")
-    builder.add_edge("detect_new_characters_llm", "review_chapter")
+    builder.add_edge("adapt_script", "review_script")
     builder.add_conditional_edges(
-        "review_chapter",
-        _route_review,
+        "review_script",
+        _route_review_script,
+        {"adapt_script": "adapt_script", "generate_storyboard": "generate_storyboard"},
+    )
+    builder.add_edge("generate_storyboard", "review_storyboard")
+    builder.add_conditional_edges(
+        "review_storyboard",
+        _route_review_storyboard,
+        {"generate_storyboard": "generate_storyboard", "detect_new_characters_llm": "detect_new_characters_llm"},
+    )
+    builder.add_edge("detect_new_characters_llm", "review_new_characters")
+    builder.add_conditional_edges(
+        "review_new_characters",
+        _route_review_new_characters,
+        {"detect_new_characters_llm": "detect_new_characters_llm", "commit_chapter": "commit_chapter"},
+    )
+    builder.add_conditional_edges(
+        "commit_chapter",
+        _route_commit,
         {
-            "adapt_script": "adapt_script",
             "character_setup_subgraph": "character_setup_subgraph",
             "chapter_advance_decision": "chapter_advance_decision",
         },

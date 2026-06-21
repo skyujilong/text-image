@@ -74,7 +74,13 @@ def load_config(state: dict) -> dict:
         "pending_new_characters": [],
         "_init_characters_review": "",
         "_init_characters_feedback": "",
-        "_review_feedback": "",
+        # chapter 细分审阅控制字段初始化（防旧 state/fork 残留串扰路由）
+        "_script_review_decision": "",
+        "_script_review_feedback": "",
+        "_storyboard_review_decision": "",
+        "_storyboard_review_feedback": "",
+        "_characters_review_decision": "",
+        "_characters_review_feedback": "",
         "_route": "",
         # 全局音频配置（单播，整本书一份；configure_audio 节点配置，跨章节持久）
         "audio_config": {},

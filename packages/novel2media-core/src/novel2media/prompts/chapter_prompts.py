@@ -30,22 +30,24 @@ def build_adapt_script_prompt(chapter_text: str, characters_profile: dict, feedb
 """
 
 
-def build_generate_storyboard_prompt(script: list[dict], characters_profile: dict) -> str:
+def build_generate_storyboard_prompt(script: list[dict], characters_profile: dict, feedback: str = "") -> str:
     """构造分镜生成提示词。
 
     输出 schema：JSON 数组，每个元素
     {{"storyboard_id": str, "scene_change": bool, "text": str, "speaker": str, "scene_prompt": str}}。
     首条 scene_change 固定为 True（由节点强制保证）。scene_prompt 为 ComfyUI 文生图正向提示词。
+    feedback 非空时为上一版分镜的修改意见，提示 LLM 据此调整（review_storyboard revise 回环）。
     """
     import json
 
     names = "、".join(characters_profile.keys()) if characters_profile else "（暂无已知角色）"
     script_json = json.dumps(script, ensure_ascii=False, indent=2)
+    feedback_block = f"上一版分镜的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
     return f"""你是一个专业的分镜师。根据下面的剧本生成分镜列表，每个剧本条目对应一个分镜。
 
 已知角色：{names}
 
-要求：
+{feedback_block}要求：
 1. storyboard_id 形如 "sb_001"、"sb_002" 递增。
 2. scene_change：该分镜是否是新场景的开头（首个分镜必为 true，场景切换处为 true，其余 false）。
 3. text：该分镜的旁白/对白文本（可取自剧本 text）。
@@ -61,19 +63,20 @@ def build_generate_storyboard_prompt(script: list[dict], characters_profile: dic
 """
 
 
-def build_detect_new_characters_prompt(chapter_text: str, existing_names: set[str]) -> str:
+def build_detect_new_characters_prompt(chapter_text: str, existing_names: set[str], feedback: str = "") -> str:
     """构造新角色检测提示词。
 
     输出 schema：JSON 数组，每个元素 {{"name": str, "appearance": str, "tri_view_prompt": str}}（无 id）。
     仅输出本章新出现、且不在 existing_names 中的角色。tri_view_prompt 为三视图生成提示词，
-    供人工上传三视图时参考。
+    供人工上传三视图时参考。feedback 非空时为上一版角色检测的修改意见（review_new_characters revise 回环）。
     """
     existing = "、".join(sorted(existing_names)) if existing_names else "（无）"
+    feedback_block = f"上一版角色检测的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
     return f"""你是一个小说角色提取器。从下面的章节原文中，提取本章新出现的、有名字的角色。
 
 已有角色（不要重复提取）：{existing}
 
-要求：
+{feedback_block}要求：
 1. 只提取有明确名字的角色（旁白、"众人"等泛指不算）。
 2. 每个角色输出 name（角色名）、appearance（外观描述：性别、年龄、发色服饰等；原文未提及则据上下文简述）。
 3. tri_view_prompt：用于生成角色三视图的英文提示词，需包含 front view / side view / back view、

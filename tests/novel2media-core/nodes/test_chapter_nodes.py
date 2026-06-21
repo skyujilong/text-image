@@ -6,6 +6,7 @@ from novel2media.nodes.chapter_nodes import (
     adapt_script,
     build_timeline,
     chapter_advance_decision,
+    commit_chapter,
     configure_audio,
     detect_new_characters_llm,
     export_to_jianying,
@@ -16,7 +17,9 @@ from novel2media.nodes.chapter_nodes import (
     render_dispatch,
     render_generate_images,
     render_synthesize_audio,
-    review_chapter,
+    review_new_characters,
+    review_script,
+    review_storyboard,
 )
 
 
@@ -98,16 +101,24 @@ def test_load_chapter_clears_control_fields(tmp_path):
         "chapters_status": {},
         "chapters_artifacts": {},
         "audio_config": {"voice_type": "zh_female_xxx"},  # 全局已配，不应被本章重置
-        "_review_decision": "revise",
-        "_review_feedback": "上一章残留意见",
+        "_script_review_decision": "revise",
+        "_script_review_feedback": "上一章残留意见",
+        "_storyboard_review_decision": "revise",
+        "_storyboard_review_feedback": "分镜意见",
+        "_characters_review_decision": "revise",
+        "_characters_review_feedback": "角色意见",
         "_chapter_advance": "render",
         "_final_decision": "done",
         "_init_characters_review": "pass",
         "_export_now": True,
     }
     result = load_chapter(state)
-    assert result["_review_decision"] == ""
-    assert result["_review_feedback"] == ""
+    assert result["_script_review_decision"] == ""
+    assert result["_script_review_feedback"] == ""
+    assert result["_storyboard_review_decision"] == ""
+    assert result["_storyboard_review_feedback"] == ""
+    assert result["_characters_review_decision"] == ""
+    assert result["_characters_review_feedback"] == ""
     assert result["_chapter_advance"] == ""
     assert result["_final_decision"] == ""
     assert result["_init_characters_review"] == ""
@@ -182,7 +193,7 @@ def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
     # 无 feedback 时 prompt 不含修改意见段
     assert "修改意见" not in mock.call_args.args[0]
     # 用完清空 feedback，避免串到下一章
-    assert result["_review_feedback"] == ""
+    assert result["_script_review_feedback"] == ""
     # 不落盘：<ch>/script.json 不应存在
     assert not (tmp_path / "novel" / "chapter_01" / "script.json").exists()
     # 不写 chapters_artifacts（稿件入 render_batch，非 artifacts）
@@ -190,16 +201,16 @@ def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
 
 
 def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
-    """revise 回环：adapt_script 读 _review_feedback 拼进 prompt，用完清空。"""
+    """revise 回环：adapt_script 读 _script_review_feedback 拼进 prompt，用完清空。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {"appearance": "黑发"}})
-    state["_review_feedback"] = "对白太书面、节奏太快"
+    state["_script_review_feedback"] = "对白太书面、节奏太快"
     mock = _mock_llm(monkeypatch, [{"speaker": "主角", "text": "嗨", "action": ""}])
 
     result = adapt_script(state)
 
     prompt = mock.call_args.args[0]
     assert "对白太书面、节奏太快" in prompt
-    assert result["_review_feedback"] == ""
+    assert result["_script_review_feedback"] == ""
 
 
 def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
@@ -279,40 +290,70 @@ def _mock_interrupt(monkeypatch, return_value):
     monkeypatch.setattr("novel2media.nodes.chapter_nodes.interrupt", lambda payload: return_value)
 
 
-def test_review_chapter_revise_writes_decision_only(tmp_path, monkeypatch):
-    """revise（旧字符串兼容）：只写 _review_decision=revise + 空 feedback，不改 chapters_status。"""
+def test_review_script_revise_writes_decision_only(tmp_path, monkeypatch):
+    """revise（旧字符串兼容）：只写 _script_review_decision=revise + 空 feedback，不触发提交副作用。"""
     _mock_interrupt(monkeypatch, "revise")
     state = {
         "current_chapter_id": "chapter_01",
         "current_script": [{"speaker": "主角", "text": "你好"}],
-        "current_storyboard": [{"storyboard_id": "sb_001"}],
-        "pending_new_characters": [{"name": "李雷"}],
-        "chapters_status": {"chapter_01": "processing"},
     }
-    result = review_chapter(state)
-    assert result == {"_review_decision": "revise", "_review_feedback": ""}
-    # 不应改 chapters_status（仍是 processing，未标 planned）
+    result = review_script(state)
+    assert result == {"_script_review_decision": "revise", "_script_review_feedback": ""}
+    # 不应改 chapters_status（提交副作用在 commit_chapter）
     assert "chapters_status" not in result
 
 
-def test_review_chapter_revise_with_feedback(tmp_path, monkeypatch):
-    """revise（对象 resume）：把修改意见写入 _review_feedback，供 adapt_script 重写参考。"""
+def test_review_script_revise_with_feedback(tmp_path, monkeypatch):
+    """revise（对象 resume）：把修改意见写入 _script_review_feedback，供 adapt_script 重写参考。"""
     _mock_interrupt(monkeypatch, {"decision": "revise", "feedback": "对白太书面"})
     state = {
         "current_chapter_id": "chapter_01",
         "current_script": [{"speaker": "主角", "text": "你好"}],
-        "current_storyboard": [{"storyboard_id": "sb_001"}],
-        "pending_new_characters": [],
-        "chapters_status": {"chapter_01": "processing"},
     }
-    result = review_chapter(state)
-    assert result["_review_decision"] == "revise"
-    assert result["_review_feedback"] == "对白太书面"
+    result = review_script(state)
+    assert result["_script_review_decision"] == "revise"
+    assert result["_script_review_feedback"] == "对白太书面"
 
 
-def test_review_chapter_pass_marks_planned_and_queues_new_characters(tmp_path, monkeypatch):
-    """pass：标 planned + 稿件入 render_batch + 新角色进 setup_queue + 清空 pending_new_characters。"""
+def test_review_script_pass_clears_feedback(tmp_path, monkeypatch):
+    """pass：写 _script_review_decision=pass + 清空 feedback，不触发提交副作用。"""
     _mock_interrupt(monkeypatch, "pass")
+    state = {
+        "current_chapter_id": "chapter_01",
+        "current_script": [{"speaker": "主角", "text": "你好"}],
+    }
+    result = review_script(state)
+    assert result == {"_script_review_decision": "pass", "_script_review_feedback": ""}
+    assert "chapters_status" not in result
+
+
+def test_review_storyboard_pass_clears_feedback(tmp_path, monkeypatch):
+    """review_storyboard pass：写 _storyboard_review_decision=pass + 清空 feedback。"""
+    _mock_interrupt(monkeypatch, "pass")
+    state = {
+        "current_chapter_id": "chapter_01",
+        "current_storyboard": [{"storyboard_id": "sb_001"}],
+    }
+    result = review_storyboard(state)
+    assert result == {"_storyboard_review_decision": "pass", "_storyboard_review_feedback": ""}
+
+
+def test_review_new_characters_raises_on_invalid_resume(tmp_path, monkeypatch):
+    """非法 resume 值必须抛错，不静默当 pass。"""
+    _mock_interrupt(monkeypatch, "maybe")
+    state = {
+        "current_chapter_id": "chapter_01",
+        "pending_new_characters": [],
+    }
+    try:
+        review_new_characters(state)
+    except ValueError:
+        return
+    raise AssertionError("应抛 ValueError（非法 resume 值）")
+
+
+def test_commit_chapter_marks_planned_and_queues_new_characters(tmp_path):
+    """commit_chapter：标 planned + 稿件入 render_batch + 新角色进 setup_queue + 清空 pending_new_characters。"""
     pending = [
         {"name": "李雷", "appearance": "黑发", "tri_view_prompt": "p1"},
         {"name": "韩梅梅", "appearance": "", "tri_view_prompt": "p2"},
@@ -327,8 +368,7 @@ def test_review_chapter_pass_marks_planned_and_queues_new_characters(tmp_path, m
         "chapters_status": {"chapter_01": "processing"},
         "render_batch": [],
     }
-    result = review_chapter(state)
-    assert result["_review_decision"] == "pass"
+    result = commit_chapter(state)
     assert result["chapters_status"]["chapter_01"] == "planned"
     assert result["setup_queue"] == pending
     assert result["pending_new_characters"] == []
@@ -340,36 +380,46 @@ def test_review_chapter_pass_marks_planned_and_queues_new_characters(tmp_path, m
     assert batch[0]["storyboard"] == storyboard
 
 
-def test_review_chapter_pass_with_no_new_characters(tmp_path, monkeypatch):
-    """pass 且无新角色：setup_queue 为空，路由将走 chapter_advance_decision。"""
-    _mock_interrupt(monkeypatch, "pass")
+def test_commit_chapter_with_no_new_characters(tmp_path):
+    """commit_chapter 且无新角色：setup_queue 为空，路由将走 chapter_advance_decision。"""
     state = {
         "current_chapter_id": "chapter_01",
         "current_script": [],
         "current_storyboard": [],
         "pending_new_characters": [],
         "chapters_status": {"chapter_01": "processing"},
+        "render_batch": [],
     }
-    result = review_chapter(state)
+    result = commit_chapter(state)
     assert result["setup_queue"] == []
     assert result["chapters_status"]["chapter_01"] == "planned"
 
 
-def test_review_chapter_raises_on_invalid_resume(tmp_path, monkeypatch):
-    """非法 resume 值必须抛错，不静默当 pass。"""
-    _mock_interrupt(monkeypatch, "maybe")
-    state = {
-        "current_chapter_id": "chapter_01",
-        "current_script": [],
-        "current_storyboard": [],
-        "pending_new_characters": [],
-        "chapters_status": {"chapter_01": "processing"},
-    }
-    try:
-        review_chapter(state)
-    except ValueError:
-        return
-    raise AssertionError("应抛 ValueError（非法 resume 值）")
+def test_generate_storyboard_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
+    """revise 回环：generate_storyboard 读 _storyboard_review_feedback 拼进 prompt，用完清空。"""
+    state = _make_chapter_state(tmp_path)
+    state["current_script"] = [{"speaker": "主角", "text": "你好", "action": ""}]
+    state["_storyboard_review_feedback"] = "分镜太碎、scene_prompt 太简单"
+    mock = _mock_llm(monkeypatch, [{"storyboard_id": "sb_001", "scene_change": True, "text": "你好", "speaker": "主角", "scene_prompt": "p"}])
+
+    result = generate_storyboard(state)
+
+    prompt = mock.call_args.args[0]
+    assert "分镜太碎、scene_prompt 太简单" in prompt
+    assert result["_storyboard_review_feedback"] == ""
+
+
+def test_detect_new_characters_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
+    """revise 回环：detect_new_characters_llm 读 _characters_review_feedback 拼进 prompt，用完清空。"""
+    state = _make_chapter_state(tmp_path)
+    state["_characters_review_feedback"] = "漏了配角王五"
+    mock = _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发", "tri_view_prompt": "p"}])
+
+    result = detect_new_characters_llm(state)
+
+    prompt = mock.call_args.args[0]
+    assert "漏了配角王五" in prompt
+    assert result["_characters_review_feedback"] == ""
 
 
 def test_chapter_advance_decision_next(tmp_path, monkeypatch):
