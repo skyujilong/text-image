@@ -1,4 +1,0 @@
-{"type":"server-started","port":61101,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:61101","screen_dir":"/Users/nbe01/workspace/text-image/.superpowers/brainstorm/10118-1781154410/content","state_dir":"/Users/nbe01/workspace/text-image/.superpowers/brainstorm/10118-1781154410/state"}
-{"type":"screen-added","file":"/Users/nbe01/workspace/text-image/.superpowers/brainstorm/10118-1781154410/content/architecture-overview.html"}
-{"type":"screen-added","file":"/Users/nbe01/workspace/text-image/.superpowers/brainstorm/10118-1781154410/content/waiting-1.html"}
-{"type":"server-stopped","reason":"idle timeout"}

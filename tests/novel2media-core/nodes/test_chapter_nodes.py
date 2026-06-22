@@ -255,10 +255,9 @@ def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
     # text/speaker 由节点从 script 对位填充
     assert storyboard[0]["text"] == "主角挥手"
     assert storyboard[0]["speaker"] == "主角"
-    # scene_prompt 由代码包装画风/画质/人体防崩常量
+    # scene_prompt 由代码在末尾拼接画风触发词（Qwen-anime LoRA），LLM 原文保留
     assert "a scene" in storyboard[0]["scene_prompt"]
-    assert storyboard[0]["scene_prompt"].startswith("Japanese anime style")
-    assert "perfect anatomy" in storyboard[0]["scene_prompt"]
+    assert storyboard[0]["scene_prompt"].endswith("Qwen Anime")
     # 不落盘
     assert not (tmp_path / "novel" / "chapter_01" / "storyboard.json").exists()
     assert "chapters_artifacts" not in result

@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from novel2media.prompts.init_prompts import _TRI_VIEW_PROMPT_RULE
 
-# 画风与画质常量（与三视图日漫风格对齐），由代码统一拼接到每条 scene_prompt 头尾；
-# LLM 不写这些词，避免重复叠加或风格不一致。
-_SCENE_STYLE_PREFIX = "Japanese anime style, anime art style"
-_SCENE_QUALITY_SUFFIX = "masterpiece, best quality, ultra detailed, highres"
-# 人体防崩通用关键词（静态漫画全员共用），由代码统一拼接到每条 scene_prompt 末尾，
-# 强制约束人体结构，避免 AI 生图手脚/肢体崩坏；LLM 不写这些词。
-_SCENE_ANATOMY_GUARD = (
-    "perfect anatomy, correct proportion, detailed limbs, perfect hands, "
-    "clean line art, cel shading, no distorted limbs, no extra fingers, no missing fingers"
-)
+# 画风触发词：实际生图走 Qwen-Image-Edit + qwen-anime LoRA，画风由该 LoRA 的触发词
+# 「Qwen Anime」激活。由代码统一拼接到每条 scene_prompt 末尾，LLM 不写画风词，避免重复。
+#
+# 注意（Qwen 与 SD1.5 的范式差异）：Qwen-Image-Edit 是 DiT + Qwen2.5-VL 文本编码器，
+# 走自然语言理解，不是 SD 的 tag 堆叠。故不再拼接：
+#   - 画质咒语（masterpiece/best quality/highres 等）—— 对 DiT 无意义；
+#   - 人体解剖正向词（perfect hands/detailed limbs/perfect anatomy 等）—— 正向写这些会被
+#     模型当成「画面里必须出现手/四肢」的内容指令，导致本不该露手的特写也强行画出手来。
+# 防崩交给 Qwen 自身的解剖理解力，不在正向 prompt 里堆解剖词。
+_SCENE_STYLE_TRIGGER = "Qwen Anime"
 
 
 def build_adapt_script_prompt(chapter_text: str, characters_profile: dict, feedback: str = "") -> str:
@@ -133,8 +133,8 @@ def build_scene_prompt_for_shots(
 ) -> str:
     """构造分镜第二步「画面生成」提示词：只为换图点生成 subjects + scene_prompt。
 
-    职责：第一步已确定哪些是换图点，这里只为这些换图点生成画面主体与文生图提示词。
-    非换图点不在此处理（下游复用前图、不读 scene_prompt），从源头省去无用输出。
+    职责：第一步已确定哪些是换图点，这里只为这些换图点生成画面主体与画面描述（中文自然语言，
+    供 Qwen-Image 生图）。非换图点不在此处理（下游复用前图、不读 scene_prompt），从源头省去无用输出。
 
     输入 shots：换图点列表，每项 {{"anchor_id": int, "text": str, "coverage": str}}。
     - anchor_id：该换图点的 storyboard_id（用于结果对回，必须原样写回输出）。
@@ -159,42 +159,44 @@ def build_scene_prompt_for_shots(
     )
     return f"""你是一个专业的静态漫画分镜师。本作是「小说改静态漫画 + AI 生图」：每个分镜只截最有张力的「一个关键瞬间」，不表现运动过程——这刚好适配 AI 生图的动作短板。
 
-下面是已选定的若干「换图点」，每个换图点需要生成一张静态漫画画面。为每个换图点生成 subjects（画面主体角色）与 scene_prompt（文生图提示词）。
+下游生图模型是 **Qwen-Image**（通义千问图像模型，DiT 架构 + 自然语言理解，不是关键词匹配模型）。它最擅长读懂**通顺连贯的自然语言画面描述**：像跟人讲一个画面那样、按「景别机位 → 主体角色与神态姿态 → 场景环境 → 光影氛围」的顺序写成完整句子，模型理解得最准。不要写成关键词堆砌、不要逗号割裂的标签流。
+
+下面是已选定的若干「换图点」，每个换图点需要生成一张静态漫画画面。为每个换图点生成 subjects（画面主体角色）与 scene_prompt（画面描述）。
 参考原始章节原文补充画面细节（景物、神态、动作细节），让画面更准。
 
-已知角色（括号内为该角色的英文外观特征 visual_trait，含性别与身高体型；subjects 中列中文名，scene_prompt 中提到该角色时必须用此英文特征替代姓名）：{names}
+已知角色（括号内为该角色的英文外观特征 visual_trait，含性别与身高体型；subjects 中列中文名，scene_prompt 中提到该角色时用其外观特征的**中文译述**、不写姓名）：{names}
 
 {feedback_block}{batch_block}要求：
 1. 为输入的每个换图点生成一条结果，anchor_id 必须原样写回（用于对回），不得修改、不得遗漏、不得新增。
-2. scene_prompt：用于 Qwen Image / ComfyUI 文生图的正向提示词（英文为主），描述景别、机位角度、角色外观与定格姿态/表情、场景细节、光影氛围。静态漫画只截「定格瞬间」，不写运动过程。
-   - scene_prompt 用英文书写；若必须表达屏幕文字/标题/台词，可用少量中文内容，但必须使用中文引号「」或书名号《》，严禁使用英文双引号。
-   - 景别必须显式写出：close-up / medium shot / wide shot / extreme close-up / full body shot 等。
-   - 机位角度按需写：low angle / high angle / over-the-shoulder / dutch angle / eye level 等。
-   - **动作定格原则**：动作一律写成「动作完成的定格瞬间」，禁止运动过程动词（run / rush / sprint / leap / jump / pull / drag / lunge / snap neck 等），改用定格姿态（standing / leaning / holding / gripping / crouched / frozen mid-step / turned head / clenched fist 等动作完成态）。省略中间运动轨迹，只截张力最强那一帧，从根源杜绝 AI 动作崩坏。
-   - **AI 绘画友好构图**：优先使用 AI 擅长的常见构图（单人/双人特写或中景、三分法、正面/侧面清晰角度、干净背景分离主体、明确单一视觉焦点）。每个元素使用常见、AI 训练充分的概念；主体与背景轮廓分离明确（可用 blurred background / shallow depth of field），避免主体融进背景。
-   - 避开 AI 弱项：复杂多人肢体纠缠、三人以上近景主体、罕见/生僻物件与服饰、夸张透视导致身体变形、超现实复杂场景、同一画面堆砌过多细节。宁可拆成多个简单镜头，也不要写一个复杂镜头。
-   - 提到画面角色时，必须用已知角色花名册中该角色的 visual_trait 替代姓名，严禁在 scene_prompt 中直接写角色姓名；新角色若无 visual_trait，用英文外观描述（如 tall young man / petite young woman + 标志特征）替代。
-   - 多个角色同框时，须显式体现身高差（如 tall lanky man towering over petite short girl）。
-   - **不靠动作靠细节丰富画面**（动作是 AI 弱项，主动绕开）：强化微表情（pupils contracted / brows tense / lips pressed / ears flushed / eyes averted 等）、强化局部肢体细节（knuckles white / cold sweat on palm / trembling fingertips / fingers gripping tight）、强化光影与氛围（side light / shadow split / cold phone glow / light through door crack / strong chiaroscuro），用氛围代替动态。
-   - **血腥/暴力画面暗化处理**：伤口藏入深影（wounds hidden deep in shadow），只留暗红血迹暗示（dark red stains only），不画伤口/血肉细节——既规避审核，又遮挡 AI 容易画怪的复杂伤口。
-   - **严禁写画风词（anime / Japanese / cartoon 等）、画质词（masterpiece / best quality / highres / ultra detailed 等）以及人体结构/解剖词（perfect anatomy / hands / fingers / proportion 等）**，这些由系统统一拼接，你写了会重复。
-3. subjects：该镜画面主体出现的角色中文名数组，用于后续生图按角色名取三视图参考图。
+2. scene_prompt：用**通顺的中文自然语言**写成一两句连贯的画面描述（如上所述，Qwen-Image 走中文语义理解），依次交代：景别与机位、画面主体角色（用外观特征而非姓名）及其定格姿态与表情、场景环境、光影氛围。静态漫画只截「定格瞬间」，不写运动过程。
+   - 用中文书写；若必须表达屏幕文字/标题/台词，用中文引号「」或书名号《》，严禁使用英文双引号。
+   - 景别必须写出：特写 / 近景 / 中景 / 全身 / 远景 / 大远景 等。
+   - 机位角度按需写：仰拍 / 俯拍 / 过肩 / 平视 / 倾斜镜头 等。
+   - **动作定格原则**：动作一律写成「动作完成的定格瞬间」，禁止运动过程词（奔跑 / 冲刺 / 跳起 / 猛拉 / 扑向 等），改用定格姿态（站定 / 倚靠 / 握住 / 紧攥 / 蹲伏 / 僵在半步 / 扭头 / 攥拳 等动作完成态）。省略中间运动轨迹，只截张力最强那一帧，从根源杜绝 AI 动作崩坏。
+   - **AI 绘画友好构图**：优先用 AI 擅长的常见构图（单人/双人特写或中景、三分法、正面/侧面清晰角度、干净背景分离主体、明确单一视觉焦点）。主体与背景轮廓分离明确（可用虚化背景 / 浅景深），避免主体融进背景。
+   - 避开 AI 弱项：复杂多人肢体纠缠、三人以上近景主体、罕见生僻物件与服饰、夸张透视导致身体变形、超现实复杂场景、同一画面堆砌过多细节。宁可拆成多个简单镜头，也不要写一个复杂镜头。
+   - 提到画面角色时，必须用已知角色花名册中该角色的外观特征（visual_trait）来描述，且**把英文 visual_trait 译述成中文外观短语**写入（如 visual_trait 为 tall lanky young man with golden curly hair and round glasses，则写「高挑清瘦、金色卷发、戴圆框眼镜的青年男性」），严禁在 scene_prompt 中直接写角色姓名、也不要照抄英文；新角色若无 visual_trait，用中文外观描述（如 高挑清瘦的青年男性 / 娇小的少女 + 标志特征）替代。
+   - 多个角色同框时，须显式体现身高差（如 高挑男子明显高过娇小少女）。
+   - **不靠动作靠细节丰富画面**（动作是 AI 弱项，主动绕开）：强化微表情（瞳孔收缩 / 眉头紧绷 / 抿唇 / 耳根泛红 / 目光躲闪 等）、强化局部肢体细节（指节发白 / 掌心冷汗 / 指尖微颤 / 手指攥紧）、强化光影氛围（侧光 / 阴影分割面部 / 冷手机屏光 / 门缝透光 / 强烈明暗对比），用氛围代替动态。
+   - **血腥/暴力画面暗化处理**：伤口藏入深影、只留暗红血迹暗示，不画伤口/血肉细节——既规避审核，又遮挡 AI 容易画怪的复杂伤口。
+   - **严禁写画风词（动漫 / 日系 / anime / 卡通 等）和画质词（杰作 / 最高画质 / 高分辨率 / masterpiece 等），也不要写人体解剖词（完美的手 / 正确比例 等）**——画风由系统统一拼接触发词，画质与人体结构交给模型自身，你写了反而干扰。
+3. subjects：该镜画面主体出现的角色中文名数组，用于后续生图按角色名取参考图。
    - 已知角色必须使用花名册中的标准中文名；新角色使用原文中文名；纯景物/无主体角色输出 []；旁白不是角色。
-   - 当镜头是 close-up / extreme close-up / medium shot / medium close-up 等近景或中景，且主体是可辨识有名角色时，subjects 最多 2 人。超过 2 人会导致人物一致性无法保障，必须改为远景/群众剪影。
-   - 大场景、wide shot、远景、背景群众、无脸剪影不受 2 人限制；但 subjects 只列需要保持一致性的近景/中景主体角色，远景群众不列入 subjects。
-   - subjects 写中文名；scene_prompt 写 visual_trait 英文特征，两者必须对应同一批主体角色。
+   - 当镜头是特写 / 近景 / 中景，且主体是可辨识有名角色时，subjects 最多 2 人。超过 2 人会导致人物一致性无法保障，必须改为远景/群众剪影。
+   - 大场景、远景、背景群众、无脸剪影不受 2 人限制；但 subjects 只列需要保持一致性的近景/中景主体角色，远景群众不列入 subjects。
+   - subjects 写中文名；scene_prompt 用该角色的外观特征描述，两者必须对应同一批主体角色。
 4. 严格输出合法 JSON 数组，不要 markdown 代码块、不要任何解释文字。
    - 必须是合法 JSON 数组，最外层只能是 []。
    - 所有字段名必须使用英文双引号，例如 "scene_prompt"，不能省略引号。
    - 对象之间必须使用英文逗号分隔；最后一个对象后不要尾随逗号。
    - 字符串内容里严禁出现英文双引号 "。如需引用屏幕文字、标题、帖子名或台词，统一使用中文引号「」或书名号《》，不要使用 "..."。
-   - 所有字符串必须单行输出，字符串内部不要换行；scene_prompt 控制在 60 个英文词以内，避免超长字符串导致 JSON 断裂。
+   - 所有字符串必须单行输出，字符串内部不要换行；scene_prompt 控制在 80 字以内，避免超长字符串导致 JSON 断裂。
    - 不要输出注释、解释文字、单引号、尾随逗号或多余字段。
 
 输出格式示例：
 [
-  {{"anchor_id": 0, "subjects": [], "scene_prompt": "wide shot, low angle, abandoned factory at night, dark silhouettes in the distance, dramatic shadows, fog rolling across the ground, tense atmosphere"}},
-  {{"anchor_id": 3, "subjects": ["林辰"], "scene_prompt": "extreme close-up, low angle, tall lanky young man with golden curly hair and round glasses, furious expression, pupils contracted, clenched jaw, knuckles white gripping, cold phone glow on face, dark background"}}
+  {{"anchor_id": 0, "subjects": [], "scene_prompt": "大远景，仰拍，夜晚废弃工厂，远处几个黑色身影伫立，戏剧性的阴影，薄雾贴地弥漫，气氛紧张压抑"}},
+  {{"anchor_id": 3, "subjects": ["林辰"], "scene_prompt": "大特写，仰拍，高挑清瘦、金色卷发、戴圆框眼镜的青年男性，怒容，瞳孔收缩，下颌紧咬，攥紧的指节发白，冷冷的手机屏光打在脸上，背景深暗"}}
 ]
 
 换图点列表：

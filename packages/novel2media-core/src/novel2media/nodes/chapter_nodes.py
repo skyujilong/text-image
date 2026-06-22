@@ -9,9 +9,7 @@ from novel2media.chapters import chapter_sort_key
 from novel2media.llm import invoke_llm
 from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.chapter_prompts import (
-    _SCENE_ANATOMY_GUARD,
-    _SCENE_QUALITY_SUFFIX,
-    _SCENE_STYLE_PREFIX,
+    _SCENE_STYLE_TRIGGER,
     build_adapt_script_prompt,
     build_detect_new_characters_prompt,
     build_scene_change_prompt,
@@ -278,9 +276,14 @@ def generate_storyboard(state: dict) -> dict:
         if isinstance(subjects, list) and len(subjects) > 2:
             # subjects 是后续生图按名取参考图的依据；当前只记录 LLM 违规，不裁剪不伪装成功。
             log.warning("generate_storyboard: 主体角色超 2 人（违反一致性上限）", chapter=ch_id, sid=sid, subjects=subjects)
-        raw_prompt = shot.get("scene_prompt", "")
-        # 画风/画质/人体防崩统一由代码拼接（LLM 不写这些词），头尾固定
-        entry["scene_prompt"] = f"{_SCENE_STYLE_PREFIX}, {raw_prompt}, {_SCENE_QUALITY_SUFFIX}, {_SCENE_ANATOMY_GUARD}"
+        raw_prompt = (shot.get("scene_prompt") or "").strip()
+        if not raw_prompt:
+            # 换图点拿到结果但画面描述为空：记录暴露，不拼成只有触发词的退化 prompt 蒙混生图
+            log.warning("generate_storyboard: 换图点画面描述为空", chapter=ch_id, sid=sid)
+            continue
+        # 画风触发词由代码统一拼接到末尾（LLM 不写画风/画质/解剖词）；
+        # 画质与人体结构交给 Qwen-Image-Edit 自身，不在正向 prompt 堆解剖词。
+        entry["scene_prompt"] = f"{raw_prompt}, {_SCENE_STYLE_TRIGGER}"
 
     shots_count = len(shots)
     log.info(

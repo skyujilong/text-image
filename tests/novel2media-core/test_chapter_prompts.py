@@ -50,6 +50,8 @@ def test_scene_prompt_for_shots_has_anchor_id_and_rules():
     assert "tall young man with black hair" in prompt
     # 第二步不再判定 scene_change
     assert "scene_change" not in prompt
+    # 告知下游生图模型是 Qwen-Image，引导 LLM 写自然语言描述
+    assert "Qwen-Image" in prompt
 
 
 def test_scene_prompt_for_shots_batch_info():

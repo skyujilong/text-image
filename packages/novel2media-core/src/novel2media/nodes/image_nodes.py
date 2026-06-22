@@ -61,7 +61,12 @@ def generate_images(state: dict) -> dict:
         pose_type = entry.get("pose_type", "standing")
         pose_image = cfg.pose_images.get(pose_type, cfg.standing_pose_image)
 
-        scene_prompt = entry.get("scene_prompt", "masterpiece, best quality")
+        scene_prompt = (entry.get("scene_prompt") or "").strip()
+        if not scene_prompt:
+            # 换图点必须有画面描述才能生图；为空说明上游分镜异常，直接暴露不用假咒语兜底
+            raise ValueError(
+                f"换图点 scene_prompt 为空，无法生图：chapter={ch_id} sid={sid}"
+            )
 
         base_prefix = f"{ch_id}_{sid}_base"
         wf_base = build_workflow(
