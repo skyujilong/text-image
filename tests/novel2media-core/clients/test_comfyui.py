@@ -141,3 +141,13 @@ def test_wait_for_output_times_out():
     with pytest.raises(TimeoutError, match="任务超时"):
         client._wait_for_output("pid-1", timeout=0.01)
 
+
+@respx.mock
+def test_fetch_result_logs_on_history_non_200(caplog):
+    """history 非 200 → 返回 None 让上层重试，但记录 warning 暴露（不静默吞）。"""
+    respx.get(f"{BASE}/history/pid-1").mock(return_value=httpx.Response(503, text="upstream down"))
+    client = ComfyUIClient(base_url=BASE)
+    with caplog.at_level("WARNING"):
+        assert client.fetch_result("pid-1") is None
+    assert any("history 查询失败" in r.getMessage() for r in caplog.records)
+

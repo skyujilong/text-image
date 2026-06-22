@@ -91,7 +91,14 @@ class ComfyUIClient:
         """
         resp = httpx.get(f"{self._base}/history/{prompt_id}", timeout=self._timeout)
         if resp.status_code != 200:
-            # history 查询本身失败：瞬时错误，返回 None 让上层继续轮询
+            # history 查询本身失败：当作瞬时错误返回 None 让上层继续轮询，但记录暴露——
+            # 否则持续 5xx 时上层只会抛泛化 TimeoutError，丢失「实为 history 接口报错」的诊断线索。
+            log.warning(
+                "ComfyUI history 查询失败（按瞬时错误重试）",
+                prompt_id=prompt_id,
+                status=resp.status_code,
+                body=resp.text[:500],
+            )
             return None
         history = resp.json()
         if prompt_id not in history:

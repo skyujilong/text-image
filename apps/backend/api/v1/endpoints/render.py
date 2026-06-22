@@ -5,7 +5,7 @@ from urllib.parse import quote
 import services.graph_runner as runner
 import services.render_session as render_session
 from fastapi import APIRouter, HTTPException
-from novel2media import render_state
+from novel2media import render_planning, render_state
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -59,6 +59,57 @@ def _build_board(novel_dir: str, chapter_id: str) -> dict:
     }
 
 
+async def _resolve_render_payload(run_id: str) -> tuple[str, dict]:
+    """取该 run 当前 image_render interrupt 的 (novel_dir, payload)。
+
+    payload 是节点传给 interrupt() 的原始 dict（含 type/chapter_id/storyboard/specs），
+    随 checkpoint 持久化——后端重启后仍可从 get_current_run_state 解析出来，是惰性重建
+    渲染会话的依据。
+    """
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    state = await runner.get_current_run_state(run_id)
+    interaction = state.get("active_interaction") or {}
+    payload = interaction.get("payload") or {}
+    if payload.get("type") != "image_render" or not payload.get("chapter_id"):
+        raise HTTPException(status_code=409, detail="run 当前不在图片渲染阶段")
+    return meta.novel_dir, payload
+
+
+async def _ensure_render_session(run_id: str):
+    """取渲染会话；不存在则从持久层惰性重建（后端重启 / 内存会话丢失后的恢复路径）。
+
+    会话是纯内存对象，仅在 graph_runner 解析到新 image_render interrupt 时创建。若后端在
+    某 run 停在渲染阶段时重启，_sessions 为空且不会再触发 astream → worker 永不重启、
+    pending shot 不出图、reroll 409、完成按钮 disabled → 死锁。此处用 checkpoint payload
+    + run_meta 重建会话（start_session 内部 seed_pending 会跳过已 done、复位孤立 rendering，
+    重建幂等不重跑），用户一打开渲染页或重抽即自动续跑喂 GPU。
+
+    返回 None 表示 run 当前不在渲染阶段（调用方据此决定是否 409）。
+    """
+    session = render_session.get_session(run_id)
+    if session is not None:
+        return session
+    meta = await runner.get_run(run_id)
+    if meta is None or not meta.novel_dir:
+        return None
+    state = await runner.get_current_run_state(run_id)
+    interaction = state.get("active_interaction") or {}
+    payload = interaction.get("payload") or {}
+    if payload.get("type") != "image_render" or not payload.get("chapter_id"):
+        return None
+    # specs 随 checkpoint 持久化；缺失（异常态）则从分镜重新解析，保证 seed 不空
+    specs = payload.get("specs") or render_planning.build_shot_specs(
+        payload.get("storyboard", []),
+        state.get("characters_profile", {}) if isinstance(state, dict) else {},
+        meta.novel_dir,
+    )
+    return render_session.start_session(
+        run_id, meta.novel_dir, payload["chapter_id"], specs, runner.push_event
+    )
+
+
 async def _get_render_context(run_id: str) -> tuple[str, str]:
     """取该 run 当前渲染章节的 (novel_dir, chapter_id)。
 
@@ -67,30 +118,32 @@ async def _get_render_context(run_id: str) -> tuple[str, str]:
     session = render_session.get_session(run_id)
     if session is not None:
         return session.novel_dir, session.chapter_id
-    # 无会话：从 run meta 拿 novel_dir，从当前状态拿 chapter_id
-    meta = await runner.get_run(run_id)
-    if meta is None:
-        raise HTTPException(status_code=404, detail="run not found")
-    state = await runner.get_current_run_state(run_id)
-    interaction = state.get("active_interaction") or {}
-    payload = interaction.get("payload") or {}
-    chapter_id = payload.get("chapter_id", "")
-    if not chapter_id:
-        raise HTTPException(status_code=409, detail="run 当前不在图片渲染阶段")
-    return meta.novel_dir, chapter_id
+    novel_dir, payload = await _resolve_render_payload(run_id)
+    return novel_dir, payload["chapter_id"]
 
 
 @router.get("/runs/{run_id}/render/state")
 async def get_render_state(run_id: str):
-    """渲染看板：每个换图点的提示词 + 候选图 URL + 选定终图 + 状态。"""
+    """渲染看板：每个换图点的提示词 + 候选图 URL + 选定终图 + 状态。
+
+    顺带惰性重建渲染会话——后端重启后用户打开渲染页即自动把 worker 拉起来续跑 pending
+    shot（GPU 不空转），不必手动 retry 整个节点。
+    """
+    session = await _ensure_render_session(run_id)
+    if session is not None:
+        return _build_board(session.novel_dir, session.chapter_id)
+    # 不在渲染阶段（无法重建）：回退按 payload 取上下文，取不到则 409
     novel_dir, chapter_id = await _get_render_context(run_id)
     return _build_board(novel_dir, chapter_id)
 
 
 @router.post("/runs/{run_id}/render/reroll")
 async def reroll_shot(run_id: str, req: RerollRequest):
-    """改词重抽单张：用（可选新）提示词 + 新随机 seed 追加候选，旧候选保留。"""
-    session = render_session.get_session(run_id)
+    """改词重抽单张：用（可选新）提示词 + 新随机 seed 追加候选，旧候选保留。
+
+    会话不存在时先惰性重建（后端重启后也能重抽），重建不出则 409。
+    """
+    session = await _ensure_render_session(run_id)
     if session is None:
         raise HTTPException(status_code=409, detail="渲染会话不存在（run 未在渲染阶段）")
     try:

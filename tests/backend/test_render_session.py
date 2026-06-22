@@ -116,3 +116,76 @@ def test_seed_pending_dedups_already_queued(tmp_path, monkeypatch):
     session.seed_pending([spec])
 
     assert len(session._queue) == 1  # 未重复入队
+
+
+async def test_ensure_render_session_rebuilds_after_restart(tmp_path, monkeypatch):
+    """#7：会话内存丢失（后端重启）时，render 端点据 checkpoint payload 惰性重建会话。"""
+    import services.render_session as rs
+    import api.v1.endpoints.render as render_ep
+
+    # 桩掉真实 worker 启动 + 配置/客户端，避免连服务器
+    monkeypatch.setattr(rs.RenderSession, "_ensure_worker", lambda self: None)
+    monkeypatch.setattr(rs, "_load_services_config", lambda novel_dir: _FakeCfg())
+    monkeypatch.setattr(rs, "ComfyUIClient", lambda *a, **k: object())
+    rs._sessions.clear()  # 模拟重启后内存会话全空
+
+    novel_dir = str(tmp_path / "novel")
+    render_state.save(
+        novel_dir,
+        "ch1",
+        {"chapter_id": "ch1", "shots": {"0": {"storyboard_id": 0, "workflow": "qwen_t2i",
+         "prompt": "p", "ref_images": [], "subjects": [], "candidates": [],
+         "selected": None, "status": "pending", "error": None}}},
+    )
+
+    # 桩 runner：run 仍停在 image_render（payload 随 checkpoint 持久化）
+    class _Meta:
+        pass
+
+    meta = _Meta()
+    meta.novel_dir = novel_dir
+
+    async def _get_run(_):
+        return meta
+
+    async def _get_state(_):
+        return {
+            "active_interaction": {
+                "payload": {
+                    "type": "image_render", "chapter_id": "ch1",
+                    "storyboard": [{"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": []}],
+                    "specs": [{"storyboard_id": 0, "workflow": "qwen_t2i", "prompt": "p", "ref_images": [], "subjects": []}],
+                }
+            }
+        }
+
+    monkeypatch.setattr(render_ep.runner, "get_run", _get_run)
+    monkeypatch.setattr(render_ep.runner, "get_current_run_state", _get_state)
+
+    assert rs.get_session("run-x") is None  # 重启后无会话
+    session = await render_ep._ensure_render_session("run-x")
+    assert session is not None  # 已惰性重建
+    assert rs.get_session("run-x") is session
+    assert len(session._queue) == 1  # pending shot 已重新入队续跑
+
+
+async def test_ensure_render_session_returns_none_when_not_rendering(tmp_path, monkeypatch):
+    """非渲染阶段 → 不重建（返回 None，端点据此 409）。"""
+    import services.render_session as rs
+    import api.v1.endpoints.render as render_ep
+
+    rs._sessions.clear()
+
+    class _Meta:
+        novel_dir = str(tmp_path / "novel")
+
+    async def _get_run(_):
+        return _Meta()
+
+    async def _get_state(_):
+        return {"active_interaction": {"payload": {"type": "audio_config"}}}
+
+    monkeypatch.setattr(render_ep.runner, "get_run", _get_run)
+    monkeypatch.setattr(render_ep.runner, "get_current_run_state", _get_state)
+
+    assert await render_ep._ensure_render_session("run-y") is None
