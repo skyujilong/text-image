@@ -7,11 +7,11 @@ from pathlib import Path
 from langgraph.types import interrupt
 from novel2media.chapters import chapter_sort_key
 from novel2media.llm import invoke_llm
-from novel2media.prompts._parse import parse_json_array
+from novel2media.nodes.init_nodes import _REQUIRED_CHAR_FIELDS
+from novel2media.prompts._parse import parse_json_array, parse_json_object
 from novel2media.prompts.chapter_prompts import (
     _SCENE_STYLE_TRIGGER,
     build_adapt_script_prompt,
-    build_detect_new_characters_prompt,
     build_scene_change_prompt,
     build_scene_prompt_for_shots,
 )
@@ -128,26 +128,59 @@ def load_chapter(state: dict) -> dict:
 
 
 def adapt_script(state: dict) -> dict:
-    """LLM 改写口播漫剧脚本 → current_script（不落盘，稿件由 commit_chapter 收入 render_batch）。
+    """LLM 一次产出口播脚本 + 本章新角色 → current_script + setup_queue。
 
-    读 current_chapter_text_path 原文 + characters_profile（name-based）。LLM 输出 JSON 数组，
-    解析失败抛错暴露。结果存 current_script 供 review_script 展示 + 后续入 render_batch。
+    合并了原 detect_new_characters_llm 的职责：一次 LLM 调用同时输出脚本与新出场角色，
+    省掉单独再读整章原文的第二次调用；且新角色在分镜之前就备好（visual_trait 等），
+    经 character_setup_subgraph 补三视图后供 generate_storyboard 对齐，避免后期图生图角色错乱。
 
-    revise 回环时读 _script_review_feedback（review_script 写入）拼进 prompt，用完清空，
-    避免串到下一章重写。
+    读 current_chapter_text_path 原文 + characters_profile（name-based，其 keys 作已知角色排除名单）。
+    LLM 输出 JSON 对象 {{"script": [...], "new_characters": [...]}}，解析失败抛错暴露。
+    新角色每个必须含六字段（_REQUIRED_CHAR_FIELDS），缺则抛错；防御性剔除名字已在已知花名册中的角色。
+
+    setup_queue 无 reducer（覆盖语义）：review_script revise 回环重跑本节点时整体覆盖，
+    不会重复累积/残留旧批新角色。
+
+    revise 回环时读 _script_review_feedback（review_script 写入）拼进 prompt，用完清空。
     """
     ch_id = state["current_chapter_id"]
     chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
     characters_profile = state.get("characters_profile", {})
+    existing_names = set(characters_profile.keys())
     feedback = state.get("_script_review_feedback", "") or ""
 
     prompt = build_adapt_script_prompt(chapter_text, characters_profile, feedback)
     resp = invoke_llm(prompt, node="adapt_script", label="adapt_script")
-    script = parse_json_array(resp)  # [{"text","action"}]
+    data = parse_json_object(resp)  # {"script": [{"text","action","speaker"}], "new_characters": [...]}
+    script = data.get("script", [])
+    new_chars = data.get("new_characters", [])
 
-    # feedback 记录原文（与 prompt_chars 同条，便于核对 revise 意见是否真拼进 prompt）
-    log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=feedback)
-    return {"current_script": script, "_script_review_feedback": ""}
+    # 校验新角色六字段（与 init parse_characters_llm 同一真相），缺字段抛错暴露
+    validated: list[dict] = []
+    for c in new_chars:
+        name = c.get("name")
+        if name in existing_names:
+            # 防御性剔除：已知角色不应再被当新角色（LLM 偶发重复），跳过不入队
+            log.warning("adapt_script: LLM 误报已知角色为新角色，已剔除", chapter=ch_id, name=name)
+            continue
+        for field in _REQUIRED_CHAR_FIELDS:
+            if not c.get(field):
+                raise ValueError(f"adapt_script: 新角色缺 {field} 字段: {c}")
+        validated.append(c)
+
+    # feedback 记录原文（便于核对 revise 意见是否真拼进 prompt）
+    log.info(
+        "adapt_script: 完成",
+        chapter=ch_id,
+        lines=len(script),
+        new_characters=len(validated),
+        feedback=feedback,
+    )
+    return {
+        "current_script": script,
+        "setup_queue": validated,
+        "_script_review_feedback": "",
+    }
 
 
 def _collect_shots(skeleton: list[dict], script: list[dict]) -> list[dict]:
@@ -297,48 +330,21 @@ def generate_storyboard(state: dict) -> dict:
     return {"current_storyboard": skeleton, "_storyboard_review_feedback": ""}
 
 
-def detect_new_characters_llm(state: dict) -> dict:
-    """LLM 检测本章新角色 + 外观 + 三视图提示词 → pending_new_characters（name-based，无 id）。
-
-    读章节原文 + 现有 characters_profile 的 name 集。只输出新角色，不进 setup_queue
-    （留给 review_new_characters 审 + commit_chapter 转 setup_queue + batch_upload_tri_view）。
-    每个元素必须含 name/appearance/character_trait/visual_trait/tri_view_prompt/tri_view_prompt_cn
-    六字段（与 init parse_characters_llm 角色模型一致），缺则抛错。
-
-    revise 回环时读 _characters_review_feedback（review_new_characters 写入）拼进 prompt，用完清空。
-    """
-    chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
-    existing_names = set(state.get("characters_profile", {}).keys())
-    feedback = state.get("_characters_review_feedback", "") or ""
-
-    prompt = build_detect_new_characters_prompt(chapter_text, existing_names, feedback)
-    resp = invoke_llm(prompt, node="detect_new_characters_llm", label="detect_new_characters")
-    pending = parse_json_array(resp)  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn"}]
-    # 字段模型与 init parse_characters_llm 一致（六字段必填，无 id）
-    for c in pending:
-        for field in ("name", "appearance", "character_trait", "visual_trait", "tri_view_prompt", "tri_view_prompt_cn"):
-            if not c.get(field):
-                raise ValueError(f"detect_new_characters_llm: 角色缺 {field} 字段: {c}")
-
-    # feedback 记录原文（与 prompt_chars 同条，便于核对 revise 意见是否真拼进 prompt）
-    log.info("detect_new_characters_llm: 完成", count=len(pending), feedback=feedback)
-    return {"pending_new_characters": pending, "_characters_review_feedback": ""}
-
-
 def review_chapter(state: dict) -> dict:
     """[已废弃] 旧单点合并审阅节点。
 
-    已由 review_script / review_storyboard / review_new_characters 三处细分审阅 +
-    commit_chapter 纯提交节点取代。保留此函数仅为占位避免历史 import 报错，
-    不再注册进图。新代码勿用。
+    已由 review_script / review_storyboard 两处细分审阅 + commit_chapter 纯提交节点取代
+    （新角色审阅已并入 adapt_script + character_setup_subgraph，不再单独 review）。
+    保留此函数仅为占位避免历史 import 报错，不再注册进图。新代码勿用。
     """
-    raise NotImplementedError("review_chapter 已拆分为 review_script/review_storyboard/review_new_characters + commit_chapter")
+    raise NotImplementedError("review_chapter 已拆分为 review_script/review_storyboard + commit_chapter")
 
 
 # ─── 细分审阅节点（通用工厂）─────────────────────────────────────────────
-# 原单点 review_chapter 拆为三处细分审阅：各自只审本步产物，revise 回到对应生成
+# 原单点 review_chapter 拆为细分审阅：各自只审本步产物，revise 回到对应生成
 # 节点并把指导意见注入该节点 prompt（精准回环，避免一处问题导致整章重写）。
-# pass 后由 commit_chapter 统一执行提交副作用（planned/render_batch/setup_queue），
+# 新角色不再单独审阅（已并入 adapt_script 产出 + character_setup_subgraph 上传三视图触点）。
+# pass 后由 commit_chapter 统一执行提交副作用（planned/render_batch），
 # 保持 R1：interrupt 之后不做写盘副作用。
 
 
@@ -391,7 +397,7 @@ def _make_review_node(name, payload_type, artifact_key, artifact_field, decision
     return _node
 
 
-# 三个细分审阅节点：分别审剧本 / 分镜 / 新角色，revise 各自回环
+# 两个细分审阅节点：分别审剧本 / 分镜，revise 各自回环
 review_script = _make_review_node(
     "review_script",
     payload_type="script_review",
@@ -408,23 +414,17 @@ review_storyboard = _make_review_node(
     decision_field="_storyboard_review_decision",
     feedback_field="_storyboard_review_feedback",
 )
-review_new_characters = _make_review_node(
-    "review_new_characters",
-    payload_type="new_characters_review",
-    artifact_key="pending_new_characters",
-    artifact_field="new_characters",
-    decision_field="_characters_review_decision",
-    feedback_field="_characters_review_feedback",
-)
 
 
 def commit_chapter(state: dict) -> dict:
     """章节规划纯提交节点（非 interrupt）。
 
-    三处细分审阅均 pass 后执行原 review_chapter 的 pass 副作用：标当前章
-    chapters_status=planned + 把本章 current_script/current_storyboard 收入 render_batch
-    （渲染阶段逐章读取，按 chapter_id 合并覆盖）+ 新角色进 setup_queue（交给
-    character_setup_subgraph 批量上传三视图）+ 清空 pending_new_characters。
+    细分审阅均 pass 后执行提交副作用：标当前章 chapters_status=planned + 把本章
+    current_script/current_storyboard 收入 render_batch（渲染阶段逐章读取，按 chapter_id 合并覆盖）。
+
+    新角色不在此处理：已在 adapt_script 产出并写入 setup_queue，由 review_script pass 后的
+    character_setup_subgraph（在分镜之前）批量上传三视图并落 characters_profile，故 commit
+    不再碰 setup_queue / pending_new_characters。
 
     拆出为独立非 interrupt 节点的原因：R1 要求 interrupt() 之后不做写盘副作用
     （fork/restart 重放会重复执行），提交逻辑必须放在无 interrupt 的节点。
@@ -442,13 +442,10 @@ def commit_chapter(state: dict) -> dict:
             "storyboard": state.get("current_storyboard", []),
         }
     )
-    queue = list(state.get("pending_new_characters", []))
-    log.info("commit_chapter: 章节规划提交", chapter=ch_id, new_characters=len(queue))
+    log.info("commit_chapter: 章节规划提交", chapter=ch_id)
     return {
         "chapters_status": chapters_status,
         "render_batch": render_batch,
-        "setup_queue": queue,
-        "pending_new_characters": [],
     }
 
 

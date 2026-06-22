@@ -8,7 +8,6 @@ from novel2media.nodes.chapter_nodes import (
     chapter_advance_decision,
     commit_chapter,
     configure_audio,
-    detect_new_characters_llm,
     export_to_jianying,
     final_decision,
     generate_storyboard,
@@ -17,7 +16,6 @@ from novel2media.nodes.chapter_nodes import (
     render_dispatch,
     render_generate_images,
     render_synthesize_audio,
-    review_new_characters,
     review_script,
     review_storyboard,
 )
@@ -196,11 +194,13 @@ def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
     """adapt_script：生成口播 script 写入 current_script（不落盘，稿件由 commit_chapter 收入 render_batch）。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {"appearance": "黑发"}})
     fake_script = [{"text": "主角挥手示意", "action": "主角挥手"}]
-    mock = _mock_llm(monkeypatch, fake_script)
+    mock = _mock_llm(monkeypatch, {"script": fake_script, "new_characters": []})
 
     result = adapt_script(state)
 
     assert result["current_script"] == fake_script
+    # 无新角色时 setup_queue 为空
+    assert result["setup_queue"] == []
     # 无 feedback 时 prompt 不含修改意见段
     assert "修改意见" not in mock.call_args.args[0]
     # 用完清空 feedback，避免串到下一章
@@ -211,11 +211,61 @@ def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
     assert "chapters_artifacts" not in result
 
 
+def _full_new_char(name="李雷"):
+    """构造六字段齐全的新角色（供 adapt_script 校验通过）。"""
+    return {
+        "name": name,
+        "appearance": "青年男性，黑发",
+        "character_trait": "黑发青年男性",
+        "visual_trait": "young man with black hair",
+        "tri_view_prompt": "character turnaround sheet, front view",
+        "tri_view_prompt_cn": "三视图中文",
+    }
+
+
+def test_adapt_script_emits_new_characters_to_setup_queue(tmp_path, monkeypatch):
+    """adapt_script：检测到的新角色（六字段齐全）写入 setup_queue，供分镜前角色设定。"""
+    state = _make_chapter_state(tmp_path, profile={"主角": {}})
+    new_char = _full_new_char()
+    _mock_llm(monkeypatch, {"script": [{"text": "a", "action": "", "speaker": "旁白"}], "new_characters": [new_char]})
+
+    result = adapt_script(state)
+
+    assert result["setup_queue"] == [new_char]
+    assert "id" not in result["setup_queue"][0]
+
+
+def test_adapt_script_raises_on_missing_new_character_field(tmp_path, monkeypatch):
+    """新角色缺六字段任一 → 抛错暴露（不静默接受）。"""
+    state = _make_chapter_state(tmp_path)
+    # 缺 tri_view_prompt 等字段
+    _mock_llm(monkeypatch, {"script": [], "new_characters": [{"name": "李雷", "appearance": "黑发"}]})
+    try:
+        adapt_script(state)
+    except ValueError:
+        return
+    raise AssertionError("应抛 ValueError（新角色缺必填字段）")
+
+
+def test_adapt_script_excludes_known_characters(tmp_path, monkeypatch):
+    """LLM 误报已知角色为新角色时，防御性剔除、不入 setup_queue。"""
+    state = _make_chapter_state(tmp_path, profile={"主角": {"visual_trait": "hero"}})
+    # LLM 把已知「主角」也当新角色返回（缺字段也无妨，应在校验前被剔除）
+    known_dup = {"name": "主角", "appearance": "x"}
+    new_char = _full_new_char("李雷")
+    _mock_llm(monkeypatch, {"script": [], "new_characters": [known_dup, new_char]})
+
+    result = adapt_script(state)
+
+    # 已知角色被剔除，只保留真正的新角色
+    assert result["setup_queue"] == [new_char]
+
+
 def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
     """revise 回环：adapt_script 读 _script_review_feedback 拼进 prompt，用完清空。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {"appearance": "黑发"}})
     state["_script_review_feedback"] = "对白太书面、节奏太快"
-    mock = _mock_llm(monkeypatch, [{"text": "主角点头", "action": "主角点头"}])
+    mock = _mock_llm(monkeypatch, {"script": [{"text": "主角点头", "action": "主角点头"}], "new_characters": []})
 
     result = adapt_script(state)
 
@@ -342,43 +392,6 @@ def test_generate_storyboard_batches_many_change_points(tmp_path, monkeypatch):
         assert f"s{i}" in sb[i]["scene_prompt"]
 
 
-def test_detect_new_characters_llm_returns_name_based_list(tmp_path, monkeypatch):
-    state = _make_chapter_state(tmp_path, profile={"主角": {}})
-    fake_pending = [
-        {"name": "李雷", "appearance": "青年男性，黑发", "character_trait": "黑发青年男性", "visual_trait": "young man with black hair", "tri_view_prompt": "character turnaround sheet, front view", "tri_view_prompt_cn": "三视图中文"}
-    ]
-    _mock_llm(monkeypatch, fake_pending)
-
-    result = detect_new_characters_llm(state)
-
-    assert result["pending_new_characters"] == fake_pending
-    assert "id" not in result["pending_new_characters"][0]
-    assert result["pending_new_characters"][0]["tri_view_prompt"]
-
-
-def test_detect_new_characters_llm_raises_on_missing_name(tmp_path, monkeypatch):
-    state = _make_chapter_state(tmp_path)
-    # 缺 name 字段 → 必须抛错（不静默）
-    _mock_llm(monkeypatch, [{"appearance": "无名的角色", "tri_view_prompt": "p"}])
-    try:
-        detect_new_characters_llm(state)
-    except ValueError:
-        return
-    raise AssertionError("应抛 ValueError（LLM 输出缺 name 字段）")
-
-
-def test_detect_new_characters_llm_raises_on_missing_tri_view_prompt(tmp_path, monkeypatch):
-    """缺 tri_view_prompt 字段 → 抛错（角色模型六字段必填）。"""
-    state = _make_chapter_state(tmp_path)
-    # 补齐 character_trait/visual_trait，仅缺 tri_view_prompt，确保校验走到 tri_view_prompt 抛错
-    _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发", "character_trait": "黑发青年", "visual_trait": "young man with black hair"}])
-    try:
-        detect_new_characters_llm(state)
-    except ValueError:
-        return
-    raise AssertionError("应抛 ValueError（LLM 输出缺 tri_view_prompt 字段）")
-
-
 def test_adapt_script_raises_on_malformed_llm_output(tmp_path, monkeypatch):
     state = _make_chapter_state(tmp_path)
     mock = MagicMock()
@@ -447,40 +460,36 @@ def test_review_storyboard_pass_clears_feedback(tmp_path, monkeypatch):
     assert result == {"_storyboard_review_decision": "pass", "_storyboard_review_feedback": ""}
 
 
-def test_review_new_characters_raises_on_invalid_resume(tmp_path, monkeypatch):
+def test_review_storyboard_raises_on_invalid_resume(tmp_path, monkeypatch):
     """非法 resume 值必须抛错，不静默当 pass。"""
     _mock_interrupt(monkeypatch, "maybe")
     state = {
         "current_chapter_id": "chapter_01",
-        "pending_new_characters": [],
+        "current_storyboard": [],
     }
     try:
-        review_new_characters(state)
+        review_storyboard(state)
     except ValueError:
         return
     raise AssertionError("应抛 ValueError（非法 resume 值）")
 
 
-def test_commit_chapter_marks_planned_and_queues_new_characters(tmp_path):
-    """commit_chapter：标 planned + 稿件入 render_batch + 新角色进 setup_queue + 清空 pending_new_characters。"""
-    pending = [
-        {"name": "李雷", "appearance": "黑发", "tri_view_prompt": "p1"},
-        {"name": "韩梅梅", "appearance": "", "tri_view_prompt": "p2"},
-    ]
+def test_commit_chapter_marks_planned_and_caches_drafts(tmp_path):
+    """commit_chapter：标 planned + 稿件入 render_batch；不再碰 setup_queue/pending_new_characters。"""
     script = [{"text": "主角挥手", "action": "主角挥手"}]
     storyboard = [{"storyboard_id": 0, "scene_change": True, "text": "主角挥手", "speaker": "主角", "scene_prompt": "p"}]
     state = {
         "current_chapter_id": "chapter_01",
         "current_script": script,
         "current_storyboard": storyboard,
-        "pending_new_characters": pending,
         "chapters_status": {"chapter_01": "processing"},
         "render_batch": [],
     }
     result = commit_chapter(state)
     assert result["chapters_status"]["chapter_01"] == "planned"
-    assert result["setup_queue"] == pending
-    assert result["pending_new_characters"] == []
+    # commit 不再写 setup_queue / pending_new_characters（已在 adapt_script + 角色设定阶段处理）
+    assert "setup_queue" not in result
+    assert "pending_new_characters" not in result
     # 稿件入 render_batch（chapter_id 合并）
     batch = result["render_batch"]
     assert len(batch) == 1
@@ -489,18 +498,19 @@ def test_commit_chapter_marks_planned_and_queues_new_characters(tmp_path):
     assert batch[0]["storyboard"] == storyboard
 
 
-def test_commit_chapter_with_no_new_characters(tmp_path):
-    """commit_chapter 且无新角色：setup_queue 为空，路由将走 chapter_advance_decision。"""
+def test_commit_chapter_merges_by_chapter_id(tmp_path):
+    """commit_chapter：render_batch 按 chapter_id 合并覆盖（revise 重写同章稿件不重复累积）。"""
     state = {
         "current_chapter_id": "chapter_01",
-        "current_script": [],
+        "current_script": [{"text": "新稿"}],
         "current_storyboard": [],
-        "pending_new_characters": [],
         "chapters_status": {"chapter_01": "processing"},
-        "render_batch": [],
+        "render_batch": [{"chapter_id": "chapter_01", "script": [{"text": "旧稿"}], "storyboard": []}],
     }
     result = commit_chapter(state)
-    assert result["setup_queue"] == []
+    batch = result["render_batch"]
+    assert len(batch) == 1
+    assert batch[0]["script"] == [{"text": "新稿"}]
     assert result["chapters_status"]["chapter_01"] == "planned"
 
 
@@ -525,19 +535,6 @@ def test_generate_storyboard_passes_review_feedback_to_prompt(tmp_path, monkeypa
     assert "分镜太碎、scene_prompt 太简单" in first_prompt
     assert "分镜太碎、scene_prompt 太简单" in second_prompt
     assert result["_storyboard_review_feedback"] == ""
-
-
-def test_detect_new_characters_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
-    """revise 回环：detect_new_characters_llm 读 _characters_review_feedback 拼进 prompt，用完清空。"""
-    state = _make_chapter_state(tmp_path)
-    state["_characters_review_feedback"] = "漏了配角王五"
-    mock = _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发", "character_trait": "黑发青年", "visual_trait": "young man with black hair", "tri_view_prompt": "p", "tri_view_prompt_cn": "三视图中文"}])
-
-    result = detect_new_characters_llm(state)
-
-    prompt = mock.call_args.args[0]
-    assert "漏了配角王五" in prompt
-    assert result["_characters_review_feedback"] == ""
 
 
 def test_chapter_advance_decision_next(tmp_path, monkeypatch):

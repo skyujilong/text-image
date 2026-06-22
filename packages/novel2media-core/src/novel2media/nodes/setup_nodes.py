@@ -48,8 +48,12 @@ def batch_upload_tri_view(state: dict) -> dict:
     （后续 batch_fix_profiles 一并落盘到 characters_profile[name].tri_view）。
 
     resume 值：{"tri_views": {name: 本地相对路径}, "skipped": [name,...]}。
-    tri_view 存本地相对路径（相对 novel_dir），渲染阶段再 upload_image 到 ComfyUI；
-    本节点不调 ComfyUI，避免 setup 环节强依赖 ComfyUI 可达。
+
+    tri_view 三态约定（下游参考图生图据此分支，区分「有意不配」与「漏配」）：
+    - 非空路径 → 已上传（渲染走参考图生图）。tri_view 存本地相对路径（相对 novel_dir），
+      渲染阶段再 upload_image 到 ComfyUI；本节点不调 ComfyUI，避免 setup 强依赖 ComfyUI 可达。
+    - 空串 "" → 主动跳过（小角色，显式写入；渲染走 appearance 文本兜底）。
+    - 字段缺省 → 未处理/漏配（异常态，渲染阶段应暴露报错，不静默当 skip）。
     未在 skipped 且 resume 缺 tri_view 的角色→抛错暴露（不静默接受）。
     """
     queue = list(state.get("setup_queue", []))
@@ -63,8 +67,9 @@ def batch_upload_tri_view(state: dict) -> dict:
         if not name:
             raise ValueError(f"batch_upload_tri_view: 角色缺 name 字段: {char!r}")
         if name in skipped:
+            # 主动跳过显式落 tri_view=""，与「字段缺省=未处理」区分开（下游图生图据此分支）
             log.info("batch_upload_tri_view: 跳过（小角色）", name=name)
-            updated.append(char)
+            updated.append({**char, "tri_view": ""})
             continue
         tri_view_path = tri_views.get(name)
         if not tri_view_path:

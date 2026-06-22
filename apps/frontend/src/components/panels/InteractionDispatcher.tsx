@@ -21,7 +21,6 @@ const PAYLOAD_TYPE_TO_NODE: Record<string, string> = {
   tri_view_upload_batch: 'batch_upload_tri_view',
   script_review: 'review_script',
   storyboard_review: 'review_storyboard',
-  new_characters_review: 'review_new_characters',
   chapter_advance: 'chapter_advance_decision',
   final_decision: 'final_decision',
   audio_config: 'configure_audio',
@@ -85,15 +84,6 @@ function InteractionBody({ runId, interaction }: { runId: string; interaction: A
           type="storyboard_review"
           chapterId={p.chapter_id as string | undefined}
           storyboard={(p.storyboard as Record<string, unknown>[]) ?? []}
-        />
-      )
-    case 'review_new_characters':
-      return (
-        <GenericReviewPanel
-          runId={runId}
-          type="new_characters_review"
-          chapterId={p.chapter_id as string | undefined}
-          newCharacters={(p.new_characters as Record<string, unknown>[]) ?? []}
         />
       )
     case 'review_initial_characters':

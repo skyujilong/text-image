@@ -65,7 +65,7 @@ def test_batch_upload_binds_paths(tmp_path, monkeypatch):
 
 
 def test_batch_upload_skip_character(tmp_path, monkeypatch):
-    """skipped 角色不绑 tri_view，原样保留在队列。"""
+    """skipped 角色显式落 tri_view=""（主动跳过），与「字段缺省=未处理」区分开。"""
     _mock_interrupt(
         monkeypatch,
         {"tri_views": {"主角": "characters/主角.png"}, "skipped": ["路人甲"]},
@@ -77,7 +77,8 @@ def test_batch_upload_skip_character(tmp_path, monkeypatch):
     result = batch_upload_tri_view(state)
     by_name = {c["name"]: c for c in result["setup_queue"]}
     assert by_name["主角"]["tri_view"] == "characters/主角.png"
-    assert "tri_view" not in by_name["路人甲"]
+    # 主动跳过：tri_view 字段存在且为空串（三态语义，下游图生图据此走文本兜底）
+    assert by_name["路人甲"]["tri_view"] == ""
 
 
 def test_batch_upload_raises_on_missing_tri_view(tmp_path, monkeypatch):

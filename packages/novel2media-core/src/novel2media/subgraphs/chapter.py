@@ -6,7 +6,6 @@ from novel2media.nodes.chapter_nodes import (
     chapter_advance_decision,
     commit_chapter,
     configure_audio,
-    detect_new_characters_llm,
     export_to_jianying,
     final_decision,
     generate_storyboard,
@@ -15,7 +14,6 @@ from novel2media.nodes.chapter_nodes import (
     render_dispatch,
     render_generate_images,
     render_synthesize_audio,
-    review_new_characters,
     review_script,
     review_storyboard,
 )
@@ -29,25 +27,21 @@ def _route_load_chapter(state: GraphState) -> str:
 
 
 def _route_review_script(state: GraphState) -> str:
-    """剧本审阅路由：revise→重写剧本；pass→生成分镜。"""
-    return "adapt_script" if state.get("_script_review_decision") == "revise" else "generate_storyboard"
+    """剧本审阅路由：revise→重写剧本；pass 且有新角色→先做角色设定（备好特征再分镜）；pass 且无→直接分镜。
+
+    新角色由 adapt_script 写入 setup_queue。在分镜之前进 character_setup_subgraph 补三视图 +
+    落 characters_profile，确保 generate_storyboard 能拿到新角色 visual_trait，避免后期图生图错乱。
+    """
+    if state.get("_script_review_decision") == "revise":
+        return "adapt_script"
+    if state.get("setup_queue"):
+        return "character_setup_subgraph"
+    return "generate_storyboard"
 
 
 def _route_review_storyboard(state: GraphState) -> str:
-    """分镜审阅路由：revise→重生成分镜；pass→检测新角色。"""
-    return "generate_storyboard" if state.get("_storyboard_review_decision") == "revise" else "detect_new_characters_llm"
-
-
-def _route_review_new_characters(state: GraphState) -> str:
-    """新角色审阅路由：revise→重检测角色；pass→提交本章规划。"""
-    return "detect_new_characters_llm" if state.get("_characters_review_decision") == "revise" else "commit_chapter"
-
-
-def _route_commit(state: GraphState) -> str:
-    """章节提交路由：有新角色→角色设定；无→推进决策。"""
-    if state.get("setup_queue"):
-        return "character_setup_subgraph"
-    return "chapter_advance_decision"
+    """分镜审阅路由：revise→重生成分镜；pass→提交本章规划。"""
+    return "generate_storyboard" if state.get("_storyboard_review_decision") == "revise" else "commit_chapter"
 
 
 def _route_chapter_advance(state: GraphState) -> str:
@@ -78,13 +72,14 @@ def _route_final(state: GraphState) -> str:
 def build_chapter_subgraph(checkpointer=None):
     """两阶段 chapter 子图：规划阶段（LLM+细分审阅+推进）+ 渲染阶段（顺序循环）。
 
-    规划：load_chapter → adapt_script → review_script →(adapt_script | generate_storyboard)
-          → generate_storyboard → review_storyboard →(generate_storyboard | detect_new_characters_llm)
-          → detect_new_characters_llm → review_new_characters →(detect_new_characters_llm | commit_chapter)
-          → commit_chapter →(character_setup_subgraph | chapter_advance_decision)
-    三处细分审阅各自 revise 回到对应生成节点（精准回环，注入 feedback）；
-    均 pass 后 commit_chapter 统一执行提交副作用（planned/render_batch/setup_queue）。
-    推进：chapter_advance_decision →(load_chapter | configure_audio → render_dispatch)
+    规划：load_chapter → adapt_script（出脚本+新角色 setup_queue）→ review_script
+          →(adapt_script | character_setup_subgraph | generate_storyboard)
+          character_setup_subgraph（有新角色时，分镜前补三视图）→ generate_storyboard
+          → review_storyboard →(generate_storyboard | commit_chapter) → commit_chapter
+    细分审阅各自 revise 回到对应生成节点（精准回环，注入 feedback）；
+    新角色检测已并入 adapt_script，pass 后若有新角色先进 character_setup_subgraph 备好特征再分镜，
+    从根上避免分镜/图生图角色对不上。均 pass 后 commit_chapter 统一提交（planned/render_batch）。
+    推进：commit_chapter → chapter_advance_decision →(load_chapter | configure_audio → render_dispatch)
     渲染：render_dispatch → render_generate_images → render_synthesize_audio
           → render_build_timeline →(render_dispatch | export_to_jianying)
     收尾：export_to_jianying → final_decision →(END | load_chapter)
@@ -100,8 +95,6 @@ def build_chapter_subgraph(checkpointer=None):
     builder.add_node("review_script", review_script)
     builder.add_node("generate_storyboard", generate_storyboard)
     builder.add_node("review_storyboard", review_storyboard)
-    builder.add_node("detect_new_characters_llm", detect_new_characters_llm)
-    builder.add_node("review_new_characters", review_new_characters)
     builder.add_node("commit_chapter", commit_chapter)
     builder.add_node("character_setup_subgraph", character_setup_subgraph_compiled)
     builder.add_node("chapter_advance_decision", chapter_advance_decision)
@@ -122,32 +115,25 @@ def build_chapter_subgraph(checkpointer=None):
         "load_chapter", _route_load_chapter, {"adapt_script": "adapt_script", END: END}
     )
     builder.add_edge("adapt_script", "review_script")
+    # review_script pass 后三岔：有新角色先进角色设定（分镜前备好特征），否则直接分镜
     builder.add_conditional_edges(
         "review_script",
         _route_review_script,
-        {"adapt_script": "adapt_script", "generate_storyboard": "generate_storyboard"},
+        {
+            "adapt_script": "adapt_script",
+            "character_setup_subgraph": "character_setup_subgraph",
+            "generate_storyboard": "generate_storyboard",
+        },
     )
+    # 角色设定（补三视图 + 落 characters_profile）完成后进入分镜生成
+    builder.add_edge("character_setup_subgraph", "generate_storyboard")
     builder.add_edge("generate_storyboard", "review_storyboard")
     builder.add_conditional_edges(
         "review_storyboard",
         _route_review_storyboard,
-        {"generate_storyboard": "generate_storyboard", "detect_new_characters_llm": "detect_new_characters_llm"},
+        {"generate_storyboard": "generate_storyboard", "commit_chapter": "commit_chapter"},
     )
-    builder.add_edge("detect_new_characters_llm", "review_new_characters")
-    builder.add_conditional_edges(
-        "review_new_characters",
-        _route_review_new_characters,
-        {"detect_new_characters_llm": "detect_new_characters_llm", "commit_chapter": "commit_chapter"},
-    )
-    builder.add_conditional_edges(
-        "commit_chapter",
-        _route_commit,
-        {
-            "character_setup_subgraph": "character_setup_subgraph",
-            "chapter_advance_decision": "chapter_advance_decision",
-        },
-    )
-    builder.add_edge("character_setup_subgraph", "chapter_advance_decision")
+    builder.add_edge("commit_chapter", "chapter_advance_decision")
     builder.add_conditional_edges(
         "chapter_advance_decision",
         _route_chapter_advance,

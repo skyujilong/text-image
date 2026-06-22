@@ -28,8 +28,6 @@ export const NODE_LABELS: Record<string, string> = {
   review_script: '📖 审阅剧本',
   generate_storyboard: '生成分镜',
   review_storyboard: '📖 审阅分镜',
-  detect_new_characters_llm: 'LLM 检测新角色',
-  review_new_characters: '📖 审阅新角色',
   commit_chapter: '提交章节规划',
   chapter_advance_decision: '章节推进决策',
   configure_audio: '配置音频',

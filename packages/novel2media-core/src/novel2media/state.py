@@ -46,7 +46,7 @@ class CharacterProfileRequired(TypedDict):
 class CharacterProfile(CharacterProfileRequired, total=False):
     """角色完整档案。tri_view/voice_params 为 setup 阶段逐步补齐的可选字段。"""
 
-    tri_view: str  # 三视图本地相对路径（渲染阶段再 upload_image 到 ComfyUI；小角色可缺省跳过）
+    tri_view: str  # 三视图本地相对路径。三态语义：非空路径=已上传（渲染走参考图生图）/ 空串=主动跳过（小角色，走 appearance 文本兜底）/ 字段缺省=未处理（异常态，渲染应暴露）
     voice_params: dict  # 音色参数（保留字段；setup 不再写入，留作未来 per-character 扩展）
 
 
@@ -116,7 +116,7 @@ class SetupSubgraphState(TypedDict):
     # 待批量配置三视图的角色列表（批量化：一次 interrupt 传全部，不再逐个弹出）
     setup_queue: list[CharacterProfile]
     setup_image_candidates: list[str]  # 候选图片路径列表（保留供未来扩展）
-    # init parse_characters_llm / chapter detect_new_characters_llm 中间结果
+    # init parse_characters_llm 中间结果（章节阶段新角色已由 adapt_script 直接写 setup_queue）
     pending_new_characters: list[CharacterProfile]  # 待人工决策的新角色列表
 
     # 通用路由复用字段（下划线前缀，interrupt 节点写回驱动条件边）。
@@ -160,19 +160,21 @@ class ChapterSubgraphState(InitSubgraphState):
     script_review_attempts: int  # 剧本审核已重试次数
     storyboard_review_attempts: int  # 分镜审核已重试次数
 
-    # 章节级细分审阅路由控制字段（三处审阅节点写回，load_chapter 统一重置）。
+    # 章节级细分审阅路由控制字段（审阅节点写回，load_chapter 统一重置）。
     # 显式声明原因同 SetupSubgraphState：避免窄 schema 子图丢弃导致路由失控。
     # 拆分自旧 _review_decision/_review_feedback：原 review_chapter 单点合并审阅
-    # 改为 review_script / review_storyboard / review_new_characters 三处细分审阅，
-    # 各自只审本步产物、revise 回到对应生成节点，指导意见精准注入对应 prompt。
+    # 改为 review_script / review_storyboard 两处细分审阅，各自只审本步产物、
+    # revise 回到对应生成节点，指导意见精准注入对应 prompt。
+    # （新角色检测已并入 adapt_script + character_setup_subgraph，不再单独审阅。）
     _script_review_decision: str  # review_script：pass / revise
     # 剧本审阅打回意见（review_script revise 写回，adapt_script 读取拼进 prompt 后清空）
     _script_review_feedback: str
     _storyboard_review_decision: str  # review_storyboard：pass / revise
     # 分镜审阅打回意见（review_storyboard revise 写回，generate_storyboard 读取拼进 prompt 后清空）
     _storyboard_review_feedback: str
-    _characters_review_decision: str  # review_new_characters：pass / revise
-    # 新角色审阅打回意见（review_new_characters revise 写回，detect_new_characters_llm 读取拼进 prompt 后清空）
+    # [已废弃] 新角色检测已并入 adapt_script、不再单独 review；本字段不再被章节流程驱动，
+    # 仅保留以兼容历史 checkpoint（load_chapter 仍统一重置，无害）。
+    _characters_review_decision: str
     _characters_review_feedback: str
     _chapter_advance: str  # chapter_advance_decision：next / render
     _final_decision: str  # final_decision：done / continue

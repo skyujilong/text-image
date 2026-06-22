@@ -58,3 +58,29 @@ def parse_json_array(content: Any) -> list:
     if not isinstance(data, list):
         raise ValueError(f"LLM 输出应为 JSON 数组，实际为 {type(data).__name__}: {str(data)[:200]}")
     return data
+
+
+def parse_json_object(content: Any) -> dict:
+    """解析 LLM 输出为 JSON 对象（顶层为 {{}}）。
+
+    用于一次输出多段结构的场景（如 adapt_script 同时输出 script + new_characters）。
+    失败抛 ValueError（带错误位置附近片段），不返回空 dict 伪装成功。
+    """
+    text = _strip_fences(_to_text(content)).strip()
+    data: Any
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as first_error:
+        m = _OBJECT_RE.search(text)
+        if m is None:
+            excerpt = _error_excerpt(text, first_error)
+            raise ValueError(f"LLM 输出无法解析为 JSON 对象，未找到对象片段: {first_error}; 错误附近: {excerpt}") from first_error
+        object_text = m.group(0)
+        try:
+            data = json.loads(object_text)
+        except json.JSONDecodeError as e:
+            excerpt = _error_excerpt(object_text, e)
+            raise ValueError(f"LLM 输出 JSON 对象解析失败: {e}; 错误附近: {excerpt}") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"LLM 输出应为 JSON 对象，实际为 {type(data).__name__}: {str(data)[:200]}")
+    return data
