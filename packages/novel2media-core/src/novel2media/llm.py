@@ -57,6 +57,13 @@ def invoke_llm(prompt: str, *, node: str, temperature: float = 0.8, label: str |
     output_tokens = usage.get("output_tokens")
     total_tokens = usage.get("total_tokens")
 
+    # finish_reason：模型停止生成的原因，是判断"输出被截断"的直接证据。
+    # OpenAI 兼容端点在 AIMessage.response_metadata["finish_reason"] 回填：
+    #   stop=正常结束、length=触达 token 上限被截断、content_filter=被过滤。
+    # 缺失时不编造，记 None 以暴露问题（而非误导成 stop）。
+    response_metadata = getattr(resp, "response_metadata", None) or {}
+    finish_reason = response_metadata.get("finish_reason")
+
     log.info(
         "llm.invoke",
         node=node,
@@ -68,6 +75,7 @@ def invoke_llm(prompt: str, *, node: str, temperature: float = 0.8, label: str |
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
+        finish_reason=finish_reason,
         response_chars=len(getattr(resp, "content", "") or ""),
     )
     return resp

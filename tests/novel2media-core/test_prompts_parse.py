@@ -34,3 +34,16 @@ def test_parse_json_array_raises_on_garbage():
     except ValueError:
         return
     raise AssertionError("应抛 ValueError（输出非 JSON）")
+
+
+def test_parse_json_array_error_includes_nearby_excerpt():
+    """解析失败时应输出错误位置附近片段，而不是只保留开头 200 字。"""
+    bad = '[{"scene_prompt": "ok"}, {"scene_prompt": "手机显示 "坏掉的标题""}]'
+    try:
+        parse_json_array(bad)
+    except ValueError as e:
+        msg = str(e)
+        assert "错误附近" in msg
+        assert "坏掉的标题" in msg
+        return
+    raise AssertionError("应抛 ValueError（JSON 字符串内部双引号未转义）")

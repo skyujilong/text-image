@@ -27,23 +27,34 @@ def _strip_fences(text: str) -> str:
     return m.group(1) if m else text
 
 
+def _error_excerpt(text: str, err: json.JSONDecodeError, radius: int = 500) -> str:
+    """截取 JSON 解析错误位置附近文本，便于定位 LLM 输出坏在哪一条。"""
+    start = max(err.pos - radius, 0)
+    end = min(err.pos + radius, len(text))
+    excerpt = text[start:end]
+    return excerpt.replace("\n", "\\n")
+
+
 def parse_json_array(content: Any) -> list:
     """解析 LLM 输出为 JSON 数组。
 
-    失败抛 ValueError（带原文片段），不返回空列表伪装成功。
+    失败抛 ValueError（带错误位置附近片段），不返回空列表伪装成功。
     """
     text = _strip_fences(_to_text(content)).strip()
     data: Any
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as first_error:
         m = _ARRAY_RE.search(text)
         if m is None:
-            raise ValueError(f"LLM 输出无法解析为 JSON 数组，未找到数组片段: {text[:200]}")
+            excerpt = _error_excerpt(text, first_error)
+            raise ValueError(f"LLM 输出无法解析为 JSON 数组，未找到数组片段: {first_error}; 错误附近: {excerpt}") from first_error
+        array_text = m.group(0)
         try:
-            data = json.loads(m.group(0))
+            data = json.loads(array_text)
         except json.JSONDecodeError as e:
-            raise ValueError(f"LLM 输出 JSON 数组解析失败: {e}; 原文: {text[:200]}") from e
+            excerpt = _error_excerpt(array_text, e)
+            raise ValueError(f"LLM 输出 JSON 数组解析失败: {e}; 错误附近: {excerpt}") from e
     if not isinstance(data, list):
         raise ValueError(f"LLM 输出应为 JSON 数组，实际为 {type(data).__name__}: {str(data)[:200]}")
     return data

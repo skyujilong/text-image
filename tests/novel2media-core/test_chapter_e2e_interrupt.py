@@ -41,10 +41,14 @@ def _mock_llm_sequence(monkeypatch, payloads):
 
 
 def _initial_planning_payloads():
-    """一次完整规划的三次 LLM 输出：口播脚本 / 分镜 / 新角色。"""
+    """一次完整规划的 LLM 输出序列：口播脚本 / 分镜换图点初筛 / 分镜画面 / 新角色。
+
+    分镜两步法：generate_storyboard 先调一次输出换图点布尔数组，再调一次为换图点生成画面。
+    """
     return [
-        [{"text": "主角挥手示意", "action": "主角挥手"}],
-        [{"storyboard_id": "sb_001", "scene_change": True, "text": "主角挥手示意", "speaker": "主角", "scene_prompt": "a room"}],
+        [{"text": "主角挥手示意", "action": "主角挥手", "speaker": "主角"}],
+        [True],  # 第一步：换图点初筛（单条，首条强制 True）
+        [{"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "a room"}],  # 第二步：换图点画面
         [{"name": "主角", "appearance": "黑发青年", "character_trait": "黑发青年男性", "visual_trait": "young man with black hair", "tri_view_prompt": "character turnaround sheet, front view, side view, back view, black hair young man, consistent outfit, plain background", "tri_view_prompt_cn": "三视图中文"}],
     ]
 

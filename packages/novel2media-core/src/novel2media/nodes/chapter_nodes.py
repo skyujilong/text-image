@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from langgraph.types import interrupt
@@ -13,13 +14,18 @@ from novel2media.prompts.chapter_prompts import (
     _SCENE_STYLE_PREFIX,
     build_adapt_script_prompt,
     build_detect_new_characters_prompt,
-    build_generate_storyboard_prompt,
+    build_scene_change_prompt,
+    build_scene_prompt_for_shots,
 )
 from novel2media_logging import get_logger
 
 log = get_logger("chapter_nodes")
 
 _PENDING_STATUSES = {"pending", "processing"}
+
+# 分镜第二步「画面生成」分批参数：换图点过多时按批并行调 LLM，避免单次输出过长被截断。
+_SCENE_PROMPT_BATCH_SIZE = 12  # 每批最多多少个换图点
+_SCENE_PROMPT_MAX_WORKERS = 2  # 并发上限（控制 ARK 限流压力，不宜过大）
 
 
 def load_chapter(state: dict) -> dict:
@@ -146,14 +152,55 @@ def adapt_script(state: dict) -> dict:
     return {"current_script": script, "_script_review_feedback": ""}
 
 
+def _collect_shots(skeleton: list[dict], script: list[dict]) -> list[dict]:
+    """从骨架收集换图点，为每个换图点算 coverage（覆盖到下一换图点之间的剧情）。
+
+    每个 shot = {anchor_id, text, coverage}：
+    - anchor_id：换图点的 storyboard_id（用于第二步结果对回）。
+    - text：换图点本条口播文案。
+    - coverage：从本换图点到下一个换图点之间所有条目的 text + 对应 script action 拼接，
+      让 LLM 知道这张图要覆盖哪几句剧情，画面信息更完整。
+    """
+    # 先找出所有换图点下标
+    change_indices = [i for i, e in enumerate(skeleton) if e.get("scene_change")]
+    shots: list[dict] = []
+    for pos, idx in enumerate(change_indices):
+        # 本换图点覆盖到下一个换图点之前（最后一个换图点覆盖到结尾）
+        next_idx = change_indices[pos + 1] if pos + 1 < len(change_indices) else len(skeleton)
+        parts: list[str] = []
+        for j in range(idx, next_idx):
+            text = skeleton[j].get("text", "")
+            action = script[j].get("action", "") if j < len(script) else ""
+            seg = text if not action else f"{text}（{action}）"
+            if seg:
+                parts.append(seg)
+        shots.append(
+            {
+                "anchor_id": skeleton[idx]["storyboard_id"],
+                "text": skeleton[idx].get("text", ""),
+                "coverage": " ".join(parts),
+            }
+        )
+    return shots
+
+
+def _batch_shots(shots: list[dict], batch_size: int) -> list[list[dict]]:
+    """把换图点列表按 batch_size 切成多批，供第二步并行处理。"""
+    return [shots[i : i + batch_size] for i in range(0, len(shots), batch_size)]
+
+
 def generate_storyboard(state: dict) -> dict:
-    """LLM 生成分镜 → current_storyboard（不落盘，稿件由 commit_chapter 收入 render_batch）。
+    """LLM 两步生成分镜 → current_storyboard（不落盘，稿件由 commit_chapter 收入 render_batch）。
 
-    双输入：current_chapter_text_path 原文（画面细节）+ current_script 口播脚本（节奏/画面角色名）
-    + characters_profile。强制首条 scene_change=True。解析失败抛错。
-    scene_prompt 字段名与 image_nodes.generate_images 的读取对齐（渲染阶段复用）。
+    两步法（避免一次性生成全部 scene_prompt 导致输出 token 截断）：
+    - 第一步「初筛」：LLM 只判定每条口播是否换图点（输出布尔数组，输出量极小，串行单次）。
+    - 第二步「画面生成」：只为换图点生成 subjects + scene_prompt（非换图点下游复用前图、
+      不读 scene_prompt，从源头省去无用输出）；换图点过多时按批并行兜底。
 
-    revise 回环时读 _storyboard_review_feedback（review_storyboard 写入）拼进 prompt，用完清空。
+    text/speaker 由节点从 script 对位填充（不让 LLM 重复输出，杜绝改字/错位）。
+    强制整章首条 scene_change=True。解析失败 / 第一步布尔数组长度不符直接抛错暴露。
+
+    revise 回环时读 _storyboard_review_feedback（review_storyboard 写入）拼进两步 prompt，用完清空。
     """
     ch_id = state["current_chapter_id"]
     script = state.get("current_script", [])
@@ -161,24 +208,90 @@ def generate_storyboard(state: dict) -> dict:
     characters_profile = state.get("characters_profile", {})
     feedback = state.get("_storyboard_review_feedback", "") or ""
 
-    prompt = build_generate_storyboard_prompt(script, chapter_text, characters_profile, feedback)
-    resp = invoke_llm(prompt, node="generate_storyboard", label="generate_storyboard")
-    storyboard = parse_json_array(resp)  # [{"scene_change","text","speaker","subjects","scene_prompt"}]
-    for i, entry in enumerate(storyboard):
-        entry["storyboard_id"] = i  # 代码赋整数序号（0-based），覆盖 LLM 可能误产的 id
-        subjects = entry.get("subjects", [])
+    if not script:
+        log.info("generate_storyboard: 空脚本，跳过", chapter=ch_id)
+        return {"current_storyboard": [], "_storyboard_review_feedback": ""}
+
+    # ---- 第一步：初筛换图点（串行单次，输出布尔数组）----
+    sc_prompt = build_scene_change_prompt(script, chapter_text, feedback)
+    sc_resp = invoke_llm(sc_prompt, node="generate_storyboard", label="storyboard_scene_change")
+    flags = parse_json_array(sc_resp)
+    if len(flags) != len(script):
+        # 长度不符直接抛错暴露（不静默补齐/截断，否则会与 script 错位、污染音频/字幕对齐）
+        raise ValueError(
+            f"换图点初筛结果长度({len(flags)})与口播条目数({len(script)})不符，无法一一对应"
+        )
+
+    # ---- 组装骨架：text/speaker 从 script 对位填充，scene_change 取初筛结果 ----
+    skeleton: list[dict] = []
+    for i, (item, flag) in enumerate(zip(script, flags)):
+        skeleton.append(
+            {
+                "storyboard_id": i,  # 0-based 全局连续整数
+                "scene_change": bool(flag),
+                "text": item.get("text", ""),
+                "speaker": item.get("speaker", ""),
+                "subjects": [],
+                "scene_prompt": "",
+            }
+        )
+    skeleton[0]["scene_change"] = True  # 整章首条必为换图点
+
+    # ---- 第二步：只为换图点生成 subjects + scene_prompt（分批并行）----
+    shots = _collect_shots(skeleton, script)
+    batches = _batch_shots(shots, _SCENE_PROMPT_BATCH_SIZE)
+    n = len(batches)
+
+    def _run_batch(args: tuple[int, list[dict]]) -> list[dict]:
+        idx, batch = args
+        batch_info = (idx + 1, n) if n > 1 else None
+        prompt = build_scene_prompt_for_shots(
+            batch, chapter_text, characters_profile, feedback, batch_info=batch_info
+        )
+        resp = invoke_llm(
+            prompt, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]"
+        )
+        return parse_json_array(resp)
+
+    # 收集所有批次的 {anchor_id -> {subjects, scene_prompt}}；任一批抛错经 result() 重新抛出（不吞错）
+    results: list[list[dict]] = []
+    with ThreadPoolExecutor(max_workers=min(n, _SCENE_PROMPT_MAX_WORKERS)) as executor:
+        results = list(executor.map(_run_batch, list(enumerate(batches))))
+
+    shot_by_id: dict[int, dict] = {}
+    for batch_result in results:
+        for shot in batch_result:
+            shot_by_id[shot["anchor_id"]] = shot
+
+    # ---- 回填换图点画面 + 后处理（scene_prompt 头尾拼接只对换图点）----
+    for entry in skeleton:
+        if not entry["scene_change"]:
+            continue  # 非换图点保持 subjects=[]、scene_prompt=""，下游复用前图
+        sid = entry["storyboard_id"]
+        shot = shot_by_id.get(sid)
+        if shot is None:
+            # 换图点缺失第二步结果：记录暴露，不伪造画面
+            log.warning("generate_storyboard: 换图点缺少画面生成结果", chapter=ch_id, sid=sid)
+            continue
+        subjects = shot.get("subjects", [])
+        entry["subjects"] = subjects
         if isinstance(subjects, list) and len(subjects) > 2:
             # subjects 是后续生图按名取参考图的依据；当前只记录 LLM 违规，不裁剪不伪装成功。
-            log.warning("generate_storyboard: 主体角色超 2 人（违反一致性上限）", chapter=ch_id, sid=i, subjects=subjects)
-        raw_prompt = entry.get("scene_prompt", "")
+            log.warning("generate_storyboard: 主体角色超 2 人（违反一致性上限）", chapter=ch_id, sid=sid, subjects=subjects)
+        raw_prompt = shot.get("scene_prompt", "")
         # 画风/画质/人体防崩统一由代码拼接（LLM 不写这些词），头尾固定
         entry["scene_prompt"] = f"{_SCENE_STYLE_PREFIX}, {raw_prompt}, {_SCENE_QUALITY_SUFFIX}, {_SCENE_ANATOMY_GUARD}"
-    if storyboard:
-        storyboard[0]["scene_change"] = True  # 首条必为换图点
 
-    # feedback 记录原文（与 prompt_chars 同条，便于核对 revise 意见是否真拼进 prompt）
-    log.info("generate_storyboard: 完成", chapter=ch_id, shots=len(storyboard), feedback=feedback)
-    return {"current_storyboard": storyboard, "_storyboard_review_feedback": ""}
+    shots_count = len(shots)
+    log.info(
+        "generate_storyboard: 完成",
+        chapter=ch_id,
+        shots=len(skeleton),
+        change_points=shots_count,
+        batches=n,
+        feedback=feedback,
+    )
+    return {"current_storyboard": skeleton, "_storyboard_review_feedback": ""}
 
 
 def detect_new_characters_llm(state: dict) -> dict:

@@ -64,62 +64,109 @@ def build_adapt_script_prompt(chapter_text: str, characters_profile: dict, feedb
 
 
 
-def build_generate_storyboard_prompt(
+def _build_character_roster(characters_profile: dict) -> str:
+    """构造"角色名（英文特征）"花名册：供 LLM 在 scene_prompt 中用特征替代姓名。
+
+    visual_trait 缺失（旧 checkpoint 兼容）时只列名字，不阻塞分镜生成。
+    """
+    if not characters_profile:
+        return "（暂无已知角色）"
+    roster = []
+    for cname, cprofile in characters_profile.items():
+        vt = (cprofile.get("visual_trait") or "").strip() if isinstance(cprofile, dict) else ""
+        roster.append(f"{cname}（{vt}）" if vt else cname)
+    return "、".join(roster)
+
+
+def build_scene_change_prompt(
     script: list[dict],
     chapter_text: str,
-    characters_profile: dict,
     feedback: str = "",
 ) -> str:
-    """构造分镜生成提示词（原文 + 口播脚本双输入）。
+    """构造分镜第一步「换图点初筛」提示词。
 
-    输出 schema：JSON 数组，每个元素
-    {{"scene_change": bool, "text": str, "speaker": str, "subjects": list[str], "scene_prompt": str}}。
-    首条 scene_change 固定为 True（由节点强制保证）。
+    职责：只判定每条口播是否为换图点（是否需要换一张新图），不生成任何画面文案。
+    输出量极小（与 script 等长的布尔数组），避免一次性生成全部 scene_prompt 导致输出截断。
 
-    双输入设计：原文提供画面细节/角色/景物/神态，口播脚本提供节奏/结构/文案/画面角色名。
-    - text：取自对应口播 text。
-    - speaker：直接取自口播 speaker 字段，表示配音者（不是画面主体）。
-    - subjects：该镜画面主体出现的角色中文名列表（供生图节点按名取三视图参考图）。已知角色
-      用 characters_profile 的标准名，新角色用原文中文名；纯景物/无主体角色为 []。主体特写/
-      中景最多 2 人，大场景/远景群众不计入此限制。
-    - scene_change：此处是否需要换一张新图（换图点）。换图不仅指换场景，也包括同场景内切换
-      景别/机位。密度软性规则：关键段（冲突/转折/打斗/情绪爆发/震撼揭示）每 1-2 句换图；
-      非关键段（铺垫/过渡/平稳叙事）每 3-5 句共用一张图（连续 false）。
-    - scene_prompt：英文文生图正向提示词，仅写画面内容（景别、机位、角色定格动作/表情、
-      场景光影），不写画风词、画质词与人体结构词（画风/画质/防崩由代码统一拼接
-      _SCENE_STYLE_PREFIX / _SCENE_QUALITY_SUFFIX / _SCENE_ANATOMY_GUARD，LLM 不输出）；
-      静态漫画只截定格瞬间，禁止运动过程动词，靠微表情/局部肢体/光影丰富画面；构图须
-      AI 绘画友好（简洁、主体突出、常见元素），避开复杂罕见物件/多人纠缠/夸张透视；
-      提到画面角色时必须用该角色的 visual_trait 英文特征替代姓名，多角色同框时显式体现身高差。
-    feedback 非空时为上一版分镜的修改意见，提示 LLM 据此调整（review_storyboard revise 回环）。
+    输出 schema：纯布尔 JSON 数组 [true, false, false, true, ...]，长度必须等于 script 条目数，
+    第 i 个布尔对应 script[i] 是否换图（顺序严格一一对应）。
+    首条是否换图由节点统一强制为 true，这里不要求 LLM 保证。
+
+    feedback 非空时为上一版分镜的修改意见（可能涉及换图密度），提示 LLM 据此调整。
     """
     import json
 
-    # 构造"角色名（英文特征）"花名册：供 LLM 在 scene_prompt 中用特征替代姓名。
-    # visual_trait 缺失（旧 checkpoint 兼容）时只列名字，不阻塞分镜生成。
-    if characters_profile:
-        roster = []
-        for cname, cprofile in characters_profile.items():
-            vt = (cprofile.get("visual_trait") or "").strip() if isinstance(cprofile, dict) else ""
-            roster.append(f"{cname}（{vt}）" if vt else cname)
-        names = "、".join(roster)
-    else:
-        names = "（暂无已知角色）"
     script_json = json.dumps(script, ensure_ascii=False, indent=2)
-    feedback_block = f"上一版分镜的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
-    return f"""你是一个专业的静态漫画分镜师。本作是「小说改静态漫画 + AI 生图」：每个分镜只截最有张力的「一个关键瞬间」，不表现运动过程——这刚好适配 AI 生图的动作短板。根据下面的口播脚本生成分镜列表，每个口播条目对应一个分镜条目（条目数必须相等，顺序一致）。
-同时参考原始章节原文补充画面细节（景物、神态、动作细节），让分镜画面更准。
+    feedback_block = f"上一版分镜的修改意见（请务必据此调整换图密度）：{feedback}\n" if feedback and feedback.strip() else ""
+    return f"""你是一个专业的静态漫画分镜师。本作是「小说改静态漫画 + AI 生图」：连续多条口播可以共用同一张画面，只在「需要换一张新图」的地方才切图。
+
+现在只做一件事：判断下面口播脚本的每一条，是否是「换图点」（此处需要换一张新图）。换图点包括：场景切换、景别/机位切换（如全景→特写）、情绪急变、重要动作跳变。
+
+换图密度软性区间：
+- 关键段（冲突/对峙/打斗/情绪爆发/震撼揭示/转折高潮）：每 1-2 句换图，换图更密集，同场景内多机位切换也算换图点。
+- 非关键段（背景交代/铺垫过渡/平稳叙事）：每 3-5 句共用一张图，连续多条不换图。
+
+同时参考原始章节原文理解剧情节奏（哪些是高能段、哪些是平稳过渡），让换图密度更合理。
+
+{feedback_block}输出要求：
+1. 严格输出一个布尔 JSON 数组，最外层只能是 []，元素只能是 true 或 false。
+2. 数组长度必须严格等于口播条目数（共 {len(script)} 条），第 i 个布尔对应第 i 条口播是否为换图点，顺序一一对应、不得多、不得少。
+3. 不要输出文案、不要对象、不要任何解释文字、不要 markdown 代码块、不要尾随逗号。
+
+输出格式示例（假设 5 条口播）：
+[true, false, false, true, true]
+
+口播脚本（共 {len(script)} 条）：
+{script_json}
+
+原始章节原文（仅供理解剧情节奏，判断换图密度）：
+{chapter_text}
+"""
+
+
+def build_scene_prompt_for_shots(
+    shots: list[dict],
+    chapter_text: str,
+    characters_profile: dict,
+    feedback: str = "",
+    batch_info: tuple[int, int] | None = None,
+) -> str:
+    """构造分镜第二步「画面生成」提示词：只为换图点生成 subjects + scene_prompt。
+
+    职责：第一步已确定哪些是换图点，这里只为这些换图点生成画面主体与文生图提示词。
+    非换图点不在此处理（下游复用前图、不读 scene_prompt），从源头省去无用输出。
+
+    输入 shots：换图点列表，每项 {{"anchor_id": int, "text": str, "coverage": str}}。
+    - anchor_id：该换图点的 storyboard_id（用于结果对回，必须原样写回输出）。
+    - text：该换图点对应口播文案（画面参考）。
+    - coverage：从本换图点到下一个换图点之间所有口播的剧情拼接（这张图要覆盖的剧情范围）。
+
+    输出 schema：JSON 数组，每元素 {{"anchor_id": int, "subjects": list[str], "scene_prompt": str}}。
+
+    batch_info 非 None（如 (2, 4)）时表示当前是整章换图点的第 2/4 批，只为本片段 shots 生成。
+    feedback 非空时为上一版分镜的修改意见（可能涉及画面内容），提示 LLM 据此调整。
+    """
+    import json
+
+    names = _build_character_roster(characters_profile)
+    shots_json = json.dumps(shots, ensure_ascii=False, indent=2)
+    feedback_block = f"上一版分镜的修改意见（请务必据此调整画面）：{feedback}\n" if feedback and feedback.strip() else ""
+    batch_block = (
+        f"注意：以下换图点是整章换图点的第 {batch_info[0]}/{batch_info[1]} 批片段，"
+        f"你只需为本片段的每个换图点生成画面，不要补整章其它内容。\n"
+        if batch_info is not None
+        else ""
+    )
+    return f"""你是一个专业的静态漫画分镜师。本作是「小说改静态漫画 + AI 生图」：每个分镜只截最有张力的「一个关键瞬间」，不表现运动过程——这刚好适配 AI 生图的动作短板。
+
+下面是已选定的若干「换图点」，每个换图点需要生成一张静态漫画画面。为每个换图点生成 subjects（画面主体角色）与 scene_prompt（文生图提示词）。
+参考原始章节原文补充画面细节（景物、神态、动作细节），让画面更准。
 
 已知角色（括号内为该角色的英文外观特征 visual_trait，含性别与身高体型；subjects 中列中文名，scene_prompt 中提到该角色时必须用此英文特征替代姓名）：{names}
 
-{feedback_block}要求：
-1. 与口播条目一一对应、顺序一致，输出条目数必须等于口播条目数。
-2. scene_change：此处是否需要换一张新图（换图点）。首条必须为 true。换图点包括：场景切换、景别/机位切换（如全景→特写）、情绪急变、重要动作跳变。密度软性区间：
-   - 关键段（冲突/对峙/打斗/情绪爆发/震撼揭示/转折高潮）：每 1-2 句换图，scene_change=true 更密集，同场景内多机位切换也算换图点。
-   - 非关键段（背景交代/铺垫过渡/平稳叙事）：每 3-5 句共用一张图，连续 scene_change=false。
-3. text：直接取自对应口播条目的 text，一字不改。
-4. speaker：直接取自对应口播条目的 speaker 字段（旁白/角色名）。
-5. scene_prompt：用于 Qwen Image / ComfyUI 文生图的正向提示词（英文为主），描述景别、机位角度、角色外观与定格姿态/表情、场景细节、光影氛围。静态漫画只截「定格瞬间」，不写运动过程。
+{feedback_block}{batch_block}要求：
+1. 为输入的每个换图点生成一条结果，anchor_id 必须原样写回（用于对回），不得修改、不得遗漏、不得新增。
+2. scene_prompt：用于 Qwen Image / ComfyUI 文生图的正向提示词（英文为主），描述景别、机位角度、角色外观与定格姿态/表情、场景细节、光影氛围。静态漫画只截「定格瞬间」，不写运动过程。
    - scene_prompt 用英文书写；若必须表达屏幕文字/标题/台词，可用少量中文内容，但必须使用中文引号「」或书名号《》，严禁使用英文双引号。
    - 景别必须显式写出：close-up / medium shot / wide shot / extreme close-up / full body shot 等。
    - 机位角度按需写：low angle / high angle / over-the-shoulder / dutch angle / eye level 等。
@@ -129,33 +176,31 @@ def build_generate_storyboard_prompt(
    - 提到画面角色时，必须用已知角色花名册中该角色的 visual_trait 替代姓名，严禁在 scene_prompt 中直接写角色姓名；新角色若无 visual_trait，用英文外观描述（如 tall young man / petite young woman + 标志特征）替代。
    - 多个角色同框时，须显式体现身高差（如 tall lanky man towering over petite short girl）。
    - **不靠动作靠细节丰富画面**（动作是 AI 弱项，主动绕开）：强化微表情（pupils contracted / brows tense / lips pressed / ears flushed / eyes averted 等）、强化局部肢体细节（knuckles white / cold sweat on palm / trembling fingertips / fingers gripping tight）、强化光影与氛围（side light / shadow split / cold phone glow / light through door crack / strong chiaroscuro），用氛围代替动态。
-   - 关键冲突/转折处，鼓励同场景不同景别切换制造视觉节奏。
    - **血腥/暴力画面暗化处理**：伤口藏入深影（wounds hidden deep in shadow），只留暗红血迹暗示（dark red stains only），不画伤口/血肉细节——既规避审核，又遮挡 AI 容易画怪的复杂伤口。
    - **严禁写画风词（anime / Japanese / cartoon 等）、画质词（masterpiece / best quality / highres / ultra detailed 等）以及人体结构/解剖词（perfect anatomy / hands / fingers / proportion 等）**，这些由系统统一拼接，你写了会重复。
-6. subjects：该镜画面主体出现的角色中文名数组，用于后续生图按角色名取三视图参考图。
+3. subjects：该镜画面主体出现的角色中文名数组，用于后续生图按角色名取三视图参考图。
    - 已知角色必须使用花名册中的标准中文名；新角色使用原文中文名；纯景物/无主体角色输出 []；旁白不是角色。
-   - 当镜头是 close-up / extreme close-up / medium shot / medium close-up 等近景或中景，且主体是可辨识有名角色时，subjects 最多 2 人。超过 2 人会导致人物一致性无法保障，必须拆成多个镜头或改为远景/群众剪影。
+   - 当镜头是 close-up / extreme close-up / medium shot / medium close-up 等近景或中景，且主体是可辨识有名角色时，subjects 最多 2 人。超过 2 人会导致人物一致性无法保障，必须改为远景/群众剪影。
    - 大场景、wide shot、远景、背景群众、无脸剪影不受 2 人限制；但 subjects 只列需要保持一致性的近景/中景主体角色，远景群众不列入 subjects。
    - subjects 写中文名；scene_prompt 写 visual_trait 英文特征，两者必须对应同一批主体角色。
-7. 严格输出合法 JSON 数组，不要 markdown 代码块、不要任何解释文字。
+4. 严格输出合法 JSON 数组，不要 markdown 代码块、不要任何解释文字。
    - 必须是合法 JSON 数组，最外层只能是 []。
-   - 所有字段名必须使用英文双引号，例如 "scene_change"，不能省略引号。
+   - 所有字段名必须使用英文双引号，例如 "scene_prompt"，不能省略引号。
    - 对象之间必须使用英文逗号分隔；最后一个对象后不要尾随逗号。
    - 字符串内容里严禁出现英文双引号 "。如需引用屏幕文字、标题、帖子名或台词，统一使用中文引号「」或书名号《》，不要使用 "..."。
+   - 所有字符串必须单行输出，字符串内部不要换行；scene_prompt 控制在 60 个英文词以内，避免超长字符串导致 JSON 断裂。
    - 不要输出注释、解释文字、单引号、尾随逗号或多余字段。
 
-输出格式示例（关键处换图密、非关键处一图多句；动作定格、靠微表情/光影出张力）：
+输出格式示例：
 [
-  {{"scene_change": true, "text": "黑夜笼罩着废弃工厂，杀机四伏", "speaker": "旁白", "subjects": [], "scene_prompt": "wide shot, low angle, abandoned factory at night, dark silhouettes in the distance, dramatic shadows, fog rolling across the ground, tense atmosphere"}},
-  {{"scene_change": false, "text": "林辰悄悄靠近铁门", "speaker": "旁白", "subjects": ["林辰"], "scene_prompt": "wide shot, low angle, abandoned factory at night, tall lanky young man with golden curly hair and round glasses standing near the iron gate, dramatic shadows, fog rolling across the ground, tense atmosphere"}},
-  {{"scene_change": true, "text": "黑影猛地从背后扑来", "speaker": "旁白", "subjects": ["林辰"], "scene_prompt": "medium shot, dutch angle, tall lanky young man with golden curly hair and round glasses frozen mid-step in shock, dark shadowy figure looming right behind, cold sweat on forehead, clenched jaw, strong side light cutting through fog"}},
-  {{"scene_change": true, "text": "你找死！", "speaker": "林辰", "subjects": ["林辰"], "scene_prompt": "extreme close-up, low angle, tall lanky young man with golden curly hair and round glasses, furious expression, pupils contracted, clenched jaw, knuckles white gripping, cold phone glow on face, dark background"}}
+  {{"anchor_id": 0, "subjects": [], "scene_prompt": "wide shot, low angle, abandoned factory at night, dark silhouettes in the distance, dramatic shadows, fog rolling across the ground, tense atmosphere"}},
+  {{"anchor_id": 3, "subjects": ["林辰"], "scene_prompt": "extreme close-up, low angle, tall lanky young man with golden curly hair and round glasses, furious expression, pupils contracted, clenched jaw, knuckles white gripping, cold phone glow on face, dark background"}}
 ]
 
-口播脚本：
-{script_json}
+换图点列表：
+{shots_json}
 
-原始章节原文（仅供补充画面细节，不要照搬原文到 text）：
+原始章节原文（仅供补充画面细节，不要照搬原文）：
 {chapter_text}
 """
 

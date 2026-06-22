@@ -181,6 +181,17 @@ def _mock_llm(monkeypatch, payload):
     return mock
 
 
+def _mock_llm_steps(monkeypatch, payloads):
+    """mock invoke_llm 按调用顺序依次返回 payloads（各自 JSON 序列化）。
+
+    用于 generate_storyboard 两步法：第 1 次调用返回换图点布尔数组，后续调用返回各批换图点画面。
+    """
+    mock = MagicMock()
+    mock.side_effect = [MagicMock(content=json.dumps(p, ensure_ascii=False)) for p in payloads]
+    monkeypatch.setattr("novel2media.nodes.chapter_nodes.invoke_llm", mock)
+    return mock
+
+
 def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
     """adapt_script：生成口播 script 写入 current_script（不落盘，稿件由 commit_chapter 收入 render_batch）。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {"appearance": "黑发"}})
@@ -214,23 +225,36 @@ def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
 
 
 def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
-    """generate_storyboard：生成分镜写入 current_storyboard（不落盘），首条强制 scene_change=True。"""
+    """两步法：第一步初筛换图点（首条强制 True），第二步只为换图点生成 scene_prompt。"""
     state = _make_chapter_state(tmp_path)
-    state["current_script"] = [{"text": "主角挥手", "action": "主角挥手"}]
-    # LLM 返回首条 scene_change=False，节点应强制改为 True
-    fake_sb = [
-        {"storyboard_id": "sb_001", "scene_change": False, "text": "主角挥手", "speaker": "主角", "scene_prompt": "a scene"},
-        {"storyboard_id": "sb_002", "scene_change": True, "text": "主角离开", "speaker": "主角", "scene_prompt": "another"},
+    state["current_script"] = [
+        {"text": "主角挥手", "action": "主角挥手", "speaker": "主角"},
+        {"text": "主角离开", "action": "主角离开", "speaker": "主角"},
     ]
-    _mock_llm(monkeypatch, fake_sb)
+    # 第一步：LLM 返回首条 False（节点应强制改 True），第二条 True
+    # 第二步：为两个换图点（强制后首条 + 第二条）生成画面
+    _mock_llm_steps(
+        monkeypatch,
+        [
+            [False, True],  # scene_change 初筛
+            [
+                {"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "a scene"},
+                {"anchor_id": 1, "subjects": [], "scene_prompt": "another"},
+            ],
+        ],
+    )
 
     result = generate_storyboard(state)
 
     storyboard = result["current_storyboard"]
+    # 首条被强制为换图点
     assert storyboard[0]["scene_change"] is True
-    # storyboard_id 由代码赋整数序号（0-based），覆盖 LLM 的 "sb_001"
+    # storyboard_id 由代码赋整数序号（0-based）
     assert storyboard[0]["storyboard_id"] == 0
     assert storyboard[1]["storyboard_id"] == 1
+    # text/speaker 由节点从 script 对位填充
+    assert storyboard[0]["text"] == "主角挥手"
+    assert storyboard[0]["speaker"] == "主角"
     # scene_prompt 由代码包装画风/画质/人体防崩常量
     assert "a scene" in storyboard[0]["scene_prompt"]
     assert storyboard[0]["scene_prompt"].startswith("Japanese anime style")
@@ -238,6 +262,85 @@ def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
     # 不落盘
     assert not (tmp_path / "novel" / "chapter_01" / "storyboard.json").exists()
     assert "chapters_artifacts" not in result
+
+
+def test_generate_storyboard_non_change_points_have_empty_prompt(tmp_path, monkeypatch):
+    """非换图点保持 scene_prompt 为空（下游复用前图、不读 prompt），不浪费第二步生成。"""
+    state = _make_chapter_state(tmp_path)
+    state["current_script"] = [
+        {"text": "第一句", "action": "动作1", "speaker": "旁白"},
+        {"text": "第二句", "action": "动作2", "speaker": "旁白"},
+        {"text": "第三句", "action": "动作3", "speaker": "旁白"},
+    ]
+    # 第一步：只有首条换图（其余复用前图）；第二步：只为 anchor_id=0 生成
+    _mock_llm_steps(
+        monkeypatch,
+        [
+            [True, False, False],
+            [{"anchor_id": 0, "subjects": [], "scene_prompt": "only scene"}],
+        ],
+    )
+
+    result = generate_storyboard(state)
+    sb = result["current_storyboard"]
+    # 换图点有 prompt
+    assert "only scene" in sb[0]["scene_prompt"]
+    # 非换图点 scene_prompt 为空、subjects 为空
+    assert sb[1]["scene_change"] is False
+    assert sb[1]["scene_prompt"] == ""
+    assert sb[1]["subjects"] == []
+    assert sb[2]["scene_prompt"] == ""
+
+
+def test_generate_storyboard_raises_on_scene_change_length_mismatch(tmp_path, monkeypatch):
+    """第一步换图点布尔数组长度与 script 不符 → 抛错（不静默补齐，否则污染音频/字幕对齐）。"""
+    state = _make_chapter_state(tmp_path)
+    state["current_script"] = [
+        {"text": "a", "action": "", "speaker": "旁白"},
+        {"text": "b", "action": "", "speaker": "旁白"},
+    ]
+    # 只返回 1 个布尔，与 2 条 script 不符
+    _mock_llm_steps(monkeypatch, [[True]])
+    try:
+        generate_storyboard(state)
+    except ValueError:
+        return
+    raise AssertionError("应抛 ValueError（换图点初筛长度与口播条目数不符）")
+
+
+def test_generate_storyboard_empty_script_returns_empty(tmp_path, monkeypatch):
+    """空脚本：直接返回空 storyboard，不调用 LLM。"""
+    state = _make_chapter_state(tmp_path)
+    state["current_script"] = []
+    mock = _mock_llm_steps(monkeypatch, [])
+    result = generate_storyboard(state)
+    assert result["current_storyboard"] == []
+    mock.assert_not_called()
+
+
+def test_generate_storyboard_batches_many_change_points(tmp_path, monkeypatch):
+    """换图点超过批大小时第二步分批：每批结果按 anchor_id 正确回填合并。"""
+    import novel2media.nodes.chapter_nodes as cn
+
+    monkeypatch.setattr(cn, "_SCENE_PROMPT_BATCH_SIZE", 2)
+    n = 5
+    state = _make_chapter_state(tmp_path)
+    state["current_script"] = [
+        {"text": f"句{i}", "action": f"动作{i}", "speaker": "旁白"} for i in range(n)
+    ]
+    # 全部换图点 → 5 个 shot，按批大小 2 切成 3 批
+    flags = [True] * n
+    # 第二步按批返回（顺序：批0=[0,1]、批1=[2,3]、批2=[4]）
+    batch0 = [{"anchor_id": 0, "subjects": [], "scene_prompt": "s0"}, {"anchor_id": 1, "subjects": [], "scene_prompt": "s1"}]
+    batch1 = [{"anchor_id": 2, "subjects": [], "scene_prompt": "s2"}, {"anchor_id": 3, "subjects": [], "scene_prompt": "s3"}]
+    batch2 = [{"anchor_id": 4, "subjects": [], "scene_prompt": "s4"}]
+    _mock_llm_steps(monkeypatch, [flags, batch0, batch1, batch2])
+
+    result = generate_storyboard(state)
+    sb = result["current_storyboard"]
+    assert len(sb) == n
+    for i in range(n):
+        assert f"s{i}" in sb[i]["scene_prompt"]
 
 
 def test_detect_new_characters_llm_returns_name_based_list(tmp_path, monkeypatch):
@@ -403,16 +506,25 @@ def test_commit_chapter_with_no_new_characters(tmp_path):
 
 
 def test_generate_storyboard_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
-    """revise 回环：generate_storyboard 读 _storyboard_review_feedback 拼进 prompt，用完清空。"""
+    """revise 回环：generate_storyboard 读 _storyboard_review_feedback 拼进两步 prompt，用完清空。"""
     state = _make_chapter_state(tmp_path)
-    state["current_script"] = [{"text": "主角挥手", "action": "主角挥手"}]
+    state["current_script"] = [{"text": "主角挥手", "action": "主角挥手", "speaker": "主角"}]
     state["_storyboard_review_feedback"] = "分镜太碎、scene_prompt 太简单"
-    mock = _mock_llm(monkeypatch, [{"storyboard_id": "sb_001", "scene_change": True, "text": "主角挥手", "speaker": "主角", "scene_prompt": "p"}])
+    mock = _mock_llm_steps(
+        monkeypatch,
+        [
+            [True],  # 第一步换图点
+            [{"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "p"}],  # 第二步画面
+        ],
+    )
 
     result = generate_storyboard(state)
 
-    prompt = mock.call_args.args[0]
-    assert "分镜太碎、scene_prompt 太简单" in prompt
+    # feedback 应拼进第一步与第二步两个 prompt
+    first_prompt = mock.call_args_list[0].args[0]
+    second_prompt = mock.call_args_list[1].args[0]
+    assert "分镜太碎、scene_prompt 太简单" in first_prompt
+    assert "分镜太碎、scene_prompt 太简单" in second_prompt
     assert result["_storyboard_review_feedback"] == ""
 
 
