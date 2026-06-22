@@ -17,20 +17,20 @@ _SCENE_STYLE_TRIGGER = "Qwen Anime"
 
 
 def build_adapt_script_prompt(chapter_text: str, characters_profile: dict, feedback: str = "") -> str:
-    """构造有声漫剧单播脚本 + 新角色检测的合并提示词。
+    """构造有声漫剧单播脚本提示词（只出口播脚本，不含新角色检测）。
 
-    一次 LLM 调用同时产出口播脚本与本章新出场角色，省掉单独再读一遍整章原文的第二次调用。
-    新角色在分镜之前就备好特征（visual_trait 等），供下游角色设定/分镜对齐，避免后期图生图角色错乱。
+    新角色检测拆为独立节点 detect_new_characters_llm（放分镜之前）：合并到本节点会让单次
+    输出过长撞 output token 上限被截断（实测长章节 finish_reason=length → JSON 断裂）。
+    故本节点只产口播脚本、保持单次输出尽量小。
 
-    输出 schema：JSON 对象（不是数组）：
-    {{"script": [{{"text": str, "action": str, "speaker": str}}, ...],
-      "new_characters": [{{"name": str, "appearance": str, "character_trait": str,
-                           "visual_trait": str, "tri_view_prompt": str, "tri_view_prompt_cn": str}}, ...]}}
-    - script：口播脚本数组（字段见下「脚本字段说明」）。
-    - new_characters：本章新出现、且不在已知角色花名册中的角色（字段模型与 init 阶段一致，无 id）；
-      无新角色时输出空数组 []。
-
-    feedback 非空时为上一版打回的修改意见（可能涉及脚本或新角色），提示 LLM 据此调整（review_script revise 回环）。
+    输出 schema：JSON 数组，每个元素 {{"text": str, "action": str, "speaker": str}}。
+    - text：单人口播文案。旁白句 10-25 字；角色对白句 1-25 字，可短至一两个字，但必须有口语冲击力。text 中不出现"某某说/道/怒喝"等叙述前缀，直接引用角色台词。
+    - action：该口播条目对应的画面动作/场景/神态/对话描述，必须含画面角色名
+      （已知角色用 characters_profile 的名字，新角色用原文中文名，纯景物无角色用"旁白"）。
+      若本条涉及角色对话，须写明说话者、表情、动作与场景；供分镜 scene_prompt 推导与画面角色对齐。
+    - speaker：本条的配音者（不是画面主体）。旁白写"旁白"；角色对白写对应角色名（已知角色用 profile 名，新角色用原文中文名）。
+      当前阶段所有 speaker 统一由单播 AI 配音，但须保留该字段以便后续按角色分轨音色。
+    feedback 非空时为上一版打回的修改意见，提示 LLM 据此调整（review_script revise 回环）。
     """
     names = "、".join(characters_profile.keys()) if characters_profile else "（暂无已知角色，按原文推断）"
     feedback_block = f"上一版口播脚本的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
@@ -40,9 +40,7 @@ def build_adapt_script_prompt(chapter_text: str, characters_profile: dict, feedb
 
 已知角色（口播文案与画面描述中提到这些角色时必须使用其名字；新角色按原文出现的中文名）：{names}
 
-你需要同时完成两件事：（A）把本章原文改写成口播漫剧解说脚本；（B）提取本章新出现、且不在上面「已知角色」列表中的有名角色。
-
-═══ A. 口播脚本要求 ═══
+要求：
 1. 素材：严格根据提供的小说内容改写，以第三人称旁白推进剧情，同时保留关键角色对白，不第一人称独白、不抒情。
 2. 格式：按剧情顺序逐条分段，一句话一条口播。旁白句控制在 10-25 字（个别强调句最长不超 28 字）；角色对白句 1-25 字，可短至一两个字，必须口语化、有冲击力。全部短句，节奏紧凑。
 3. 完整性：必须完整覆盖本章全部主线剧情与关键情节，不得遗漏、不得提前结束。条目数量与章节篇幅匹配，宁可拆细也不要跳过情节。
@@ -56,26 +54,13 @@ def build_adapt_script_prompt(chapter_text: str, characters_profile: dict, feedb
 11. speaker 标记：speaker 表示该条的配音者（不是画面主体）。旁白统一写"旁白"；角色对白写对应角色名（已知角色用 profile 名，新角色用原文中文名）。即使当前统一音色，也必须保留，用于后续分轨。
 12. 画面与口播的对应关系：本阶段只拆口播条目，不决定分镜。一个画面可以持续多条口播，画面切换由后续分镜节点根据 scene_change 判断。
 
-脚本字段说明（script 数组每个元素）：
+输出字段说明（严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字）：
 - text：单人口播文案。旁白句 10-25 字；角色对白句 1-25 字，直接引用台词，不加"某某说"前缀。
 - action：该条口播对应的画面动作/场景/神态/对话描述，必须包含画面中出现的角色名（已知角色用其名，新角色用原文中文名，纯景物无角色用"旁白"）。若涉及角色对话，须写明说话者、表情、动作与场景。
 - speaker：本条的配音者（不是画面主体），"旁白"或角色名（已知角色用 profile 名，新角色用原文中文名）。
 
-═══ B. 新角色提取要求 ═══
-只提取本章新出现、且**不在上面已知角色列表中**的、有明确名字的角色（旁白、"众人"等泛指不算）。每个新角色输出以下字段：
-- name：角色名（用原文中文名）。
-- appearance（外观描述）：性别、年龄、身高/体型（如高挑清瘦、娇小玲珑、中等身材魁梧等，不同角色身高体型尽量有区分）、发色、发型、是否戴眼镜、瞳色、服饰标志物等；原文未提及则据上下文合理补全。每个角色必须有鲜明、可辨识、与其他角色明显区分的外观特征，便于后期 ComfyUI 基于特征匹配参考图。
-- character_trait（中文人物特征短语）：把该角色最鲜明的外观特征浓缩成一句中文，须含性别、身高体型与标志性特征，如"高挑清瘦、金色卷发、戴圆框眼镜的少年"。
-- visual_trait（英文特征短语）：character_trait 的英文版，须包含性别词（man/woman/boy/girl 等）与身高体型词（tall/short/petite/lanky/average height + slim/stocky build 等），如"tall lanky young man with golden curly hair and round glasses"。供分镜 scene_prompt 替换角色名使用。
-{_TRI_VIEW_PROMPT_RULE}
-- tri_view_prompt_cn：tri_view_prompt 的中文翻译版，供审核时阅读。
-- 不要输出 id 字段。若本章无新角色，new_characters 输出空数组 []。
-
-═══ 输出格式 ═══
-严格输出一个 JSON 对象（最外层是 {{}}，不是数组），只含 "script" 与 "new_characters" 两个键，不要 markdown 代码块、不要任何解释文字。
-
 输出格式示例：
-{{"script": [{{"text": "黑影扑来，林辰猛地后退", "action": "林辰惊恐后退，灌木丛中黑影扑出", "speaker": "旁白"}}, {{"text": "你找死！", "action": "林辰面目狰狞，手指黑影，厉声怒喝", "speaker": "林辰"}}], "new_characters": [{{"name": "李雷", "appearance": "青年男性，高挑清瘦，金色卷发，戴圆框眼镜，穿白色衬衫，脚踩白色运动鞋", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的青年男性", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, young male, tall lanky build, golden curly hair, round glasses, white shirt, white sneakers, consistent outfit, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，青年男性，高挑清瘦身形，金色卷发，圆框眼镜，白色衬衫，白色运动鞋，服饰一致，纯白背景，杰作，最高画质，超高细节，高分辨率"}}]}}
+[{{"text": "黑影扑来，林辰猛地后退", "action": "林辰惊恐后退，灌木丛中黑影扑出", "speaker": "旁白"}}, {{"text": "你找死！", "action": "林辰面目狰狞，手指黑影，厉声怒喝", "speaker": "林辰"}}, {{"text": "这到底是什么怪物", "action": "林辰盯着黑影，满脸惊骇", "speaker": "旁白"}}]
 
 {feedback_block}章节原文：
 {chapter_text}
@@ -222,5 +207,46 @@ def build_scene_prompt_for_shots(
 {shots_json}
 
 原始章节原文（仅供补充画面细节，不要照搬原文）：
+{chapter_text}
+"""
+
+
+def build_detect_new_characters_prompt(chapter_text: str, existing_names: set[str]) -> str:
+    """构造新角色检测提示词（独立节点 detect_new_characters_llm，放分镜之前）。
+
+    单独成节点而非并入 adapt_script：合并后单次输出过长会撞 output token 上限被截断
+    （实测长章节 finish_reason=length → JSON 断裂），故拆开各自保持输出小。
+    检测结果直接进 setup_queue → character_setup_subgraph 上传三视图（无单独人工审阅），
+    在 generate_storyboard 之前备好新角色 visual_trait，避免后期图生图角色错乱。
+
+    输出 schema：JSON 数组，每个元素
+    {{"name": str, "appearance": str, "character_trait": str, "visual_trait": str,
+      "tri_view_prompt": str, "tri_view_prompt_cn": str}}（无 id）。
+    仅输出本章新出现、且不在 existing_names 中的角色。字段模型与 init 阶段
+    build_parse_initial_characters_prompt 一致：appearance 强调鲜明可辨识特征，
+    character_trait/visual_trait 为中英文特征短语，tri_view_prompt 固定日系动漫画风 +
+    白色空白背景 + 画质词，tri_view_prompt_cn 为其中文翻译版。
+    """
+    existing = "、".join(sorted(existing_names)) if existing_names else "（无）"
+    return f"""你是一个小说角色提取器。从下面的章节原文中，提取本章新出现的、有名字的角色。
+
+已有角色（不要重复提取）：{existing}
+
+要求：
+1. 只提取有明确名字的角色（旁白、"众人"等泛指不算）。
+2. 每个角色输出 name（角色名）。
+3. appearance（外观描述）：性别、年龄、身高/体型（如高挑清瘦、娇小玲珑、中等身材魁梧等，不同角色身高体型尽量有区分）、发色、发型、是否戴眼镜、瞳色、服饰标志物等；原文未提及则据上下文合理补全。每个角色必须有鲜明、可辨识、与其他角色明显区分的外观特征，不同角色的关键特征（发色/发型/眼镜/身高体型等）尽量不重复，便于后期 ComfyUI 基于特征匹配参考图。
+4. character_trait（中文人物特征短语）：把该角色最鲜明的外观特征浓缩成一句中文，须含性别、身高体型与标志性特征，如"高挑清瘦、金色卷发、戴圆框眼镜的少年"。供审核阅读与后期分镜引用。
+5. visual_trait（英文特征短语）：character_trait 的英文版，须包含性别词（man/woman/boy/girl 等）与身高体型词（tall/short/petite/lanky/average height + slim/stocky build 等），如"tall lanky young man with golden curly hair and round glasses"。供分镜 scene_prompt 替换角色名使用，ComfyUI 可直接理解。
+{_TRI_VIEW_PROMPT_RULE}
+7. tri_view_prompt_cn：tri_view_prompt 的中文翻译版，供审核时阅读。
+8. 不要输出 id 字段。
+9. 若本章无新角色，输出空数组 []。
+10. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
+
+输出格式示例：
+[{{"name": "李雷", "appearance": "青年男性，高挑清瘦，金色卷发，戴圆框眼镜，穿白色衬衫，脚踩白色运动鞋", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的青年男性", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, highly detailed facial features, young male, tall lanky build, golden curly hair, round glasses, white shirt, white sneakers, consistent outfit, hairstyle, footwear and body shape, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，青年男性，高挑清瘦身形，金色卷发，圆框眼镜，白色衬衫，白色运动鞋，服饰发型鞋子体型一致，纯白背景，杰作，最高画质，超高细节，高分辨率"}}]
+
+章节原文：
 {chapter_text}
 """

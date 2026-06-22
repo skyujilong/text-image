@@ -1,10 +1,11 @@
 """端到端集成测试：验证 chapter 子图规划阶段细分审阅 interrupt 链路。
 
-模拟一次完整规划流转：load_chapter → adapt_script（出脚本 + 新角色）→ review_script(interrupt)
-→（有新角色）character_setup_subgraph → batch_upload_tri_view(interrupt) → generate_storyboard
-→ review_storyboard(interrupt) → commit_chapter → chapter_advance_decision(interrupt)。验证：
+模拟一次完整规划流转：load_chapter → adapt_script（只出脚本）→ review_script(interrupt)
+→ detect_new_characters_llm（写新角色 setup_queue）→（有新角色）character_setup_subgraph
+→ batch_upload_tri_view(interrupt) → generate_storyboard → review_storyboard(interrupt)
+→ commit_chapter → chapter_advance_decision(interrupt)。验证：
 - 流程在 review_script 正确停下（第一个细分审阅 interrupt），payload 仅含 script。
-- review_script pass 后，有新角色则先进 character_setup_subgraph 上传三视图（分镜前备好特征）。
+- review_script pass → 检测新角色 → 有新角色则先进 character_setup_subgraph 上传三视图（分镜前备好特征）。
 - 三视图 resume 后落 characters_profile，再生成分镜、审分镜，commit_chapter 标 planned。
 - review_script resume "revise" 后回到 adapt_script（重写剧本），再次停在 review_script。
 - 无新角色时跳过角色设定，直接进 generate_storyboard。
@@ -42,7 +43,7 @@ def _mock_llm_sequence(monkeypatch, payloads):
 
 
 def _new_char(name="主角"):
-    """六字段齐全的新角色（供 adapt_script 校验通过 + 角色设定上传三视图）。"""
+    """六字段齐全的新角色（供 detect_new_characters_llm 校验通过 + 角色设定上传三视图）。"""
     return {
         "name": name,
         "appearance": "黑发青年",
@@ -54,18 +55,17 @@ def _new_char(name="主角"):
 
 
 def _planning_payloads(new_characters):
-    """一次完整规划的 LLM 输出序列。
+    """一次完整规划的 LLM 输出序列（各自独立调用，均为 JSON 数组）。
 
-    - adapt_script：对象 {script, new_characters}（合并了新角色检测）。
+    - adapt_script：口播脚本数组（只出脚本，不含新角色）。
+    - detect_new_characters_llm：新角色数组（独立节点，放分镜之前）。
     - generate_storyboard 两步法：换图点布尔数组 + 换图点画面数组。
     """
     return [
-        {
-            "script": [{"text": "主角挥手示意", "action": "主角挥手", "speaker": "主角"}],
-            "new_characters": new_characters,
-        },
-        [True],  # 第一步：换图点初筛（单条，首条强制 True）
-        [{"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "a room"}],  # 第二步：换图点画面
+        [{"text": "主角挥手示意", "action": "主角挥手", "speaker": "主角"}],  # adapt_script
+        new_characters,  # detect_new_characters_llm
+        [True],  # 分镜第一步：换图点初筛（单条，首条强制 True）
+        [{"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "a room"}],  # 分镜第二步：换图点画面
     ]
 
 
@@ -171,15 +171,15 @@ async def test_chapter_subgraph_no_new_char_skips_setup(tmp_path, monkeypatch):
 async def test_chapter_subgraph_resume_revise_loops_back(tmp_path, monkeypatch):
     """review_script resume 'revise' → 回到 adapt_script 重写剧本，再次停在 review_script。
 
-    init 阶段在 review_script（第一个审阅）即 interrupt，只消耗 1 次 LLM（脚本+角色）；
-    revise 回到 adapt_script 再消耗 1 次 LLM（重写）。故 mock 只需 v1 + v2 两个 payload。
+    init 阶段在 review_script（第一个审阅）即 interrupt，只消耗 1 次 LLM（脚本）；
+    revise 回到 adapt_script 再消耗 1 次 LLM（重写）。故 mock 只需 v1 + v2 两个数组 payload。
     """
     novel_dir = _make_novel(tmp_path)
     _mock_llm_sequence(
         monkeypatch,
         [
-            {"script": [{"text": "v1", "action": "主角站立"}], "new_characters": []},
-            {"script": [{"text": "v2-revised", "action": "主角点头"}], "new_characters": []},
+            [{"text": "v1", "action": "主角站立"}],
+            [{"text": "v2-revised", "action": "主角点头"}],
         ],
     )
 

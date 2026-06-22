@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from novel2media.prompts._parse import parse_json_array, parse_json_object
+from novel2media.prompts._parse import parse_json_array
 
 
 def test_parse_json_array_strips_code_fence():
@@ -47,46 +47,3 @@ def test_parse_json_array_error_includes_nearby_excerpt():
         assert "坏掉的标题" in msg
         return
     raise AssertionError("应抛 ValueError（JSON 字符串内部双引号未转义）")
-
-
-# --- parse_json_object（adapt_script 等一次输出多段结构的场景）---
-
-
-def test_parse_json_object_strips_code_fence():
-    """对象顶层 + ```json 包裹 + 前后解释文字，应剥离并取对象。"""
-    content = "结果如下：\n```json\n{\"script\": [], \"new_characters\": []}\n```\n完毕"
-    result = parse_json_object(content)
-    assert result == {"script": [], "new_characters": []}
-
-
-def test_parse_json_object_accepts_aimessage():
-    """兼容 AIMessage（取 .content）。"""
-    msg = MagicMock()
-    msg.content = '{"script": [{"text": "夜深人静"}], "new_characters": []}'
-    result = parse_json_object(msg)
-    assert result["script"][0]["text"] == "夜深人静"
-
-
-def test_parse_json_object_extracts_embedded_object():
-    """对象夹在解释文字中（无代码块）→ 正则提取对象片段。"""
-    content = '这是输出：{"script": [], "new_characters": [{"name": "李雷"}]} 谢谢'
-    result = parse_json_object(content)
-    assert result["new_characters"][0]["name"] == "李雷"
-
-
-def test_parse_json_object_raises_on_non_object():
-    """LLM 输出 JSON 数组而非对象 → 抛错（不静默兜底）。"""
-    try:
-        parse_json_object('[1, 2, 3]')
-    except ValueError:
-        return
-    raise AssertionError("应抛 ValueError（输出非对象）")
-
-
-def test_parse_json_object_raises_on_garbage():
-    """完全无法解析 → 抛错并保留原文片段。"""
-    try:
-        parse_json_object("这不是任何JSON")
-    except ValueError:
-        return
-    raise AssertionError("应抛 ValueError（输出非 JSON）")

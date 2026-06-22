@@ -8,10 +8,11 @@ from langgraph.types import interrupt
 from novel2media.chapters import chapter_sort_key
 from novel2media.llm import invoke_llm
 from novel2media.nodes.init_nodes import _REQUIRED_CHAR_FIELDS
-from novel2media.prompts._parse import parse_json_array, parse_json_object
+from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.chapter_prompts import (
     _SCENE_STYLE_TRIGGER,
     build_adapt_script_prompt,
+    build_detect_new_characters_prompt,
     build_scene_change_prompt,
     build_scene_prompt_for_shots,
 )
@@ -128,59 +129,29 @@ def load_chapter(state: dict) -> dict:
 
 
 def adapt_script(state: dict) -> dict:
-    """LLM 一次产出口播脚本 + 本章新角色 → current_script + setup_queue。
+    """LLM 改写口播漫剧脚本 → current_script（不落盘，稿件由 commit_chapter 收入 render_batch）。
 
-    合并了原 detect_new_characters_llm 的职责：一次 LLM 调用同时输出脚本与新出场角色，
-    省掉单独再读整章原文的第二次调用；且新角色在分镜之前就备好（visual_trait 等），
-    经 character_setup_subgraph 补三视图后供 generate_storyboard 对齐，避免后期图生图角色错乱。
+    只产口播脚本：新角色检测拆为独立节点 detect_new_characters_llm（放分镜之前）——合并到
+    本节点会让单次输出过长撞 output token 上限被截断（实测长章节 finish_reason=length → JSON 断裂）。
 
-    读 current_chapter_text_path 原文 + characters_profile（name-based，其 keys 作已知角色排除名单）。
-    LLM 输出 JSON 对象 {{"script": [...], "new_characters": [...]}}，解析失败抛错暴露。
-    新角色每个必须含六字段（_REQUIRED_CHAR_FIELDS），缺则抛错；防御性剔除名字已在已知花名册中的角色。
+    读 current_chapter_text_path 原文 + characters_profile（name-based）。LLM 输出 JSON 数组，
+    解析失败抛错暴露。结果存 current_script 供 review_script 展示 + 后续入 render_batch。
 
-    setup_queue 无 reducer（覆盖语义）：review_script revise 回环重跑本节点时整体覆盖，
-    不会重复累积/残留旧批新角色。
-
-    revise 回环时读 _script_review_feedback（review_script 写入）拼进 prompt，用完清空。
+    revise 回环时读 _script_review_feedback（review_script 写入）拼进 prompt，用完清空，
+    避免串到下一章重写。
     """
     ch_id = state["current_chapter_id"]
     chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
     characters_profile = state.get("characters_profile", {})
-    existing_names = set(characters_profile.keys())
     feedback = state.get("_script_review_feedback", "") or ""
 
     prompt = build_adapt_script_prompt(chapter_text, characters_profile, feedback)
     resp = invoke_llm(prompt, node="adapt_script", label="adapt_script")
-    data = parse_json_object(resp)  # {"script": [{"text","action","speaker"}], "new_characters": [...]}
-    script = data.get("script", [])
-    new_chars = data.get("new_characters", [])
-
-    # 校验新角色六字段（与 init parse_characters_llm 同一真相），缺字段抛错暴露
-    validated: list[dict] = []
-    for c in new_chars:
-        name = c.get("name")
-        if name in existing_names:
-            # 防御性剔除：已知角色不应再被当新角色（LLM 偶发重复），跳过不入队
-            log.warning("adapt_script: LLM 误报已知角色为新角色，已剔除", chapter=ch_id, name=name)
-            continue
-        for field in _REQUIRED_CHAR_FIELDS:
-            if not c.get(field):
-                raise ValueError(f"adapt_script: 新角色缺 {field} 字段: {c}")
-        validated.append(c)
+    script = parse_json_array(resp)  # [{"text","action","speaker"}]
 
     # feedback 记录原文（便于核对 revise 意见是否真拼进 prompt）
-    log.info(
-        "adapt_script: 完成",
-        chapter=ch_id,
-        lines=len(script),
-        new_characters=len(validated),
-        feedback=feedback,
-    )
-    return {
-        "current_script": script,
-        "setup_queue": validated,
-        "_script_review_feedback": "",
-    }
+    log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=feedback)
+    return {"current_script": script, "_script_review_feedback": ""}
 
 
 def _collect_shots(skeleton: list[dict], script: list[dict]) -> list[dict]:
@@ -328,6 +299,48 @@ def generate_storyboard(state: dict) -> dict:
         feedback=feedback,
     )
     return {"current_storyboard": skeleton, "_storyboard_review_feedback": ""}
+
+
+def detect_new_characters_llm(state: dict) -> dict:
+    """LLM 检测本章新角色 → 直接写 setup_queue（独立节点，放分镜之前）。
+
+    单独成节点而非并入 adapt_script：合并后单次输出过长撞 output token 上限被截断
+    （实测长章节 finish_reason=length → JSON 断裂）。故拆开各自保持输出小。
+
+    放在 review_script 之后、generate_storyboard 之前：检测出的新角色直接进 setup_queue，
+    由 character_setup_subgraph 上传三视图（无单独人工审阅），在分镜前备好 visual_trait，
+    避免后期图生图角色对不上。
+
+    读章节原文 + 现有 characters_profile 的 name 集（作排除名单）。每个新角色必须含
+    六字段（_REQUIRED_CHAR_FIELDS，与 init parse_characters_llm 角色模型一致），缺则抛错；
+    防御性剔除名字已在已知花名册中的角色。
+
+    setup_queue 无 reducer（覆盖语义）：review_script revise 回环 → adapt_script → 本节点
+    重跑时整体覆盖，不会重复累积/残留旧批新角色。
+    """
+    ch_id = state["current_chapter_id"]
+    chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
+    existing_names = set(state.get("characters_profile", {}).keys())
+
+    prompt = build_detect_new_characters_prompt(chapter_text, existing_names)
+    resp = invoke_llm(prompt, node="detect_new_characters_llm", label="detect_new_characters")
+    detected = parse_json_array(resp)  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn"}]
+
+    # 校验六字段（与 init parse_characters_llm 同一真相），剔除已知角色后写 setup_queue
+    validated: list[dict] = []
+    for c in detected:
+        name = c.get("name")
+        if name in existing_names:
+            # 防御性剔除：已知角色不应再被当新角色（LLM 偶发重复），跳过不入队
+            log.warning("detect_new_characters_llm: LLM 误报已知角色为新角色，已剔除", chapter=ch_id, name=name)
+            continue
+        for field in _REQUIRED_CHAR_FIELDS:
+            if not c.get(field):
+                raise ValueError(f"detect_new_characters_llm: 新角色缺 {field} 字段: {c}")
+        validated.append(c)
+
+    log.info("detect_new_characters_llm: 完成", chapter=ch_id, new_characters=len(validated))
+    return {"setup_queue": validated}
 
 
 def review_chapter(state: dict) -> dict:

@@ -116,7 +116,7 @@ class SetupSubgraphState(TypedDict):
     # 待批量配置三视图的角色列表（批量化：一次 interrupt 传全部，不再逐个弹出）
     setup_queue: list[CharacterProfile]
     setup_image_candidates: list[str]  # 候选图片路径列表（保留供未来扩展）
-    # init parse_characters_llm 中间结果（章节阶段新角色已由 adapt_script 直接写 setup_queue）
+    # init parse_characters_llm 中间结果（章节阶段 detect_new_characters_llm 直接写 setup_queue）
     pending_new_characters: list[CharacterProfile]  # 待人工决策的新角色列表
 
     # 通用路由复用字段（下划线前缀，interrupt 节点写回驱动条件边）。
