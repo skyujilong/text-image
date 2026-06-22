@@ -32,13 +32,14 @@ interface Props {
  * renderBoard 查图；非换图点标注「复用上一镜头画面」，不单独出图。
  */
 export default function ImageRenderPanel({ runId, chapterId, storyboard }: Props) {
-  const { setActiveInteraction, renderBoard, setRenderBoard } = useRunStore()
+  const { setActiveInteraction, renderBoard, mergeRenderBoard } = useRunStore()
   const [submitting, setSubmitting] = useState(false)
 
-  // 挂载时全量拉取看板（恢复刷新前已生成的图；SSE 后续增量更新）
+  // 挂载时全量拉取看板（恢复刷新前已生成的图；SSE 后续增量更新）。
+  // 用 merge 而非 set——拉取与 SSE 增量可能竞态，整体替换会回退窗口期已冒出的候选。
   useEffect(() => {
     api.getRenderState(runId)
-      .then((board) => setRenderBoard(board.shots))
+      .then((board) => mergeRenderBoard(board.shots))
       .catch((e) => console.warn('[render] 拉取看板失败', e))
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId])

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import random
 import time
 from pathlib import Path
@@ -85,7 +84,10 @@ class RenderSession:
 
         cfg = _load_services_config(novel_dir)
         self._client = ComfyUIClient(cfg.comfyui_url, cfg.comfyui_timeout)
-        self._candidate_timeout = float(getattr(cfg, "comfyui_timeout", 120)) * 5
+        # 单张候选的轮询上限：取 ComfyUI HTTP 超时的 5 倍。HTTP timeout 约束的是单次请求，
+        # 而一张图含排队 + 底模加载 + 采样，整体耗时远大于单请求；5 倍是经验留量，
+        # 超时则抛 TimeoutError 暴露（见 _wait_for_output），不无限等待。
+        self._candidate_timeout = float(cfg.comfyui_timeout) * 5
 
         # 待渲染 job 队列（dict：{shot_id, prompt, workflow, ref_images}）。
         # reroll 也走这个队列。worker drain 时按 workflow 类型聚合。
@@ -277,15 +279,12 @@ class RenderSession:
             if not images:
                 raise RuntimeError(f"shot {shot_id} 未产出图片")
 
-            # 下载首张输出图落盘（每个 job 出 1 张候选）
+            # 下载首张输出图落盘（每个 job 出 1 张候选）+ 追加进 render_state（单次锁内读写）
             img = images[0]
             data = await asyncio.to_thread(
                 self._client.download_image, img["filename"], img.get("subfolder", "")
             )
-            dest = self._save_candidate(shot_id, img["filename"], data)
-
-            cand_path = str(dest)
-            selected = await self._append_candidate(sid, cand_path)
+            cand_path, selected = await self._commit_candidate(sid, shot_id, img["filename"], data)
             await self._emit(
                 shot_id, status="done", candidate=cand_path, selected=selected,
                 prompt=job["prompt"],
@@ -331,18 +330,40 @@ class RenderSession:
 
     # ─── render_state 维护（串行写）─────────────────────────────
 
-    def _save_candidate(self, shot_id: int, filename: str, data: bytes) -> Path:
-        """候选图落盘到 <novel_dir>/<chapter>/images/，文件名带 shot 与候选序号。"""
+    def _candidate_dest(self, shot_id: int, filename: str, cand_idx: int) -> Path:
+        """候选图落盘路径：<novel_dir>/<chapter>/images/shot_<id>_cand_<n>.<ext>。"""
         out_dir = render_state.images_dir(self.novel_dir, self.chapter_id)
         out_dir.mkdir(parents=True, exist_ok=True)
-        # 候选序号 = 该 shot 现有候选数（避免覆盖旧候选）
-        data_state = render_state.load(self.novel_dir, self.chapter_id) or {"shots": {}}
-        shot = data_state.get("shots", {}).get(str(shot_id), {})
-        cand_idx = len(shot.get("candidates", []))
         ext = Path(filename).suffix or ".png"
-        dest = out_dir / f"shot_{shot_id}_cand_{cand_idx:02d}{ext}"
-        dest.write_bytes(data)
-        return dest
+        return out_dir / f"shot_{shot_id}_cand_{cand_idx:02d}{ext}"
+
+    async def _commit_candidate(
+        self, sid: str, shot_id: int, filename: str, data: bytes
+    ) -> tuple[str, str]:
+        """落盘候选图 + 追加进 render_state（单次锁内读写，返回 (候选路径, 选定终图)）。
+
+        合并原 _save_candidate/_append_candidate 的两次 render_state.load——锁内只读写各一次：
+        读出现有候选数定候选序号（避免覆盖旧候选）→ 写图落盘 → 追加候选 → 首张默认选中 → save。
+        """
+        async with self._lock:
+            data_state = render_state.load(self.novel_dir, self.chapter_id) or {
+                "chapter_id": self.chapter_id,
+                "shots": {},
+            }
+            shot = data_state.setdefault("shots", {}).setdefault(
+                sid, {"storyboard_id": int(sid)}
+            )
+            cands = shot.setdefault("candidates", [])
+            dest = self._candidate_dest(shot_id, filename, len(cands))
+            dest.write_bytes(data)
+            cand_path = str(dest)
+            cands.append(cand_path)
+            if not shot.get("selected"):
+                shot["selected"] = cand_path  # 首张默认选中
+            shot["status"] = "done"
+            shot["error"] = None
+            render_state.save(self.novel_dir, self.chapter_id, data_state)
+            return cand_path, shot["selected"]
 
     async def _update_shot(self, sid: str, **fields) -> None:
         """更新某 shot 的字段（串行）。"""
@@ -354,23 +375,6 @@ class RenderSession:
             shot = data.setdefault("shots", {}).setdefault(sid, {"storyboard_id": int(sid)})
             shot.update(fields)
             render_state.save(self.novel_dir, self.chapter_id, data)
-
-    async def _append_candidate(self, sid: str, cand_path: str) -> str:
-        """追加候选并返回选定终图：首张候选默认选中，后续 reroll 不自动改选（用户决定）。"""
-        async with self._lock:
-            data = render_state.load(self.novel_dir, self.chapter_id) or {
-                "chapter_id": self.chapter_id,
-                "shots": {},
-            }
-            shot = data.setdefault("shots", {}).setdefault(sid, {"storyboard_id": int(sid)})
-            cands = shot.setdefault("candidates", [])
-            cands.append(cand_path)
-            if not shot.get("selected"):
-                shot["selected"] = cand_path  # 首张默认选中
-            shot["status"] = "done"
-            shot["error"] = None
-            render_state.save(self.novel_dir, self.chapter_id, data)
-            return shot["selected"]
 
     async def _emit(self, shot_id: int, **fields) -> None:
         """推送单 shot 状态变化到 run 的 SSE 队列（前端增量更新看板）。"""

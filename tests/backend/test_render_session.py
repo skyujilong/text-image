@@ -189,3 +189,27 @@ async def test_ensure_render_session_returns_none_when_not_rendering(tmp_path, m
     monkeypatch.setattr(render_ep.runner, "get_current_run_state", _get_state)
 
     assert await render_ep._ensure_render_session("run-y") is None
+
+
+async def test_commit_candidate_increments_index_and_default_selects(tmp_path, monkeypatch):
+    """#9：候选落盘+追加单次锁内读写——序号递增不覆盖旧候选，首张默认选中。"""
+    session, novel_dir = _make_session(tmp_path, monkeypatch)
+    render_state.save(
+        novel_dir,
+        "ch1",
+        {"chapter_id": "ch1", "shots": {"0": {"storyboard_id": 0, "candidates": [],
+         "selected": None, "status": "pending", "error": None}}},
+    )
+
+    p0, sel0 = await session._commit_candidate("0", 0, "out.png", b"img0")
+    p1, sel1 = await session._commit_candidate("0", 0, "out.png", b"img1")
+
+    # 序号递增、文件名不同（不覆盖）
+    assert p0.endswith("shot_0_cand_00.png")
+    assert p1.endswith("shot_0_cand_01.png")
+    assert sel0 == p0 and sel1 == p0  # 首张默认选中，后续不自动改选
+    data = render_state.load(novel_dir, "ch1")
+    shot = data["shots"]["0"]
+    assert shot["candidates"] == [p0, p1]
+    assert shot["selected"] == p0
+    assert shot["status"] == "done"

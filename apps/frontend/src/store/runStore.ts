@@ -59,6 +59,8 @@ interface RunStore {
   incrementStreamGeneration: () => void
   // 全量替换渲染看板（GET /render/state 拉取后初始化）
   setRenderBoard: (shots: RenderShot[]) => void
+  // 按 shot 合并看板（挂载拉取用，避免覆盖竞态期间 SSE 已写入的增量）
+  mergeRenderBoard: (shots: RenderShot[]) => void
   // 增量更新单个 shot（SSE render_image 事件 / select 后局部刷新）
   upsertRenderShot: (shot: RenderShot) => void
   clearRenderBoard: () => void
@@ -146,6 +148,22 @@ export const useRunStore = create<RunStore>((set) => ({
 
   setRenderBoard: (shots) =>
     set({ renderBoard: Object.fromEntries(shots.map((s) => [s.storyboard_id, s])) }),
+
+  mergeRenderBoard: (shots) =>
+    set((s) => {
+      // 按 storyboard_id 合并，不整体替换——挂载全量拉取与 SSE 增量可能竞态：
+      // 拉取发出后、resolve 前若 SSE 先 upsert 了新候选，旧快照整体替换会把它回退。
+      // 对同一 shot 保留候选更多的那份（窗口期 SSE 那份候选数更多 / 状态更靠后）；
+      // SSE 抢先创建、服务端快照尚无的 shot 也保留。
+      const merged = { ...s.renderBoard }
+      for (const shot of shots) {
+        const prev = merged[shot.storyboard_id]
+        if (!prev || shot.candidates.length >= prev.candidates.length) {
+          merged[shot.storyboard_id] = shot
+        }
+      }
+      return { renderBoard: merged }
+    }),
 
   upsertRenderShot: (shot) =>
     set((s) => ({ renderBoard: { ...s.renderBoard, [shot.storyboard_id]: shot } })),
