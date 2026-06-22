@@ -146,7 +146,7 @@ def adapt_script(state: dict) -> dict:
     feedback = state.get("_script_review_feedback", "") or ""
 
     prompt = build_adapt_script_prompt(chapter_text, characters_profile, feedback)
-    resp = invoke_llm(prompt, node="adapt_script", label="adapt_script")
+    resp = invoke_llm(prompt, node="adapt_script", label="adapt_script", json_mode=True)
     script = parse_json_array(resp)  # [{"text","action","speaker"}]
 
     # feedback 记录原文（便于核对 revise 意见是否真拼进 prompt）
@@ -216,7 +216,7 @@ def generate_storyboard(state: dict) -> dict:
 
     # ---- 第一步：初筛换图点（串行单次，输出布尔数组）----
     sc_prompt = build_scene_change_prompt(script, chapter_text, feedback)
-    sc_resp = invoke_llm(sc_prompt, node="generate_storyboard", label="storyboard_scene_change")
+    sc_resp = invoke_llm(sc_prompt, node="generate_storyboard", label="storyboard_scene_change", json_mode=True)
     flags = parse_json_array(sc_resp)
     if len(flags) != len(script):
         # 长度不符直接抛错暴露（不静默补齐/截断，否则会与 script 错位、污染音频/字幕对齐）
@@ -251,7 +251,7 @@ def generate_storyboard(state: dict) -> dict:
             batch, chapter_text, characters_profile, feedback, batch_info=batch_info
         )
         resp = invoke_llm(
-            prompt, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]"
+            prompt, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]", json_mode=True
         )
         return parse_json_array(resp)
 
@@ -323,7 +323,7 @@ def detect_new_characters_llm(state: dict) -> dict:
     existing_names = set(state.get("characters_profile", {}).keys())
 
     prompt = build_detect_new_characters_prompt(chapter_text, existing_names)
-    resp = invoke_llm(prompt, node="detect_new_characters_llm", label="detect_new_characters")
+    resp = invoke_llm(prompt, node="detect_new_characters_llm", label="detect_new_characters", json_mode=True)
     detected = parse_json_array(resp)  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn"}]
 
     # 校验六字段（与 init parse_characters_llm 同一真相），剔除已知角色后写 setup_queue

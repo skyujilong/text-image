@@ -11,23 +11,42 @@ from novel2media_logging import get_logger
 log = get_logger("llm")
 
 
-def get_llm(temperature: float = 0.8) -> ChatOpenAI:
+def get_llm(temperature: float = 0.8, *, json_mode: bool = False) -> ChatOpenAI:
     """从环境变量创建 ChatOpenAI 实例（兼容 OpenAI 接口的 ARK 端点）。
 
     ChatOpenAI 内建 tenacity 重试（max_retries=2），已覆盖瞬态网络错误和限流。
+
+    json_mode=True 时开启 OpenAI json_object 响应格式：服务端在解码层保证输出为
+    合法 JSON，消除「漏引号/漏逗号」等语法崩（adapt_script 等长 JSON 输出实测会偶发）。
+    - 仅用 json_object，不用 json_schema：ARK doubao-seed-2.0-lite 实测忽略 json_schema
+      约束（返回结构与 schema 不符），故只取真正生效的 json_object 档。
+    - 协议硬要求：开启后 prompt 必须含 "json" 字样，否则 ARK 拒绝请求。调用方
+      （adapt_script/角色解析等 JSON 类 prompt）均已在正文声明，满足。
+    - 不保证字段结构正确，也兜不住 finish_reason=length 截断——那是拆短输出的职责。
     """
     api_key = os.environ.get("ARK_API_KEY")
     if not api_key:
         raise ValueError("ARK_API_KEY environment variable is required")
+    model_kwargs: dict = {}
+    if json_mode:
+        model_kwargs["response_format"] = {"type": "json_object"}
     return ChatOpenAI(
         model=os.environ.get("ARK_MODEL", "doubao-seed-2.0-lite"),
         temperature=temperature,
         api_key=SecretStr(api_key),
         base_url=os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
+        model_kwargs=model_kwargs,
     )
 
 
-def invoke_llm(prompt: str, *, node: str, temperature: float = 0.8, label: str | None = None):
+def invoke_llm(
+    prompt: str,
+    *,
+    node: str,
+    temperature: float = 0.8,
+    label: str | None = None,
+    json_mode: bool = False,
+):
     """统一封装的 LLM 调用，附带性能 + Token + 提示词长度日志。
 
     所有 LangGraph 节点中的 LLM 调用都应走本函数，而非直接 `get_llm().invoke(prompt)`，
@@ -37,6 +56,7 @@ def invoke_llm(prompt: str, *, node: str, temperature: float = 0.8, label: str |
     - node：调用所在节点名，用于日志归类。
     - label：可选的子任务标签（如 "adapt_script"/"detect_new_characters"），区分同一节点
       内的多次调用。
+    - json_mode：透传给 get_llm，需要解析 JSON 输出的调用应置 True（见 get_llm 说明）。
     - 返回 AIMessage（与 get_llm().invoke 一致），调用方按原方式解析 content 即可。
 
     Token 数据优先取 AIMessage.usage_metadata（langchain 统一字段，ARK OpenAI 兼容端点会
@@ -49,7 +69,7 @@ def invoke_llm(prompt: str, *, node: str, temperature: float = 0.8, label: str |
     prompt_tokens_est = max(prompt_chars // 3, len(prompt))  # 粗估下限兜底
 
     started = time.perf_counter()
-    resp = get_llm(temperature=temperature).invoke(prompt)
+    resp = get_llm(temperature=temperature, json_mode=json_mode).invoke(prompt)
     elapsed = time.perf_counter() - started
 
     usage = getattr(resp, "usage_metadata", None) or {}
