@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from novel2media.nodes.chapter_nodes import (
     adapt_script,
     build_timeline,
@@ -737,13 +739,178 @@ def test_render_dispatch_raises_on_missing_batch_item(tmp_path):
     raise AssertionError("应抛 ValueError（planned 章节在 render_batch 无稿件）")
 
 
-def test_render_generate_images_marks_images_done(tmp_path):
-    """render_generate_images 完成后推进状态 planned → images_done。"""
+def test_render_generate_images_writes_initial_render_state_then_interrupts(tmp_path):
+    """render_generate_images 第一步：写初始 render_state（换图点 shot 规格）后 interrupt 阻塞。
+
+    完整 resume 路径需图执行器驱动（interrupt 裸调用会抛 RuntimeError），此处只验证
+    interrupt 前已正确写好初始 render_state——后端 RenderSession 据此喂 GPU。
+    resume 后的校验/回填逻辑由 render_state/render_planning 单测覆盖。
+    """
+    from novel2media import render_state
+
     state = _make_render_state(tmp_path)
-    state.update({"current_chapter_id": "chapter_01", "current_storyboard": []})
-    result = render_generate_images(state)
-    assert result["current_image_map"] == {}
-    assert result["chapters_status"]["chapter_01"] == "images_done"
+    novel_dir = str(tmp_path / "novel")
+    state.update(
+        {
+            "current_chapter_id": "chapter_01",
+            "novel_dir": novel_dir,
+            "current_storyboard": [
+                {"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": []},
+            ],
+            "characters_profile": {},
+        }
+    )
+    # interrupt 裸调用抛 RuntimeError——预期；调用前的副作用（写初始 render_state）已落盘
+    with pytest.raises(RuntimeError):
+        render_generate_images(state)
+
+    data = render_state.load(novel_dir, "chapter_01")
+    assert data is not None
+    assert "0" in data["shots"]
+    assert data["shots"]["0"]["workflow"] == "qwen_t2i"
+    assert data["shots"]["0"]["status"] == "pending"
+
+
+def test_render_generate_images_reuses_candidates_when_content_unchanged(tmp_path):
+    """内容指纹一致（prompt/ref_images/workflow 全等）+ 有候选 → 保留候选，重入不重跑。"""
+    from novel2media import render_state
+
+    state = _make_render_state(tmp_path)
+    novel_dir = str(tmp_path / "novel")
+    # 预置一个已完成的 shot 0（含候选/选定），内容与下方 storyboard 一致
+    render_state.save(
+        novel_dir,
+        "chapter_01",
+        {
+            "chapter_id": "chapter_01",
+            "shots": {
+                "0": {
+                    "storyboard_id": 0,
+                    "workflow": "qwen_t2i",
+                    "prompt": "p",
+                    "ref_images": [],
+                    "subjects": [],
+                    "candidates": ["/img/shot_0_cand_00.png"],
+                    "selected": "/img/shot_0_cand_00.png",
+                    "status": "done",
+                    "error": None,
+                }
+            },
+        },
+    )
+    state.update(
+        {
+            "current_chapter_id": "chapter_01",
+            "novel_dir": novel_dir,
+            "current_storyboard": [
+                {"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": []},
+            ],
+            "characters_profile": {},
+        }
+    )
+    with pytest.raises(RuntimeError):  # interrupt 裸调用抛错——预期
+        render_generate_images(state)
+
+    data = render_state.load(novel_dir, "chapter_01")
+    shot = data["shots"]["0"]
+    # 内容未变：候选/选定/状态保留
+    assert shot["candidates"] == ["/img/shot_0_cand_00.png"]
+    assert shot["selected"] == "/img/shot_0_cand_00.png"
+    assert shot["status"] == "done"
+
+
+def test_render_generate_images_discards_candidates_when_prompt_changed(tmp_path):
+    """改稿后同 id 但 scene_prompt 变 → 视为新镜头，丢弃旧候选重置 pending（防串图）。"""
+    from novel2media import render_state
+
+    state = _make_render_state(tmp_path)
+    novel_dir = str(tmp_path / "novel")
+    render_state.save(
+        novel_dir,
+        "chapter_01",
+        {
+            "chapter_id": "chapter_01",
+            "shots": {
+                "0": {
+                    "storyboard_id": 0,
+                    "workflow": "qwen_t2i",
+                    "prompt": "OLD scene",
+                    "ref_images": [],
+                    "subjects": [],
+                    "candidates": ["/img/old.png"],
+                    "selected": "/img/old.png",
+                    "status": "done",
+                    "error": None,
+                }
+            },
+        },
+    )
+    state.update(
+        {
+            "current_chapter_id": "chapter_01",
+            "novel_dir": novel_dir,
+            "current_storyboard": [
+                {"storyboard_id": 0, "scene_change": True, "scene_prompt": "NEW scene", "subjects": []},
+            ],
+            "characters_profile": {},
+        }
+    )
+    with pytest.raises(RuntimeError):
+        render_generate_images(state)
+
+    data = render_state.load(novel_dir, "chapter_01")
+    shot = data["shots"]["0"]
+    # 内容变了：旧候选丢弃、重置待生成，绝不套旧图
+    assert shot["prompt"] == "NEW scene"
+    assert shot["candidates"] == []
+    assert shot["selected"] is None
+    assert shot["status"] == "pending"
+
+
+def test_render_generate_images_prunes_stale_shots(tmp_path):
+    """不再是换图点的陈旧 shot 被剪枝（全量重建），不残留卡住 resume 校验。"""
+    from novel2media import render_state
+
+    state = _make_render_state(tmp_path)
+    novel_dir = str(tmp_path / "novel")
+    # 旧状态里有 shot 0（当前仍是换图点）和 shot 7（改稿后不再是换图点）
+    render_state.save(
+        novel_dir,
+        "chapter_01",
+        {
+            "chapter_id": "chapter_01",
+            "shots": {
+                "0": {
+                    "storyboard_id": 0, "workflow": "qwen_t2i", "prompt": "p",
+                    "ref_images": [], "subjects": [],
+                    "candidates": ["/img/0.png"], "selected": "/img/0.png",
+                    "status": "done", "error": None,
+                },
+                "7": {
+                    "storyboard_id": 7, "workflow": "qwen_t2i", "prompt": "stale",
+                    "ref_images": [], "subjects": [],
+                    "candidates": [], "selected": None,
+                    "status": "pending", "error": None,
+                },
+            },
+        },
+    )
+    state.update(
+        {
+            "current_chapter_id": "chapter_01",
+            "novel_dir": novel_dir,
+            "current_storyboard": [
+                {"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": []},
+            ],
+            "characters_profile": {},
+        }
+    )
+    with pytest.raises(RuntimeError):
+        render_generate_images(state)
+
+    data = render_state.load(novel_dir, "chapter_01")
+    # 陈旧 shot 7 被剪掉，只剩当前换图点 0
+    assert set(data["shots"].keys()) == {"0"}
 
 
 def test_render_synthesize_audio_marks_audio_done(tmp_path):

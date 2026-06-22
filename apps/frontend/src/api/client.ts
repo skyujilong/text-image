@@ -50,6 +50,33 @@ export interface CheckpointEntry {
   checkpoint_ns: string
 }
 
+/** 渲染看板单个候选图。 */
+export interface RenderCandidate {
+  path: string
+  url: string
+}
+
+/** 渲染看板单个换图点 shot。 */
+export interface RenderShot {
+  storyboard_id: number
+  workflow: 'qwen_t2i' | 'qwen_edit'
+  prompt: string
+  subjects: string[]
+  status: 'pending' | 'rendering' | 'done' | 'error'
+  error: string | null
+  candidates: RenderCandidate[]
+  selected: string | null
+  selected_url: string | null
+}
+
+/** 渲染看板（GET /runs/{id}/render/state）。 */
+export interface RenderBoard {
+  chapter_id: string
+  shots: RenderShot[]
+  all_done: boolean
+  pending: string[]
+}
+
 export interface StartRunParams {
   novel_dir: string
   novel_title?: string
@@ -78,6 +105,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`HTTP ${res.status}: ${text}`)
   }
   return res.json() as Promise<T>
+}
+
+/** 绝对路径 → 前端可访问的 /files URL（SSE render_image 事件携带绝对路径，需转 URL）。
+ * 按 '/' 分段编码后再用 '/' 拼接——保留路径分隔符。后端 _file_url 用 urllib quote（默认 safe='/'，
+ * 不编码 '/'），/files/{path:path} 路由按字面 '/' 匹配；若整体 encodeURIComponent 把 '/' 变 %2F，
+ * 会与后端 GET /render/state 给的 URL 不一致（缓存未命中，且部分代理/ASGI 对 %2F 直接 404）。 */
+export function fileUrl(absPath: string): string {
+  const encoded = absPath
+    .replace(/^\/+/, '')
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')
+  return `${BASE}/files/${encoded}`
 }
 
 export const api = {
@@ -140,6 +180,25 @@ export const api = {
 
   getRunCurrentState: (runId: string) =>
     request<RunCurrentState>(`/runs/${runId}/current-state`),
+
+  // ─── 图片渲染（抽卡）─────────────────────────────────────────
+  // 渲染看板：每个换图点的提示词 + 候选图 URL + 选定终图 + 状态
+  getRenderState: (runId: string) =>
+    request<RenderBoard>(`/runs/${runId}/render/state`),
+
+  // 改词重抽单张：prompt 为空则沿用旧提示词；新候选追加，旧候选保留
+  rerollShot: (runId: string, shotId: number, prompt?: string) =>
+    request<{ ok: boolean }>(`/runs/${runId}/render/reroll`, {
+      method: 'POST',
+      body: JSON.stringify({ shot_id: shotId, prompt: prompt ?? null }),
+    }),
+
+  // 选定某候选为该 shot 的终图
+  selectCandidate: (runId: string, shotId: number, candidate: string) =>
+    request<{ ok: boolean }>(`/runs/${runId}/render/select`, {
+      method: 'POST',
+      body: JSON.stringify({ shot_id: shotId, candidate }),
+    }),
 
   // 上传文件（如角色三视图）到 run 的 novel_dir/characters，按 {小说名}-{人物名}.ext 命名。
   // 仅本地落盘（不调 ComfyUI）；返回 { path }，前端拿 path 后 resume { tri_views: {name: path}, skipped: [...] } 给 batch_upload_tri_view 节点。

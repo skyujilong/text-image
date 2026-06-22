@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,8 +28,12 @@ class ServicesConfig:
         if not path.exists():
             raise FileNotFoundError(f"services.json not found: {path}")
         data = json.loads(path.read_text(encoding="utf-8"))
+        # ComfyUI 地址优先读环境变量 COMFYUI_BASE_URL（部署时由 .env.local 注入），
+        # 回退 services.json 的 comfyui.base_url。env 优先便于不同机器/服务器切换地址，
+        # 而无需改动入库的 services.json（其值为占位 http://*:8188）。
+        comfyui_url = os.environ.get("COMFYUI_BASE_URL") or data["comfyui"]["base_url"]
         return cls(
-            comfyui_url=data["comfyui"]["base_url"],
+            comfyui_url=comfyui_url,
             comfyui_timeout=data["comfyui"]["timeout"],
             tts_url=data["tts_remote"]["base_url"],
             tts_timeout=data["tts_remote"]["timeout"],

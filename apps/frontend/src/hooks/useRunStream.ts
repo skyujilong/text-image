@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { api } from '@/api/client'
+import { api, fileUrl, type RenderShot } from '@/api/client'
 import type { NodeStatus } from '@/store/runStore'
 import { useRunStore } from '@/store/runStore'
 
@@ -70,6 +70,32 @@ export function useRunStream(runId: string | null) {
         } else {
           setNodeStatus(statusKey, status as 'running' | 'done' | 'error')
         }
+      }
+
+      if (type === 'render_image') {
+        // 单张渲染结果增量更新看板（逐张冒出）。事件携带绝对路径，需转 URL。
+        // 直接 merge 进 store 已有 shot，累积候选（reroll 追加，旧候选保留）。
+        const shotId = event.shot_id as number
+        const status = event.status as RenderShot['status']
+        const { renderBoard, upsertRenderShot } = useRunStore.getState()
+        const prev = renderBoard[shotId]
+        const candidate = event.candidate as string | undefined
+        const selected = event.selected as string | undefined
+        const candidates = prev ? [...prev.candidates] : []
+        if (candidate && !candidates.some((c) => c.path === candidate)) {
+          candidates.push({ path: candidate, url: fileUrl(candidate) })
+        }
+        upsertRenderShot({
+          storyboard_id: shotId,
+          workflow: prev?.workflow ?? 'qwen_t2i',
+          prompt: (event.prompt as string | undefined) ?? prev?.prompt ?? '',
+          subjects: prev?.subjects ?? [],
+          status,
+          error: (event.error as string | undefined) ?? null,
+          candidates,
+          selected: selected ?? prev?.selected ?? null,
+          selected_url: selected ? fileUrl(selected) : prev?.selected_url ?? null,
+        })
       }
 
       if (type === 'run_complete') {

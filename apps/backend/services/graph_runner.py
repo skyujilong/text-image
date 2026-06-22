@@ -179,6 +179,29 @@ async def push_event(run_id: str, event: dict) -> None:
         await q.put(event)
 
 
+async def _maybe_start_render_session(run_id: str, interrupt_val: Any) -> None:
+    """interrupt 为 image_render 时，启动该 run 的渲染队列服务（节点外长驻 worker）。
+
+    在 interrupt 被解析为 waiting_human 后调用——此时立即开跑、持续喂 GPU，
+    不等用户打开渲染面板。幂等：会话已存在（同章节）则复用并重新播种未完成 shot
+    （重入不重跑）。
+    """
+    if not isinstance(interrupt_val, dict) or interrupt_val.get("type") != "image_render":
+        return
+    import services.render_session as render_session
+
+    run_meta = await _runs_db.get(run_id) if _runs_db else None
+    if run_meta is None or not run_meta.novel_dir:
+        log.warning("image_render interrupt 但无 novel_dir，无法启动渲染会话 run=%s", run_id)
+        return
+    chapter_id = interrupt_val.get("chapter_id", "")
+    specs = interrupt_val.get("specs", []) or []
+    render_session.start_session(
+        run_id, run_meta.novel_dir, chapter_id, specs, push_event
+    )
+    log.info("已启动渲染会话 run=%s chapter=%s specs=%d", run_id, chapter_id, len(specs))
+
+
 async def _emit(
     run_id: str,
     status_key: str,
@@ -267,6 +290,8 @@ async def _run_graph(input: Any, config: dict, run_id: str) -> None:
                     run_id, leaf_path, "waiting_human", node=leaf_name, payload=interrupt_val, propagate=True
                 )
                 log.info("_run_graph 已发 waiting_human leaf_path=%s leaf_name=%s", leaf_path, leaf_name)
+                # image_render interrupt：立即启动渲染队列服务持续喂 GPU（不等用户打开面板）
+                await _maybe_start_render_session(run_id, interrupt_val)
             else:
                 # snap.next 非空却解析不到叶子 interrupt：异常态，记录暴露，
                 # 保留 SSE 队列等待人工干预（不静默伪装成功）。
@@ -299,6 +324,11 @@ async def start_run(params: dict) -> str:
 async def resume_run(run_id: str, resume_value: Any) -> None:
     if _compiled_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
+    # 完成渲染（image_render resume）→ 停止该 run 的渲染队列服务，释放 worker。
+    # 其它 resume（脚本/分镜审阅等）无渲染会话，stop_session 幂等无副作用。
+    import services.render_session as render_session
+
+    render_session.stop_session(run_id)
     config = {"configurable": {"thread_id": run_id}}
     get_or_create_sse_queue(run_id)
     asyncio.create_task(_run_graph(Command(resume=resume_value), config, run_id))

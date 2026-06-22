@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { RunMeta } from '@/api/client'
+import type { RunMeta, RenderShot } from '@/api/client'
 
 export type NodeStatus = 'pending' | 'running' | 'waiting_human' | 'done' | 'error'
 
@@ -34,6 +34,11 @@ interface RunStore {
   inspectingNode: string | null
   streamGeneration: number
 
+  // 图片渲染看板：storyboard_id → shot。由 GET /render/state 全量初始化，
+  // SSE render_image 事件增量更新单个 shot（逐张冒出）。区别于 activeInteraction
+  // 一次性 payload——看板随渲染持续变化，需独立持久于 store。
+  renderBoard: Record<number, RenderShot>
+
   setRuns: (runs: RunMeta[]) => void
   upsertRun: (run: RunMeta) => void
   removeRun: (runId: string) => void
@@ -52,6 +57,11 @@ interface RunStore {
   setRunError: (msg: string | null) => void
   setInspectingNode: (path: string | null) => void
   incrementStreamGeneration: () => void
+  // 全量替换渲染看板（GET /render/state 拉取后初始化）
+  setRenderBoard: (shots: RenderShot[]) => void
+  // 增量更新单个 shot（SSE render_image 事件 / select 后局部刷新）
+  upsertRenderShot: (shot: RenderShot) => void
+  clearRenderBoard: () => void
 }
 
 export const useRunStore = create<RunStore>((set) => ({
@@ -65,6 +75,7 @@ export const useRunStore = create<RunStore>((set) => ({
   runError: null,
   inspectingNode: null,
   streamGeneration: 0,
+  renderBoard: {},
 
   setRuns: (runs) =>
     set({ runs: Object.fromEntries(runs.map((r) => [r.run_id, r])) }),
@@ -132,4 +143,12 @@ export const useRunStore = create<RunStore>((set) => ({
 
   incrementStreamGeneration: () =>
     set((s) => ({ streamGeneration: s.streamGeneration + 1 })),
+
+  setRenderBoard: (shots) =>
+    set({ renderBoard: Object.fromEntries(shots.map((s) => [s.storyboard_id, s])) }),
+
+  upsertRenderShot: (shot) =>
+    set((s) => ({ renderBoard: { ...s.renderBoard, [shot.storyboard_id]: shot } })),
+
+  clearRenderBoard: () => set({ renderBoard: {} }),
 }))

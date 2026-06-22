@@ -574,17 +574,114 @@ def render_dispatch(state: dict) -> dict:
 def render_generate_images(state: dict) -> dict:
     """场景图生成（ComfyUI，用角色三视图 tri_view 作 reference，不切图）。
 
-    当前为空走通占位：ComfyUI 场景图工作流模板/接入待补（与 image_nodes.generate_images
-    的 portrait/fullbody 旧路径解耦）。接入时应读 current_storyboard + characters_profile
-    [name].tri_view 作 reference；无 tri_view 的小角色用 appearance 文字兜底。返回空 image_map。
+    薄节点 + 节点外长驻渲染队列服务模式（LangGraph 接外部服务的推荐做法）：
+    - 真正的生图副作用在后端 RenderSession（节点外）跑，节点只做「写初始 render_state →
+      interrupt 等审批 → resume 读最终 image_map」。
+    - 含 interrupt 的节点 resume 时会从头重跑整个函数，故 interrupt 之前必须幂等：
+      初始 render_state 已存在则合并保留已生成候选（重入不重跑）。
 
-    完成后推进章节状态：planned → images_done（图片阶段完成）。
+    流程：
+    1. 解析换图点 shot 规格（subjects→tri_view 决定 t2i/edit、参考图），写初始 render_state
+       （已存在的 shot 保留 candidates/selected/status，不覆盖——重入不重跑）。
+    2. interrupt({type:'image_render', ...})：后端 graph_runner 据此启动 RenderSession 喂 GPU，
+       前端 ImageRenderPanel 逐张展示 + 改词重抽。
+    3. resume（{decision:'done'}）后兜底校验无空帧（有未完成 shot 则抛错暴露），
+       读 selected 终图展开回填 current_image_map，章节状态 → images_done。
     """
+    from novel2media import render_planning, render_state
+
     ch_id = state["current_chapter_id"]
-    log.info("render_generate_images: [占位] 场景图空走通（ComfyUI 接入待补）", chapter=ch_id)
+    novel_dir = state["novel_dir"]
+    storyboard: list[dict] = state.get("current_storyboard", [])
+    characters_profile: dict = state.get("characters_profile", {})
+
+    # 1. 解析换图点 shot 规格 + 写初始 render_state（内容指纹判定 + 全量重建剪枝）
+    #
+    # render_state 用 storyboard_id 当 key，但 storyboard_id 是分镜重生成时按位置重排的
+    # 下标，不是稳定标识——「id 相同」不足以判定「同一镜头」。故复用旧候选的条件加内容指纹
+    # （prompt + ref_images + workflow 全等）：改稿后画面内容已变则视为新镜头，丢弃旧候选重出，
+    # 绝不把旧场景的图套到新场景上（避免串图）。
+    # 同时用 new_shots 全量重建 shots，自动剪掉本轮 specs 里没有的陈旧 shot（如改稿后不再是
+    # 换图点的旧镜头），否则 pending_shots() 会遍历到它卡住 resume，而前端按当前 storyboard
+    # 算换图点根本看不到它（前后端完成判定不一致）。
+    specs = render_planning.build_shot_specs(storyboard, characters_profile, novel_dir)
+    data = render_state.load(novel_dir, ch_id) or {"chapter_id": ch_id, "shots": {}}
+    old_shots = data.get("shots", {})
+    new_shots: dict = {}
+    reused = 0
+    for spec in specs:
+        sid = str(spec["storyboard_id"])
+        existing = old_shots.get(sid)
+        # 内容指纹一致 + 有候选 → 真·同一镜头，保留候选/选定/状态（重入不重跑）
+        same_shot = bool(
+            existing
+            and existing.get("candidates")
+            and existing.get("prompt") == spec["prompt"]
+            and existing.get("ref_images") == spec["ref_images"]
+            and existing.get("workflow") == spec["workflow"]
+        )
+        if same_shot:
+            existing["subjects"] = spec["subjects"]  # subjects 仅展示用，可无条件刷新
+            new_shots[sid] = existing
+            reused += 1
+        else:
+            # 新镜头 / 改稿后内容已变：丢弃旧候选，重置为待生成
+            new_shots[sid] = {
+                "storyboard_id": spec["storyboard_id"],
+                "workflow": spec["workflow"],
+                "prompt": spec["prompt"],
+                "ref_images": spec["ref_images"],
+                "subjects": spec["subjects"],
+                "candidates": [],
+                "selected": None,
+                "status": "pending",
+                "error": None,
+            }
+    data["shots"] = new_shots  # 全量替换 = 剪掉陈旧 shot
+    render_state.save(novel_dir, ch_id, data)
+    log.info(
+        "render_generate_images: 写初始 render_state",
+        chapter=ch_id,
+        shots=len(specs),
+        reused=reused,
+        pruned=len(old_shots) - reused,
+    )
+
+    # 2. interrupt：渲染交互（后端启动 RenderSession，前端逐张展示 + 抽卡）
+    raw = interrupt(
+        {
+            "type": "image_render",
+            "chapter_id": ch_id,
+            "storyboard": storyboard,  # 前端按数组顺序展示（含非换图点，复用上一换图点图）
+            "specs": specs,            # 换图点 shot 规格（含 prompt/subjects/workflow）
+        }
+    )
+
+    # 3. resume：兜底校验无空帧 + 回填 image_map
+    decision = raw.get("decision") if isinstance(raw, dict) else raw
+    if decision != "done":
+        raise ValueError(f"render_generate_images: 非法 resume 值（应为 done）: {raw!r}")
+
+    final = render_state.load(novel_dir, ch_id)
+    if final is None:
+        raise ValueError(f"render_generate_images: resume 时 render_state 缺失 chapter={ch_id}")
+    pending = render_state.pending_shots(final)
+    if pending:
+        # 不静默放行带空帧的渲染（与前端 disabled 双重把关）
+        raise ValueError(
+            f"render_generate_images: 仍有 {len(pending)} 个镜头未完成/未选定，不能完成渲染: {pending}"
+        )
+
+    # 换图点 selected → 展开到所有 storyboard_id（非换图点复用上一换图点图）
+    selected_by_sid = {
+        int(sid): shot["selected"] for sid, shot in final.get("shots", {}).items()
+    }
+    image_map = render_planning.expand_image_map(storyboard, selected_by_sid)
+
     chapters_status = dict(state.get("chapters_status", {}))
     chapters_status[ch_id] = "images_done"
-    return {"current_image_map": {}, "chapters_status": chapters_status}
+    log.info("render_generate_images: 渲染完成", chapter=ch_id, images=len(image_map))
+    return {"current_image_map": image_map, "chapters_status": chapters_status}
 
 
 def render_synthesize_audio(state: dict) -> dict:

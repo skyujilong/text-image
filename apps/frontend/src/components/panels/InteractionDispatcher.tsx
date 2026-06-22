@@ -5,6 +5,7 @@ import TriViewUploadPanel from './TriViewUploadPanel'
 import ChapterAdvancePanel from './ChapterAdvancePanel'
 import FinalDecisionPanel from './FinalDecisionPanel'
 import AudioConfigPanel from './AudioConfigPanel'
+import ImageRenderPanel from './ImageRenderPanel'
 
 interface Props {
   runId: string
@@ -24,6 +25,7 @@ const PAYLOAD_TYPE_TO_NODE: Record<string, string> = {
   chapter_advance: 'chapter_advance_decision',
   final_decision: 'final_decision',
   audio_config: 'configure_audio',
+  image_render: 'render_generate_images',
 }
 
 /**
@@ -121,6 +123,14 @@ function InteractionBody({ runId, interaction }: { runId: string; interaction: A
         <AudioConfigPanel
           runId={runId}
           current={p.current as Record<string, unknown> | undefined}
+        />
+      )
+    case 'render_generate_images':
+      return (
+        <ImageRenderPanel
+          runId={runId}
+          chapterId={p.chapter_id as string | undefined}
+          storyboard={(p.storyboard as Record<string, unknown>[]) ?? []}
         />
       )
     default:

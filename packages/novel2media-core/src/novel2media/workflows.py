@@ -5,49 +5,34 @@ import json
 import random
 from pathlib import Path
 
-# 从当前文件往上 6 层到项目根
-# packages/novel2media-core/src/novel2media/workflows.py
-_WORKFLOWS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "config" / "workflows"
+# 从当前文件往上到项目根 text-image：
+# text-image/packages/novel2media-core/src/novel2media/workflows.py
+# parent x5：novel2media → src → novel2media-core → packages → text-image
+_WORKFLOWS_DIR = Path(__file__).parent.parent.parent.parent.parent / "config" / "workflows"
 
 # 各模板可配置参数 → (node_id, field_name)
+#
+# 当前接入两套 Qwen 工作流（底模不可混用，渲染服务按类型分批执行）：
+# - qwen_t2i：纯文生图（UNETLoader 加载 qwen_image_fp8 + Lightning-8steps lora）
+# - qwen_edit：参考图编辑/生图（UnetLoaderGGUF 加载 qwen-image-edit-2511-Q8 + Edit-Lightning lora）
+#
+# qwen_edit 的单图/双图切换不在此处理（image2 连线改写 + 删除 Boolean/Switch 节点），
+# 由渲染服务的 build_edit_workflow 负责，避免污染通用 build_workflow。
 PARAM_MAP: dict[str, dict[str, tuple[str, str]]] = {
-    "wf_portrait_init": {
-        "positive_prompt": ("6", "text"),
-        "width": ("5", "width"),
-        "height": ("5", "height"),
-        "batch_size": ("5", "batch_size"),
-        "seed": ("3", "seed"),
-        "filename_prefix": ("37", "filename_prefix"),
+    "qwen_t2i": {
+        "positive_prompt": ("9", "text"),   # node 9 = 正向 CLIPTextEncode（node 10 为负向，留空）
+        "width": ("11", "width"),
+        "height": ("11", "height"),
+        "batch_size": ("11", "batch_size"),
+        "seed": ("12", "seed"),
+        "filename_prefix": ("14", "filename_prefix"),
     },
-    "wf_fullbody_with_face": {
-        "positive_prompt": ("6", "text"),
-        "face_image": ("56", "image"),
-        "pose_image": ("69", "image"),
-        "width": ("5", "width"),
-        "height": ("5", "height"),
-        "batch_size": ("5", "batch_size"),
+    "qwen_edit": {
+        "positive_prompt": ("227", "prompt"),  # node 227 = easy promptLine（接到 111 的正向编码）
+        "image1": ("78", "image"),             # 参考图 1（LoadImage）
+        "image2": ("187", "image"),            # 参考图 2（LoadImage，双图时用）
         "seed": ("3", "seed"),
-        "filename_prefix": ("37", "filename_prefix"),
-    },
-    "wf_t2i_scene": {
-        "positive_prompt": ("6", "text"),
-        "style_image": ("49", "image"),
-        "face_image": ("56", "image"),
-        "pose_image": ("69", "image"),
-        "width": ("5", "width"),
-        "height": ("5", "height"),
-        "batch_size": ("5", "batch_size"),
-        "seed": ("3", "seed"),
-        "filename_prefix": ("37", "filename_prefix"),
-    },
-    "wf_hires_2x": {
-        "input_image": ("100", "image"),
-        "positive_prompt": ("6", "text"),
-        "style_image": ("49", "image"),
-        "face_image": ("56", "image"),
-        "pose_image": ("69", "image"),
-        "seed": ("24", "seed"),
-        "filename_prefix": ("37", "filename_prefix"),
+        "filename_prefix": ("168", "filename_prefix"),
     },
 }
 
