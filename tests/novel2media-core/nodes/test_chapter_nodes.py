@@ -582,27 +582,27 @@ def test_configure_audio_skips_when_already_configured(tmp_path, monkeypatch):
 
 
 def test_configure_audio_interrupts_and_writes_when_empty(tmp_path, monkeypatch):
-    """audio_config 空 → interrupt → resume 写回 audio_config。"""
+    """audio_config 空 → interrupt → resume 写回 audio_config（dots 生成旋钮）。"""
     _mock_interrupt(
         monkeypatch,
-        {"voice_type": "zh_female_xxx", "speed": 1.0, "pitch": 0, "volume": 100},
+        {"language": "zh", "guidance_scale": 1.5, "speaker_scale": 2.0},
     )
     state = {"audio_config": {}}
     result = configure_audio(state)
-    assert result["audio_config"]["voice_type"] == "zh_female_xxx"
-    assert result["audio_config"]["speed"] == 1.0
-    assert result["audio_config"]["volume"] == 100
+    assert result["audio_config"]["language"] == "zh"
+    assert result["audio_config"]["guidance_scale"] == 1.5
+    assert result["audio_config"]["speaker_scale"] == 2.0
 
 
-def test_configure_audio_raises_on_missing_voice_type(tmp_path, monkeypatch):
-    """resume 缺 voice_type（必填）→ 抛错暴露，不静默接受。"""
-    _mock_interrupt(monkeypatch, {"speed": 1.0})
+def test_configure_audio_raises_on_invalid_resume(tmp_path, monkeypatch):
+    """resume 非 dict → 抛错暴露，不静默接受（不再强制 voice_type）。"""
+    _mock_interrupt(monkeypatch, "not_a_dict")
     state = {"audio_config": {}}
     try:
         configure_audio(state)
     except ValueError:
         return
-    raise AssertionError("应抛 ValueError（缺 voice_type）")
+    raise AssertionError("应抛 ValueError（resume 非 dict）")
 
 
 def test_final_decision_done(tmp_path, monkeypatch):
@@ -913,13 +913,26 @@ def test_render_generate_images_prunes_stale_shots(tmp_path):
     assert set(data["shots"].keys()) == {"0"}
 
 
-def test_render_synthesize_audio_marks_audio_done(tmp_path):
-    """render_synthesize_audio 完成后推进状态 images_done → audio_done。"""
+def test_render_synthesize_audio_marks_audio_done(tmp_path, monkeypatch):
+    """render_synthesize_audio：合成落盘 audio.wav + 推进状态 images_done → audio_done。"""
+    import novel2media.clients.tts as tts_mod
+
+    # mock dots.tts 合成，返回固定 wav 字节，不走网络
+    monkeypatch.setattr(tts_mod.TTSClient, "synthesize", lambda self, text, params: b"WAVDATA")
     state = _make_render_state(tmp_path)
     state["chapters_status"]["chapter_01"] = "images_done"
-    state.update({"current_chapter_id": "chapter_01"})
+    state.update(
+        {
+            "current_chapter_id": "chapter_01",
+            "current_script": [{"text": "第一句", "action": "", "speaker": "主角"}],
+        }
+    )
     result = render_synthesize_audio(state)
     assert result["chapters_status"]["chapter_01"] == "audio_done"
+    assert result["current_timestamps"] == []
+    audio_path = Path(result["current_audio_path"])
+    assert audio_path.exists()
+    assert audio_path.read_bytes() == b"WAVDATA"
 
 
 def test_render_build_timeline_marks_rendered(tmp_path):

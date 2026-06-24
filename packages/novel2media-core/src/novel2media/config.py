@@ -12,6 +12,7 @@ class ServicesConfig:
     comfyui_timeout: int
     tts_url: str
     tts_timeout: int
+    tts_params: dict
     image_candidates: int
     voice_candidates: int
     retry_max: int
@@ -32,11 +33,16 @@ class ServicesConfig:
         # 回退 services.json 的 comfyui.base_url。env 优先便于不同机器/服务器切换地址，
         # 而无需改动入库的 services.json（其值为占位 http://*:8188）。
         comfyui_url = os.environ.get("COMFYUI_BASE_URL") or data["comfyui"]["base_url"]
+        # TTS（dots.tts）地址同款 env 优先（TTS_BASE_URL），回退 services.json 的 tts_remote.base_url。
+        tts_url = os.environ.get("TTS_BASE_URL") or data["tts_remote"]["base_url"]
         return cls(
             comfyui_url=comfyui_url,
             comfyui_timeout=data["comfyui"]["timeout"],
-            tts_url=data["tts_remote"]["base_url"],
+            tts_url=tts_url,
             tts_timeout=data["tts_remote"]["timeout"],
+            # dots.tts 生成旋钮（num_steps/guidance_scale 等）集中放 tts_remote.defaults，
+            # 用 dict 承载便于增删参数，无需每次改 frozen dataclass。旧 json 无此键返回空 dict。
+            tts_params=data["tts_remote"].get("defaults", {}),
             image_candidates=data["card_draw"]["image_candidates"],
             voice_candidates=data["card_draw"]["voice_candidates"],
             retry_max=data["retry"]["max_attempts"],
