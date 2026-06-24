@@ -48,3 +48,29 @@ async def test_resume_run_calls_command():
     cmd = call_args[0][0]
     assert isinstance(cmd, Command)
     assert cmd.resume == 2
+
+
+async def test_reconcile_zombie_runs_only_fixes_running(tmp_path):
+    """启动纠正：仅把僵尸 running 改为 error，waiting_human/done/error/pending 不动。"""
+    from db.runs_db import RunsDB
+
+    db_path = str(tmp_path / "reconcile_runs.db")
+    async with RunsDB(db_path) as db:
+        await db.insert("r-running", "/n/a", "A")
+        await db.update_status("r-running", "running")
+        await db.insert("r-waiting", "/n/b", "B")
+        await db.update_status("r-waiting", "waiting_human")
+        await db.insert("r-done", "/n/c", "C")
+        await db.update_status("r-done", "done")
+        await db.insert("r-error", "/n/d", "D")
+        await db.update_status("r-error", "error")
+        await db.insert("r-pending", "/n/e", "E")  # 默认 pending
+
+        runner._runs_db = db
+        await runner._reconcile_zombie_runs()
+
+        assert (await db.get("r-running")).status == "error"  # 僵尸被纠正
+        assert (await db.get("r-waiting")).status == "waiting_human"  # 审阅态保留
+        assert (await db.get("r-done")).status == "done"
+        assert (await db.get("r-error")).status == "error"
+        assert (await db.get("r-pending")).status == "pending"

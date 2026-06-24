@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { GitBranch, RotateCcw } from 'lucide-react'
+import { GitBranch, Layers, RotateCcw } from 'lucide-react'
 import { api, type CheckpointEntry } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
-import { formatNodePathLabel } from '@/constants/nodeLabels'
+import { formatNodePathLabel, formatRestartTooltip } from '@/constants/nodeLabels'
 
 const ITEM_HEIGHT = 36 // px，每行高度（需与实际 py-1.5 + border 对齐）
 const OVERSCAN = 5   // 视窗外额外渲染行数，避免快速滚动白屏
@@ -99,7 +99,10 @@ export default function CheckpointTimeline({ runId }: Props) {
         >
           {/* 撑开滚动总高度 */}
           <div style={{ height: totalHeight, position: 'relative' }}>
-            {visibleEntries.map((e, i) => (
+            {visibleEntries.map((e, i) => {
+              // 子图叶子（path 含 '/'）重跑粒度是整个父阶段，用不同图标区分顶层精确重跑
+              const isSubLeaf = !!e.node && e.node.includes('/')
+              return (
               <div
                 key={e.checkpoint_id}
                 style={{ position: 'absolute', top: (startIdx + i) * ITEM_HEIGHT, left: 0, right: 0, height: ITEM_HEIGHT }}
@@ -113,10 +116,10 @@ export default function CheckpointTimeline({ runId }: Props) {
                 </div>
                 <button
                   className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-blue-600 hover:bg-blue-500/10 transition-colors"
-                  title="从此节点重跑（覆盖当前分支）"
+                  title={formatRestartTooltip(e.node)}
                   onClick={() => e.node && handleRestartFrom(e.node)}
                 >
-                  <RotateCcw className="size-3.5" />
+                  {isSubLeaf ? <Layers className="size-3.5" /> : <RotateCcw className="size-3.5" />}
                 </button>
                 {e.checkpoint_ns === '' && (
                   <button
@@ -128,7 +131,8 @@ export default function CheckpointTimeline({ runId }: Props) {
                   </button>
                 )}
               </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}

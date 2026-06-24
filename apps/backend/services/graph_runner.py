@@ -156,6 +156,29 @@ async def init_runner():
     _runs_db = RunsDB(RUNS_DB)
     await _runs_db.__aenter__()
 
+    await _reconcile_zombie_runs()
+
+
+async def _reconcile_zombie_runs() -> None:
+    """启动纠正僵尸 run：进程刚拉起，内存中无任何 _run_graph 执行协程，故 DB 中残留的
+    running 必然是上次服务硬退（kill/崩溃）留下的僵尸态——执行循环已随进程消失，
+    但 status 未来得及落盘为 done/error。统一纠正为 error，使前端 retry 按钮
+    （Sidebar 仅在 status==='error' 时显示）浮现，由用户手动从最新 checkpoint 续跑。
+
+    仅动 running：waiting_human 本就是「等用户操作、无协程在跑」的静止态，重启后
+    get_current_run_state 能完整重建审阅弹窗，用户提交审阅走 resume 续跑即可——
+    若误改为 error 会逼用户走 retry(input=None)，丢掉本该提交的审阅输入。
+    """
+    if _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+    for run in await _runs_db.list_all():
+        if run.status == "running":
+            await _runs_db.update_status(run.run_id, "error")
+            log.warning(
+                "启动纠正僵尸 run=%s running→error（上次未正常结束，可手动重试从最新 checkpoint 续跑）",
+                run.run_id,
+            )
+
 
 async def shutdown_runner():
     global _compiled_graph, _runs_db, _checkpointer_ctx
@@ -353,6 +376,12 @@ async def restart_from_node(run_id: str, node_path: str) -> None:
     其所属顶层子图节点（init_subgraph）的 checkpoint 续跑 = 重跑整个该子图。这是 LangGraph
     固有约束：纯 checkpoint_id 续跑无法精准到子图内某叶子（顶层 checkpoint 的 next 只含顶层
     节点，不含子图内叶子）。
+
+    已 spike 实证（langgraph 1.2.4）：即便用子图叶子执行前的完整 config（含 checkpoint_map
+    的两层指针）调顶层 astream，恢复仍以顶层 superstep 为准——顶层指针停在「即将进入子图父
+    节点」，重新执行该父节点 = 子图从 entry point 完整重放。aupdate_state+as_node 也到不了
+    （语义是写新 superstep 非回拨）。故子图叶子重跑粒度只能是整个父阶段，前端 tooltip
+    （formatRestartTooltip）已据此如实说明，避免「点子节点以为只重跑该子节点」的误解。
 
     __start__/__end__ 为虚拟节点，无重跑语义，显式拒绝。
 

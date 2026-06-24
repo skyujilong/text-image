@@ -68,3 +68,26 @@ export function formatNodePathLabel(nodePath: string | null): string {
   }
   return label
 }
+
+/**
+ * 生成重跑按钮的 tooltip 文案，如实反映重跑粒度。
+ *
+ * LangGraph 1.2.4 硬约束（经 spike 实证）：子图作为父图的「黑箱节点」，
+ * 顶层 checkpoint 的 next 只含顶层节点；恢复时以顶层 superstep 为准，
+ * 重新执行整个子图父节点 = 子图从 entry point 完整重跑。因此无法精确
+ * 重跑到子图内某个叶子。restart_from_node 后端正是据此取 path 第一段
+ * （top_node）定位重跑范围。
+ *
+ * 所以：顶层节点点重跑 = 精确从该节点；子图叶子点重跑 = 重跑整个所属阶段。
+ * 此函数让 tooltip 对两种情况分别说清楚，避免「点子节点以为只重跑该子节点」的误解。
+ */
+export function formatRestartTooltip(nodePath: string | null): string {
+  if (!nodePath) return '从此节点重跑（覆盖当前分支）'
+  const parts = nodePath.split('/')
+  if (parts.length > 1) {
+    // 子图叶子：实际重跑范围是其所属顶层阶段
+    const parentLabel = NODE_LABELS[parts[0]] ?? parts[0]
+    return `将重跑整个「${parentLabel}」阶段（覆盖当前分支）。\nLangGraph 子图无法精确到内部子节点，从该阶段入口整体重放。`
+  }
+  return '从此节点重跑（覆盖当前分支）'
+}
