@@ -1,5 +1,6 @@
 import asyncio
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import services.graph_runner as runner
@@ -36,16 +37,29 @@ async def test_push_event_unknown_run_noop():
 
 
 async def test_resume_run_calls_command():
-    mock_graph = AsyncMock()
+    # astream 必须返回异步迭代器（_run_graph 用 async for 消费）；空流模拟"无事件直接结束"。
+    async def _empty_stream(*_args, **_kwargs):
+        return
+        yield  # noqa: 让函数成为 async generator
+
+    mock_graph = MagicMock()
+    mock_graph.astream = MagicMock(side_effect=lambda *a, **k: _empty_stream())
+    # astream 退出后 _run_graph 走 aget_state 判定完成态：next 为空 → 标 done。
+    mock_graph.aget_state = AsyncMock(return_value=SimpleNamespace(next=None))
     runner._compiled_graph = mock_graph
     runner._runs_db = AsyncMock()
 
     from langgraph.types import Command
 
+    # resume_run 通过 create_task 起后台任务，需等其跑完再断言。
     await runner.resume_run("run-99", 2)
+    for _ in range(50):
+        if mock_graph.astream.call_count:
+            break
+        await asyncio.sleep(0.01)
+
     mock_graph.astream.assert_called_once()
-    call_args = mock_graph.astream.call_args
-    cmd = call_args[0][0]
+    cmd = mock_graph.astream.call_args[0][0]
     assert isinstance(cmd, Command)
     assert cmd.resume == 2
 
