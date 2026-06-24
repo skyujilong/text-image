@@ -88,7 +88,7 @@ class MainGraphState(TypedDict):
     # 全局音频配置（单播：整本书一份音色参数，渲染阶段共用）。
     # 由 chapter 子图 render 前的 configure_audio 节点配置一次，已配则跳过 interrupt 回填。
     # 子图通过同名字段读写冒泡到主图 checkpoint，跨章节/跨批次持久。
-    audio_config: dict  # {voice_type, speed, pitch, volume}
+    audio_config: dict  # dots.tts 生成旋钮 {language, guidance_scale, speaker_scale}（均可选）
 
     # 章节状态与产物（历史章节数据累积存储，支持跨章导出）
     chapters_status: dict[str, str]  # chapter_id → ChapterStatus

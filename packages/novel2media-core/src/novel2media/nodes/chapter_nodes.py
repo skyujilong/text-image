@@ -510,21 +510,23 @@ def final_decision(state: dict) -> dict:
 
 
 def configure_audio(state: dict) -> dict:
-    """interrupt：配置全局音色参数（单播，整本书一份）。已配则跳过 interrupt 回填，不重填。
+    """interrupt：配置全局合成参数（dots.tts 单播，整本书一份）。已配则跳过 interrupt 回填。
 
     数据存 MainGraphState.audio_config（同名字段冒泡到主图 checkpoint，跨章节/批次持久）。
+    收集 dots.tts 生成旋钮（language/guidance_scale/speaker_scale），均可选，缺省走 services.json
+    默认。本期不收音色（voice_name），用 dots 默认声音。
     - audio_config 非空：直接返回（已配过，回填不重填），流到 render_dispatch。
-    - audio_config 空：interrupt 让用户填 voice_type/speed/pitch/volume，resume 写回。
-    - resume 缺 voice_type（必填）→ 抛错暴露，不静默接受。
+    - audio_config 空：interrupt 让用户填生成参数，resume 写回。
+    - resume 非 dict → 抛错暴露，不静默接受。
     """
     current = state.get("audio_config") or {}
     if current:
         log.info("configure_audio: 已配置，跳过（回填）")
         return {}
     result = interrupt({"type": "audio_config", "current": current})
-    if not isinstance(result, dict) or not result.get("voice_type"):
-        raise ValueError(f"configure_audio: 非法 resume 值（缺 voice_type）: {result!r}")
-    log.info("configure_audio: 已配置", voice_type=result.get("voice_type"))
+    if not isinstance(result, dict):
+        raise ValueError(f"configure_audio: 非法 resume 值（应为 dict）: {result!r}")
+    log.info("configure_audio: 已配置", params=result)
     return {"audio_config": result}
 
 
@@ -685,19 +687,60 @@ def render_generate_images(state: dict) -> dict:
 
 
 def render_synthesize_audio(state: dict) -> dict:
-    """TTS 音频/字幕生成。当前空走通（无音轨），接入 TTS 时填 timestamps/subtitles/audio。
+    """TTS 音频合成（dots.tts 异步 job）：整章脚本拼成整段文本提交，下载 final.wav 落盘。
 
-    空走通返回空 timestamps，后续 render_build_timeline 会生成仅含图的空 timeline。
-    完成后推进章节状态：images_done → audio_done（音频阶段完成）。
+    dots.tts 服务端按换行把文本切 chunk、串行合成后拼成整段音频，单章只产出一段 final.wav。
+    本期不做逐句时间戳（current_timestamps 仍返回空），timeline 仍仅含图。
+    完成后推进章节状态：images_done → audio_done。
+
+    同步节点：synthesize 会阻塞轮询数十秒~数分钟，LangGraph 在 astream 异步执行图时
+    会把同步节点放线程池执行（与 render_generate_images 同），不阻塞后端事件循环。
     """
+    from novel2media.clients.tts import TTSClient
+    from novel2media.nodes.image_nodes import _load_config  # 复用同一配置加载（小说目录优先回退项目根）
+
     ch_id = state["current_chapter_id"]
-    log.info("render_synthesize_audio: [占位] TTS 空走通（接入待补）", chapter=ch_id)
+    novel_dir = Path(state["novel_dir"])
+    script: list[dict] = state.get("current_script", [])
+
+    # 1. 拼合成文本：逐条口播 text 用换行分隔（dots 按换行切 chunk 串行合成再拼整段）。
+    #    current_script 结构为 [{"text","action","speaker"}]，音频只取 text。
+    lines = [str(it.get("text", "")).strip() for it in script if str(it.get("text", "")).strip()]
+    if not lines:
+        # 空脚本异常暴露，不静默产出空音频
+        raise ValueError(f"render_synthesize_audio: 章节 {ch_id} current_script 为空，无可合成文本")
+    text = "\n".join(lines)
+
+    cfg = _load_config(state)
+    client = TTSClient(cfg.tts_url, cfg.tts_timeout, cfg.retry_max, cfg.retry_backoff)
+
+    # 2. 合成参数：dots 默认旋钮 + chunk 间静音 + audio_config 用户覆盖（全局单播）。
+    #    本期不传 voice_name/prompt_audio_path/prompt_text，用 dots 默认声音。
+    params = {
+        **cfg.tts_params,
+        "silence_ms": cfg.silence_ms,
+        **(state.get("audio_config") or {}),
+    }
+
+    # 3. submit→poll→download，落盘 novel_dir/ch_id/audio.wav（与图像产物、timeline.json 同目录）
+    wav_bytes = client.synthesize(text, params)
+    out_dir = novel_dir / ch_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = out_dir / "audio.wav"
+    audio_path.write_bytes(wav_bytes)
+
     chapters_status = dict(state.get("chapters_status", {}))
     chapters_status[ch_id] = "audio_done"
+    log.info(
+        "render_synthesize_audio: 合成完成",
+        chapter=ch_id,
+        audio=str(audio_path),
+        chars=len(text),
+    )
     return {
-        "current_audio_path": "",
-        "current_subtitles_path": "",
-        "current_timestamps": [],
+        "current_audio_path": str(audio_path),
+        "current_subtitles_path": "",  # 本期不做字幕
+        "current_timestamps": [],  # 本期不做逐句时间戳
         "chapters_status": chapters_status,
     }
 

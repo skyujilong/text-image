@@ -1,6 +1,7 @@
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { AudioLines } from 'lucide-react'
 import {
   Form, FormControl, FormField, FormItem, FormLabel, FormMessage,
 } from '@/components/ui/form'
@@ -10,10 +11,9 @@ import { api } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 
 const schema = z.object({
-  voice_type: z.string().min(1, '必填'),
-  speed: z.number().min(0.5).max(2.0),
-  pitch: z.number().min(-12).max(12),
-  volume: z.number().min(0).max(100),
+  language: z.string().optional(),
+  guidance_scale: z.number().min(0).max(5),
+  speaker_scale: z.number().min(0).max(5),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -24,9 +24,10 @@ interface Props {
 }
 
 /**
- * 全局音色配置面板（单播，整本书一份）。
+ * 全局合成参数配置面板（dots.tts 单播，整本书一份）。
  * 仅在 audio_config 为空时由 configure_audio 节点 interrupt 弹出；已配则节点跳过、不再弹。
- * resume {voice_type, speed, pitch, volume} → 写回 MainGraphState.audio_config。
+ * resume {language, guidance_scale, speaker_scale} → 写回 MainGraphState.audio_config。
+ * 本期不收音色（voice_name），用 dots 默认声音。language 留空则由 dots 自动判定。
  * 由右侧常驻区渲染（body-only，无 Sheet 包装）。
  */
 export default function AudioConfigPanel({ runId, current }: Props) {
@@ -34,16 +35,21 @@ export default function AudioConfigPanel({ runId, current }: Props) {
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
-      voice_type: current?.voice_type ?? '',
-      speed: current?.speed ?? 1.0,
-      pitch: current?.pitch ?? 0,
-      volume: current?.volume ?? 100,
+      language: current?.language ?? '',
+      guidance_scale: current?.guidance_scale ?? 1.2,
+      speaker_scale: current?.speaker_scale ?? 1.5,
     },
   })
 
   const onSubmit = async (values: FormValues) => {
     try {
-      await api.resumeRun(runId, values)
+      // language 留空交给 dots 自动判定，不传空串覆盖
+      const payload: Record<string, unknown> = {
+        guidance_scale: values.guidance_scale,
+        speaker_scale: values.speaker_scale,
+      }
+      if (values.language?.trim()) payload.language = values.language.trim()
+      await api.resumeRun(runId, payload)
       setActiveInteraction(null)
     } catch (e) {
       console.error('resume failed', e)
@@ -53,19 +59,22 @@ export default function AudioConfigPanel({ runId, current }: Props) {
   return (
     <div className="flex flex-col h-full">
       <div className="px-6 pt-6">
-        <h2 className="text-lg font-semibold text-foreground">配置音色（configure_audio · 全局单播）</h2>
+        <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+          <AudioLines className="size-4" />
+          配置合成参数（dots.tts · 全局单播）
+        </h2>
       </div>
 
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
           <FormField
             control={form.control}
-            name="voice_type"
+            name="language"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>音色 ID（voice_type）</FormLabel>
+                <FormLabel>语言（留空自动判定）</FormLabel>
                 <FormControl>
-                  <Input {...field} placeholder="如 zh_female_xxx" />
+                  <Input {...field} placeholder="如 zh / en / ja，留空 = auto" />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -73,10 +82,10 @@ export default function AudioConfigPanel({ runId, current }: Props) {
           />
           <FormField
             control={form.control}
-            name="speed"
+            name="guidance_scale"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>语速（0.5 ~ 2.0）</FormLabel>
+                <FormLabel>引导强度 guidance_scale（0 ~ 5）</FormLabel>
                 <FormControl>
                   <Input
                     type="number"
@@ -91,32 +100,14 @@ export default function AudioConfigPanel({ runId, current }: Props) {
           />
           <FormField
             control={form.control}
-            name="pitch"
+            name="speaker_scale"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>音调（-12 ~ 12）</FormLabel>
+                <FormLabel>音色强度 speaker_scale（0 ~ 5）</FormLabel>
                 <FormControl>
                   <Input
                     type="number"
-                    step="1"
-                    {...field}
-                    onChange={(e) => field.onChange(e.target.valueAsNumber)}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="volume"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>音量（0 ~ 100）</FormLabel>
-                <FormControl>
-                  <Input
-                    type="number"
-                    step="1"
+                    step="0.1"
                     {...field}
                     onChange={(e) => field.onChange(e.target.valueAsNumber)}
                   />

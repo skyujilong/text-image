@@ -4,8 +4,15 @@
     "timeout": 120
   },
   "tts_remote": {
-    "base_url": "http://*:9000",
-    "timeout": 60
+    "base_url": "http://127.0.0.1:8080",
+    "timeout": 60,
+    "defaults": {
+      "num_steps": 10,
+      "guidance_scale": 1.2,
+      "speaker_scale": 1.5,
+      "ode_method": "euler",
+      "seed": 42
+    }
   },
   "card_draw": {
     "image_candidates": 4,
