@@ -42,11 +42,53 @@ class TTSClient:
         self._backoff = backoff
         self._poll_interval = poll_interval
 
+    def list_voices(self) -> list[dict]:
+        """拉取 dots.tts 已保存的音色预设列表（GET /api/voices）。
+
+        返回 [{name, audio_url, prompt_text, created_at}]。供前端音色下拉选择。
+        非 200 抛错带出服务端返回体，不静默吞——音色列表拉取失败应让用户感知。
+        """
+        resp = httpx.get(f"{self._base}/api/voices", timeout=self._timeout)
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"dots.tts 音色列表拉取失败 status={resp.status_code}: {resp.text[:500]}"
+            )
+        return resp.json()
+
+    def create_voice(
+        self,
+        name: str,
+        audio_bytes: bytes,
+        filename: str,
+        prompt_text: str | None = None,
+    ) -> dict:
+        """上传音频创建音色预设（POST /api/voices，multipart）。返回 VoicePresetResponse。
+
+        dots 端会校验音色名合法性、音频格式（.wav/.mp3/.flac/.m4a/.ogg）与大小上限，
+        失败返回 400/413。这里非 200 一律抛错带出服务端返回体（具体原因），不静默吞，
+        让前端能把「格式不支持/名称非法/超限」等原因透传给用户。
+        """
+        files = {"audio": (filename, audio_bytes)}
+        data: dict[str, str] = {"name": name}
+        if prompt_text:
+            data["prompt_text"] = prompt_text
+        resp = httpx.post(
+            f"{self._base}/api/voices",
+            data=data,
+            files=files,
+            timeout=self._timeout,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"dots.tts 音色创建失败 status={resp.status_code}: {resp.text[:500]}"
+            )
+        return resp.json()
+
     def submit(self, text: str, params: dict) -> TTSJob:
         """提交异步合成任务，返回 job_id + poll_url。失败重试，重试耗尽抛错暴露。
 
         body 固定 template_name=tts；params 为生成旋钮（num_steps/guidance_scale 等），
-        本期不传 voice_name/prompt_audio_path/prompt_text（用 dots 默认声音）。
+        若 params 含 voice_name 则引用对应音色预设（不含则用 dots 默认声音）。
         非 200 带出服务端返回体（参数校验失败详情），记录到日志便于排查，不静默吞。
         """
         payload = {"text": text, "template_name": "tts", **params}

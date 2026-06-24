@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from .endpoints import files, graph, interact, novels, render, runs
+from .endpoints import files, graph, interact, novels, render, runs, voices
 
 api_router = APIRouter()
 api_router.include_router(runs.router, tags=["runs"])
@@ -9,3 +9,4 @@ api_router.include_router(files.router, tags=["files"])
 api_router.include_router(graph.router, tags=["graph"])
 api_router.include_router(interact.router, tags=["interact"])
 api_router.include_router(render.router, tags=["render"])
+api_router.include_router(voices.router, tags=["voices"])

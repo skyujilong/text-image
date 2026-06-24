@@ -59,12 +59,12 @@ def _planning_payloads(new_characters):
 
     - adapt_script：口播脚本数组（只出脚本，不含新角色）。
     - detect_new_characters_llm：新角色数组（独立节点，放分镜之前）。
-    - generate_storyboard 两步法：换图点布尔数组 + 换图点画面数组。
+    - generate_storyboard 两步法：换图点下标列表 + 换图点画面数组。
     """
     return [
         [{"text": "主角挥手示意", "action": "主角挥手", "speaker": "主角"}],  # adapt_script
         new_characters,  # detect_new_characters_llm
-        [True],  # 分镜第一步：换图点初筛（单条，首条强制 True）
+        [0],  # 分镜第一步：换图点下标列表（单条，首条强制 True）
         [{"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "a room"}],  # 分镜第二步：换图点画面
     ]
 

@@ -159,7 +159,10 @@ def build_chapter_subgraph(checkpointer=None):
     builder.add_conditional_edges(
         "render_dispatch",
         _route_render_dispatch,
-        {"render_generate_images": "render_generate_images", "export_to_jianying": "export_to_jianying"},
+        {
+            "render_generate_images": "render_generate_images",
+            "export_to_jianying": "export_to_jianying",
+        },
     )
     builder.add_edge("render_generate_images", "render_synthesize_audio")
     builder.add_edge("render_synthesize_audio", "render_build_timeline")

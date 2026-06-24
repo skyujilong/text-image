@@ -214,23 +214,29 @@ def generate_storyboard(state: dict) -> dict:
         log.info("generate_storyboard: 空脚本，跳过", chapter=ch_id)
         return {"current_storyboard": [], "_storyboard_review_feedback": ""}
 
-    # ---- 第一步：初筛换图点（串行单次，输出布尔数组）----
+    # ---- 第一步：初筛换图点（串行单次，输出换图点下标列表）----
     sc_prompt = build_scene_change_prompt(script, chapter_text, feedback)
     sc_resp = invoke_llm(sc_prompt, node="generate_storyboard", label="storyboard_scene_change", json_mode=True)
-    flags = parse_json_array(sc_resp)
-    if len(flags) != len(script):
-        # 长度不符直接抛错暴露（不静默补齐/截断，否则会与 script 错位、污染音频/字幕对齐）
-        raise ValueError(
-            f"换图点初筛结果长度({len(flags)})与口播条目数({len(script)})不符，无法一一对应"
-        )
+    raw_indices = parse_json_array(sc_resp)
+    n_script = len(script)
+    # 输出已从「等长布尔数组」改为「换图点下标列表」：模型不再需要逐条铺满 N 个 bool，
+    # 从根上消除「数组长度对不上」的崩溃。这里只校验下标合法性（整数、在范围内），
+    # 越界/非整数直接抛错暴露，不静默丢弃（否则会与 script 错位、污染音频/字幕对齐）。
+    change_set: set[int] = set()
+    for v in raw_indices:
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise ValueError(f"换图点初筛结果含非整数下标: {v!r}（应为 0~{n_script - 1} 的整数）")
+        if v < 0 or v >= n_script:
+            raise ValueError(f"换图点初筛结果下标越界: {v}（口播共 {n_script} 条，合法范围 0~{n_script - 1}）")
+        change_set.add(v)
 
-    # ---- 组装骨架：text/speaker 从 script 对位填充，scene_change 取初筛结果 ----
+    # ---- 组装骨架：text/speaker 从 script 对位填充，scene_change 取初筛下标集 ----
     skeleton: list[dict] = []
-    for i, (item, flag) in enumerate(zip(script, flags)):
+    for i, item in enumerate(script):
         skeleton.append(
             {
                 "storyboard_id": i,  # 0-based 全局连续整数
-                "scene_change": bool(flag),
+                "scene_change": i in change_set,
                 "text": item.get("text", ""),
                 "speaker": item.get("speaker", ""),
                 "subjects": [],
@@ -513,8 +519,8 @@ def configure_audio(state: dict) -> dict:
     """interrupt：配置全局合成参数（dots.tts 单播，整本书一份）。已配则跳过 interrupt 回填。
 
     数据存 MainGraphState.audio_config（同名字段冒泡到主图 checkpoint，跨章节/批次持久）。
-    收集 dots.tts 生成旋钮（language/guidance_scale/speaker_scale），均可选，缺省走 services.json
-    默认。本期不收音色（voice_name），用 dots 默认声音。
+    收集 dots.tts 生成旋钮（language/guidance_scale/speaker_scale）与音色（voice_name），均可选，
+    缺省走 services.json 默认；voice_name 缺省则用 dots 默认声音。
     - audio_config 非空：直接返回（已配过，回填不重填），流到 render_dispatch。
     - audio_config 空：interrupt 让用户填生成参数，resume 写回。
     - resume 非 dict → 抛错暴露，不静默接受。
@@ -715,7 +721,7 @@ def render_synthesize_audio(state: dict) -> dict:
     client = TTSClient(cfg.tts_url, cfg.tts_timeout, cfg.retry_max, cfg.retry_backoff)
 
     # 2. 合成参数：dots 默认旋钮 + chunk 间静音 + audio_config 用户覆盖（全局单播）。
-    #    本期不传 voice_name/prompt_audio_path/prompt_text，用 dots 默认声音。
+    #    audio_config 含 voice_name 时引用对应音色预设，缺省则用 dots 默认声音。
     params = {
         **cfg.tts_params,
         "silence_ms": cfg.silence_ms,

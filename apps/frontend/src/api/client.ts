@@ -77,6 +77,14 @@ export interface RenderBoard {
   pending: string[]
 }
 
+// dots.tts 音色预设（GET /voices 返回项）。audio_url 指向 dots 服务端音频，前端仅展示名称。
+export interface VoicePreset {
+  name: string
+  audio_url: string
+  prompt_text: string | null
+  created_at: string
+}
+
 export interface StartRunParams {
   novel_dir: string
   novel_title?: string
@@ -214,5 +222,24 @@ export const api = {
       throw new Error(`HTTP ${res.status}: ${text}`)
     }
     return res.json() as Promise<{ path: string }>
+  },
+
+  // ─── 音色（dots.tts voices，经后端代理）─────────────────────
+  // 列出 dots.tts 已保存的音色预设，供 configure_audio 面板下拉选择已有音色
+  listVoices: () => request<VoicePreset[]>('/voices'),
+
+  // 上传参考音频创建音色预设（multipart）；成功后该音色加入列表，可被「选择已有音色」引用。
+  // dots 校验失败（格式/名称/大小）由后端透传为 400，错误信息直接抛出供面板展示。
+  createVoice: async (name: string, file: File, promptText?: string) => {
+    const form = new FormData()
+    form.append('name', name)
+    form.append('audio', file)
+    if (promptText) form.append('prompt_text', promptText)
+    const res = await fetch(`${BASE}/voices`, { method: 'POST', body: form })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`HTTP ${res.status}: ${text}`)
+    }
+    return res.json() as Promise<VoicePreset>
   },
 }

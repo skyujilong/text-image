@@ -6,18 +6,23 @@ from novel2media.prompts.chapter_prompts import (
 )
 
 
-def test_scene_change_prompt_requires_bool_array_and_length():
-    """第一步初筛：要求输出布尔数组、长度等于口播条目数。"""
+def test_scene_change_prompt_requires_index_array_and_indexed_lines():
+    """第一步初筛：要求输出换图点下标整数数组，且口播带显式下标行。"""
     script = [
         {"text": "第一句", "action": "动作1", "speaker": "旁白"},
         {"text": "第二句", "action": "动作2", "speaker": "旁白"},
         {"text": "第三句", "action": "动作3", "speaker": "旁白"},
     ]
     prompt = build_scene_change_prompt(script, "原文内容")
-    # 明确要求布尔数组
-    assert "布尔" in prompt
-    # 明确约束长度等于条目数（3 条）
-    assert "3" in prompt
+    # 明确要求整数下标数组
+    assert "整数" in prompt
+    # 显式禁止输出布尔值（与旧契约区分）
+    assert "不要输出布尔值" in prompt
+    # 口播带显式下标行（行首 "下标. 文案"），模型直接挑下标
+    assert "0. 第一句" in prompt
+    assert "2. 第三句" in prompt
+    # 约束下标范围上界为条目数-1（3 条 → 0~2）
+    assert "0 ~ 2" in prompt
     # 不应包含 scene_prompt 画面生成相关措辞（第一步不生成画面）
     assert "scene_prompt" not in prompt
 

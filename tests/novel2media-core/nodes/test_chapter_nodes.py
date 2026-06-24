@@ -185,7 +185,7 @@ def _mock_llm(monkeypatch, payload):
 def _mock_llm_steps(monkeypatch, payloads):
     """mock invoke_llm 按调用顺序依次返回 payloads（各自 JSON 序列化）。
 
-    用于 generate_storyboard 两步法：第 1 次调用返回换图点布尔数组，后续调用返回各批换图点画面。
+    用于 generate_storyboard 两步法：第 1 次调用返回换图点下标列表，后续调用返回各批换图点画面。
     """
     mock = MagicMock()
     mock.side_effect = [MagicMock(content=json.dumps(p, ensure_ascii=False)) for p in payloads]
@@ -293,12 +293,12 @@ def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
         {"text": "主角挥手", "action": "主角挥手", "speaker": "主角"},
         {"text": "主角离开", "action": "主角离开", "speaker": "主角"},
     ]
-    # 第一步：LLM 返回首条 False（节点应强制改 True），第二条 True
+    # 第一步：LLM 只返回下标 [1]（不含 0，节点应强制把首条改为换图点）
     # 第二步：为两个换图点（强制后首条 + 第二条）生成画面
     _mock_llm_steps(
         monkeypatch,
         [
-            [False, True],  # scene_change 初筛
+            [1],  # scene_change 初筛：换图点下标列表（首条 0 由节点强制补）
             [
                 {"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "a scene"},
                 {"anchor_id": 1, "subjects": [], "scene_prompt": "another"},
@@ -333,11 +333,11 @@ def test_generate_storyboard_non_change_points_have_empty_prompt(tmp_path, monke
         {"text": "第二句", "action": "动作2", "speaker": "旁白"},
         {"text": "第三句", "action": "动作3", "speaker": "旁白"},
     ]
-    # 第一步：只有首条换图（其余复用前图）；第二步：只为 anchor_id=0 生成
+    # 第一步：只有首条换图（下标 [0]，其余复用前图）；第二步：只为 anchor_id=0 生成
     _mock_llm_steps(
         monkeypatch,
         [
-            [True, False, False],
+            [0],
             [{"anchor_id": 0, "subjects": [], "scene_prompt": "only scene"}],
         ],
     )
@@ -353,20 +353,20 @@ def test_generate_storyboard_non_change_points_have_empty_prompt(tmp_path, monke
     assert sb[2]["scene_prompt"] == ""
 
 
-def test_generate_storyboard_raises_on_scene_change_length_mismatch(tmp_path, monkeypatch):
-    """第一步换图点布尔数组长度与 script 不符 → 抛错（不静默补齐，否则污染音频/字幕对齐）。"""
+def test_generate_storyboard_raises_on_scene_change_index_out_of_range(tmp_path, monkeypatch):
+    """第一步换图点下标越界 → 抛错（不静默丢弃，否则会与 script 错位、污染音频/字幕对齐）。"""
     state = _make_chapter_state(tmp_path)
     state["current_script"] = [
         {"text": "a", "action": "", "speaker": "旁白"},
         {"text": "b", "action": "", "speaker": "旁白"},
     ]
-    # 只返回 1 个布尔，与 2 条 script 不符
-    _mock_llm_steps(monkeypatch, [[True]])
+    # 返回越界下标 5（script 只有 2 条，合法范围 0~1）
+    _mock_llm_steps(monkeypatch, [[0, 5]])
     try:
         generate_storyboard(state)
     except ValueError:
         return
-    raise AssertionError("应抛 ValueError（换图点初筛长度与口播条目数不符）")
+    raise AssertionError("应抛 ValueError（换图点初筛下标越界）")
 
 
 def test_generate_storyboard_empty_script_returns_empty(tmp_path, monkeypatch):
@@ -390,7 +390,7 @@ def test_generate_storyboard_batches_many_change_points(tmp_path, monkeypatch):
         {"text": f"句{i}", "action": f"动作{i}", "speaker": "旁白"} for i in range(n)
     ]
     # 全部换图点 → 5 个 shot，按批大小 2 切成 3 批
-    flags = [True] * n
+    flags = list(range(n))  # 换图点下标列表：[0,1,2,3,4]
     # 第二步按批返回（顺序：批0=[0,1]、批1=[2,3]、批2=[4]）
     batch0 = [{"anchor_id": 0, "subjects": [], "scene_prompt": "s0"}, {"anchor_id": 1, "subjects": [], "scene_prompt": "s1"}]
     batch1 = [{"anchor_id": 2, "subjects": [], "scene_prompt": "s2"}, {"anchor_id": 3, "subjects": [], "scene_prompt": "s3"}]
@@ -534,7 +534,7 @@ def test_generate_storyboard_passes_review_feedback_to_prompt(tmp_path, monkeypa
     mock = _mock_llm_steps(
         monkeypatch,
         [
-            [True],  # 第一步换图点
+            [0],  # 第一步换图点下标列表
             [{"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "p"}],  # 第二步画面
         ],
     )
