@@ -174,11 +174,12 @@ class ChapterSubgraphState(MainGraphState):
     storyboard_review_attempts: int  # 分镜审核已重试次数
 
 
-class PlanGraphState(SharedGraphState):
-    """plan_graph 专用 state：共享字段 + 规划中间态 + 审阅控制字段。
+class PlanGraphState(MainGraphState):
+    """plan_graph 专用 state：主图完整字段 + 规划中间态。
 
-    独立顶层编译，拥有完整内部 checkpoint 历史，支持精准回溯。
-    与主图通过 orchestrate 显式传递 SharedGraphState 字段通信。
+    作为子图嵌入主图节点执行：LangGraph 把子图节点的 state 更新合并回主图 state。
+    继承 MainGraphState 确保所有字段（characters_profile/chapters_status/render_batch/游标等）
+    天然可用，节点读写不丢失。
     """
 
     # 当前章节中间状态（load_chapter 时全部重置）
@@ -191,23 +192,13 @@ class PlanGraphState(SharedGraphState):
     script_review_attempts: int
     storyboard_review_attempts: int
 
-    # ── plan_graph 内部路由控制字段 ──
-    # 注：字段名与 MainGraphState 相同，但语义范围不同（主图是全局，plan_graph 是单章）
-    # 历史原因保留同名：节点函数签名复用 GraphState（ChapterSubgraphState）
-    setup_queue: list[CharacterProfile]  # 本章检测到的新角色待配置三视图队列
-    _script_review_decision: str  # 剧本审阅决策（pass/revise）
-    _script_review_feedback: str  # 剧本审阅打回意见
-    _storyboard_review_decision: str  # 分镜审阅决策（pass/revise）
-    _storyboard_review_feedback: str  # 分镜审阅打回意见
-    _chapter_advance: str  # 章节推进决策（next/render）
 
+class RenderGraphState(MainGraphState):
+    """render_graph 专用 state：主图完整字段 + 渲染中间态。
 
-class RenderGraphState(SharedGraphState):
-    """render_graph 专用 state：共享字段 + 渲染中间态 + 控制字段。
-
-    独立顶层编译，拥有完整内部 checkpoint 历史，支持精准回溯。
+    作为子图嵌入主图节点执行：LangGraph 把子图节点的 state 更新合并回主图 state。
     从 render_batch 读取稿件（script/storyboard），渲染完成后更新 chapters_status
-    与 chapters_artifacts。
+    与 chapters_artifacts。继承 MainGraphState 确保渲染需要的所有字段天然可用。
     """
 
     # 当前章节中间状态（render_dispatch 时从 render_batch 读取）
@@ -222,9 +213,6 @@ class RenderGraphState(SharedGraphState):
     current_subtitles_path: str
     current_timestamps: list[dict]
     current_timeline_path: str
-
-    # ── render_graph 内部路由控制字段 ──
-    _final_decision: str  # 最终决策（done/continue），由 final_decision 节点写入
 
 
 # 向后兼容别名：等价于最全的 ChapterSubgraphState。
