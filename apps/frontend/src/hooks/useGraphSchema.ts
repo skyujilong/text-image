@@ -118,18 +118,19 @@ const failedLevels = new Set<string>()
 
 /**
  * 将后端 schema 转成带布局与 handle 的 React Flow nodes/edges。
- * statusKey = [...drillPath, n.id].join('/')，下钻后子图内节点 key 带父路径前缀，
- * 与后端 _ns_to_path 生成的 statusKey 对齐。
+ * statusKey = [graphScope, ...drillPath, n.id].join('/')，graphScope 是顶层图 scope
+ * （main/plan/render），drillPath 是下钻的子图 ID 栈，与后端 _emit_enveloped 的
+ * scoped_path = f"{scope}/{node_path}" 格式对齐。
  */
 function buildFromSchema(
   schema: GraphSchema,
-  scope: string,
+  graphScope: string,
   drillPath: string[],
 ): { nodes: Node[]; edges: RawEdge[] } {
   const rawNodes: Node[] = schema.nodes.map((n) => {
-    // statusKey = scope/drillPath/nodeId，与后端 _ns_to_path 输出格式完全一致
+    // statusKey = graphScope/drillPath/nodeId，与后端 scoped_path 格式完全一致
     // 保证主图/规划图/渲染图的同名节点（如 character_setup_subgraph）互不覆盖
-    const statusKey = [scope, ...drillPath, n.id].join('/')
+    const statusKey = [graphScope, ...drillPath, n.id].join('/')
     if (n.type === 'subgraph') {
       return {
         id: n.id,
@@ -165,10 +166,13 @@ function buildFromSchema(
  *
  * @param scope 图 scope：'main' | 'plan' | 'render'，或下钻时的子图 ID（如 'character_setup_subgraph'）
  * @param drillPath 下钻路径栈，用于构建 statusKey 前缀
+ * @param graphScope 顶层图 scope（main/plan/render），用于 statusKey 前缀；
+ *   下钻时与 scope 不同（scope=子图ID, graphScope=plan/render）
  */
 export function useGraphSchema(
   scope: string,
   drillPath: string[],
+  graphScope: string,
 ): { nodes: Node[]; edges: Edge[]; isLoading: boolean } {
   const levelKey = scope
   // version 仅用于在请求完成（写缓存）后触发重渲染，使下面的 useMemo 重读缓存。
@@ -182,10 +186,10 @@ export function useGraphSchema(
   const { nodes, edges } = useMemo(() => {
     const cached = schemaCache.get(levelKey)
     if (!cached) return { nodes: [] as Node[], edges: [] as RawEdge[] }
-    return buildFromSchema(cached, scope, drillPath)
+    return buildFromSchema(cached, graphScope, drillPath)
     // version 不在函数体内引用，仅用作请求完成（写缓存）后触发重渲染重读缓存的重放触发器。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [levelKey, scope, drillPath, version])
+  }, [levelKey, scope, drillPath, graphScope, version])
 
   // isLoading 派生：缓存无数据且未失败时才 loading（请求中）。
   const isLoading = !schemaCache.has(levelKey) && !failedLevels.has(levelKey)

@@ -89,12 +89,42 @@ function useAutoCenter(nodes: Node[]) {
 }
 
 /**
+ * 自动切换 scope tab：始终跟踪活跃节点（running/waiting_human）所在的顶层 scope，
+ * 不受 autoFollow 开关影响。保证顶部 tab 与实际执行位置一致。
+ * waiting_human 强优先，避免 running 节点在 scope 切换瞬间抢夺 tab。
+ */
+function useAutoScope(graphScope: string, setGraphScope: (s: 'main' | 'plan' | 'render') => void) {
+  const nodeStatuses = useRunStore((s) => s.nodeStatuses)
+  const drillPath = useRunStore((s) => s.drillPath)
+  const setDrillPath = useRunStore((s) => s.setDrillPath)
+
+  useEffect(() => {
+    let bestScope: string | null = null
+    let bestScore = -1
+    for (const [key, st] of Object.entries(nodeStatuses)) {
+      if (st !== 'running' && st !== 'waiting_human') continue
+      const scope = key.split('/')[0]
+      if (!['main', 'plan', 'render'].includes(scope)) continue
+      const score = st === 'waiting_human' ? 1000 : 0
+      if (score > bestScore) {
+        bestScore = score
+        bestScope = scope
+      }
+    }
+    if (!bestScope || bestScope === graphScope) return
+    setGraphScope(bestScope as 'main' | 'plan' | 'render')
+    setDrillPath([])
+  }, [nodeStatuses, graphScope, setGraphScope, setDrillPath, drillPath])
+}
+
+/**
  * 自动下钻跟随运行：当 autoFollow 开启时，根据全局 nodeStatuses 选出最深活跃节点，
  * 把 drillPath 对齐到其祖先 subgraph 路径，从而自动进入正在运行的子图。
  * - waiting_human 强优先（+1000），其次按 statusKey 段数深优先，避开祖先传播的虚假活跃。
  * - 仅当活跃节点位于子图内部（desiredDrill 非空）才主动下钻；顶层活跃不强制拉回，
  *   避免子图间过渡时在顶层与子图间反复闪烁。
  * - 用户手动 pushDrill/popDrill 会关 autoFollow，本 hook 即停手；setDrillPath 不改 autoFollow。
+ * - scope tab 切换由 useAutoScope 独立处理，本 hook 仅负责 drill path 跟随。
  */
 function useAutoFollow() {
   const nodeStatuses = useRunStore((s) => s.nodeStatuses)
@@ -116,7 +146,8 @@ function useAutoFollow() {
       }
     }
     if (!bestKey) return
-    const desiredDrill = bestKey.split('/').slice(0, -1)
+    // bestKey 格式为 "scope/subgraph_id/.../node_name"，drillPath 应跳过首段 scope
+    const desiredDrill = bestKey.split('/').slice(1, -1)
     if (desiredDrill.length === 0) return
     if (drillPath.join('/') !== desiredDrill.join('/')) {
       setDrillPath(desiredDrill)
@@ -142,7 +173,7 @@ function FlowCanvasInner() {
   const currentSubgraph = drillPath[drillPath.length - 1] ?? null
   const schemaScope = currentSubgraph ?? graphScope
 
-  const { nodes, edges, isLoading } = useGraphSchema(schemaScope, drillPath)
+  const { nodes, edges, isLoading } = useGraphSchema(schemaScope, drillPath, graphScope)
 
   // 切换 scope 时重置下钻路径（plan/render 无子图可下钻，切回 main 也回到顶层）
   const handleScopeChange = useCallback(
@@ -172,6 +203,7 @@ function FlowCanvasInner() {
   }, [levelKey, nodes, isLoading, setViewport, fitView])
 
   useAutoCenter(nodes)
+  useAutoScope(graphScope, setGraphScope)
   useAutoFollow()
 
   // 用户拖拽/缩放结束（含编程式动画结束）时记录当前视口，供切回该层时恢复。
