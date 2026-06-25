@@ -55,6 +55,8 @@ async def test_resume_run_calls_command():
     runner._plan_graph = mock_graph
     runner._render_graph = mock_graph
     runner._runs_db = AsyncMock()
+    # 委派架构：resume_run 先检查 active delegation，无 delegation 时 resume 主图
+    runner._runs_db.get_active_delegation = AsyncMock(return_value=None)
 
     from langgraph.types import Command
 

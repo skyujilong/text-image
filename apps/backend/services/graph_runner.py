@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +20,10 @@ DATA_DIR.mkdir(exist_ok=True)
 CHECKPOINT_DB = str(DATA_DIR / "checkpoints.db")
 RUNS_DB = str(DATA_DIR / "runs.db")
 
-# 主图单例（总图嵌子图架构：plan/render 作为子图节点嵌入主图）
+# 主图单例（委派架构：主图通过 interrupt 让渡控制权给子图）
 _main_graph = None
-# 后向兼容占位：旧代码/测试可能引用这些变量，总图单线程架构下不再使用
+# 子图单例（委派架构：plan/render 各为独立顶层图，由 graph_runner 在独立子 thread 上驱动）
+# 复用旧变量名 _plan_graph/_render_graph，测试 mock 仍可直接赋值。
 _plan_graph = None
 _render_graph = None
 _runs_db: RunsDB | None = None
@@ -30,8 +31,13 @@ _checkpointer_ctx = None
 
 
 def _main_thread(run_id: str) -> str:
-    """总图唯一 thread_id（子图节点在同一 namespace 下，不再区分 ::plan/::render）。"""
+    """主图 thread_id（委派架构：与 run_id 相同）。"""
     return run_id
+
+
+def _child_thread(run_id: str, stage: str) -> str:
+    """子图 thread_id（委派架构：run_id::plan / run_id::render）。"""
+    return f"{run_id}::{stage}"
 
 
 def _thread_config(thread_id: str, checkpoint_id: str | None = None) -> dict:
@@ -39,6 +45,52 @@ def _thread_config(thread_id: str, checkpoint_id: str | None = None) -> dict:
     if checkpoint_id:
         cfg["configurable"]["checkpoint_id"] = checkpoint_id
     return cfg
+
+
+# SharedGraphState 字段集合 + _chapter_advance（主图路由依赖）
+# 委派架构：graph_runner 从子图 state 提取这些字段回灌给主图
+_SHARED_FIELDS = frozenset({
+    "novel_title", "novel_dir", "worldview", "character_profiles",
+    "characters_profile", "ignored_characters", "audio_config",
+    "chapters_status", "chapters_artifacts", "render_batch",
+    "chapter_order", "plan_cursor", "render_cursor",
+    "_chapter_advance",  # MainGraphState 路由字段，plan_graph 内部写入
+})
+
+
+def _extract_shared_fields(state_dict: dict) -> dict:
+    """从 state dict 中提取 SharedGraphState 字段 + _chapter_advance。"""
+    return {k: v for k, v in state_dict.items() if k in _SHARED_FIELDS}
+
+
+def _update_cursors(shared: dict, stage: str) -> None:
+    """Bug 4: 委派架构下游标由 graph_runner 维护（子图内部节点不修改 plan_cursor/render_cursor）。
+
+    plan 完成后：有 pending/processing 章节 → plan_cursor=首个；无 → None
+    render 完成后：有 planned 章节 → render_cursor=首个；无 → None
+    """
+    chapters_status = shared.get("chapters_status", {})
+    if stage == "plan":
+        next_ch = next(
+            (ch for ch, st in chapters_status.items() if st in ("pending", "processing")),
+            None,
+        )
+        shared["plan_cursor"] = next_ch
+    elif stage == "render":
+        next_ch = next(
+            (ch for ch, st in chapters_status.items() if st == "planned"),
+            None,
+        )
+        shared["render_cursor"] = next_ch
+
+
+def _get_child_graph(stage: str):
+    """根据阶段名返回编译好的子图单例。"""
+    if stage == "plan":
+        return _plan_graph
+    if stage == "render":
+        return _render_graph
+    raise ValueError(f"Unknown delegation stage: {stage!r}")
 
 
 def _ns_to_path(ns: tuple, node_name: str) -> str:
@@ -127,16 +179,20 @@ async def _expand_subgraph_state(graph, state_snap: object) -> object | None:
 
 
 async def init_runner():
-    """初始化 runner：创建 checkpointer + 编译主图（内嵌 plan/render 子图）。"""
-    global _main_graph, _runs_db, _checkpointer_ctx
+    """初始化 runner：创建 checkpointer + 编译主图 + 编译子图（委派架构）。"""
+    global _main_graph, _plan_graph, _render_graph, _runs_db, _checkpointer_ctx
     from novel2media.graph import build_main_graph
+    from novel2media.subgraphs.plan_graph import build_plan_graph
+    from novel2media.subgraphs.render_graph import build_render_graph
 
     ctx = AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB)
     checkpointer = await ctx.__aenter__()
     _checkpointer_ctx = ctx
 
-    # 总图嵌子图架构：主图单例即可，plan/render 作为主图内的子图节点执行
+    # 委派架构：主图 + plan/render 子图各自独立编译（共享同一 checkpointer）
     _main_graph = build_main_graph(checkpointer=checkpointer)
+    _plan_graph = build_plan_graph(checkpointer=checkpointer)
+    _render_graph = build_render_graph(checkpointer=checkpointer)
 
     _runs_db = RunsDB(RUNS_DB)
     await _runs_db.__aenter__()
@@ -162,12 +218,14 @@ async def _reconcile_zombie_runs() -> None:
 
 
 async def shutdown_runner():
-    global _main_graph, _runs_db, _checkpointer_ctx
+    global _main_graph, _plan_graph, _render_graph, _runs_db, _checkpointer_ctx
     if _runs_db:
         await _runs_db.__aexit__(None, None, None)
     if _checkpointer_ctx:
         await _checkpointer_ctx.__aexit__(None, None, None)
     _main_graph = None
+    _plan_graph = None
+    _render_graph = None
     _runs_db = None
 
 
@@ -220,13 +278,14 @@ async def _emit_enveloped(
     """统一事件信封：所有进度/interrupt/error 套同一结构，前端按 node_path 分流。
 
     propagate=True 时，对路径上每个祖先节点都发一份同名 status 事件（用于节点面板
-    祖先节点高亮跟随）。scope 在总图单线程架构下固定为 "main"。
+    祖先节点高亮跟随）。scope 委派架构下按 thread_id 区分：main/plan/render。
     """
+    scope = "main" if thread_id == _main_thread(run_id) else thread_id.split("::")[-1]
     keys = _ancestor_keys(node_path) if propagate else [node_path]
     for key in keys:
         event: dict[str, Any] = {
             "type": evt_type,
-            "scope": "main",  # 总图单线程架构：固定为 main
+            "scope": scope,
             "thread_id": thread_id,
             "node_path": key,
             "status": status,
@@ -238,29 +297,23 @@ async def _emit_enveloped(
         await push_event(run_id, event)
 
 
-async def _drive(graph, thread_id: str, input: Any, run_id: str) -> str:
-    """驱动主图执行，把事件套统一信封转发进 run_id 的 SSE 队列。
+async def _drive_child(child_graph, child_thread_id: str, child_input: Any, run_id: str, stage: str) -> str:
+    """驱动子图执行到 END 或 interrupt（委派架构）。
 
-    总图嵌子图架构下：
-    - 不再区分 scope（main/plan/render），全部在同一 thread 下执行
-    - 子图节点的 interrupt 自然冒泡到主图，_resolve_interrupted 递归下钻即可解析
-    - 进度事件 ns 天然包含子图层级（如 plan_graph_subgraph/load_chapter）
+    子图在独立 thread（run_id::plan / run_id::render）上执行，拥有独立 checkpoint 历史。
+    子图内部 interrupt（如 chapter_advance_decision、review_script）直接与前端交互，
+    不冒泡到主图——graph_runner 只需在子图暂停时通知前端，在子图 resume 时继续驱动。
 
-    返回 "done"（正常结束）或 "waiting_human"（interrupt 暂停）。
+    返回 "done"（子图到达 END）或 "waiting_human"（子图内部 interrupt 暂停）。
     """
-    if _runs_db is None or graph is None:
+    if _runs_db is None or child_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
 
-    cfg = _thread_config(thread_id)
-    q = get_or_create_sse_queue(run_id)
-    while not q.empty():
-        await q.get()
-
-    await _runs_db.update_status(run_id, "running")
+    cfg = _thread_config(child_thread_id)
 
     try:
-        async for ns, mode, payload in graph.astream(
-            input, config=cfg, stream_mode=["updates", "debug"], subgraphs=True
+        async for ns, mode, payload in child_graph.astream(
+            child_input, config=cfg, stream_mode=["updates", "debug"], subgraphs=True
         ):
             if mode == "debug":
                 if payload.get("type") != "task":
@@ -274,7 +327,7 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str) -> str:
                     evt_type="node_status",
                     status="running",
                     propagate=True,
-                    thread_id=thread_id,
+                    thread_id=child_thread_id,
                 )
                 continue
 
@@ -287,14 +340,14 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str) -> str:
                     node_path=_ns_to_path(ns, node_name),
                     evt_type="node_status",
                     status="done",
-                    thread_id=thread_id,
+                    thread_id=child_thread_id,
                 )
 
-        snap = await graph.aget_state(cfg)
+        snap = await child_graph.aget_state(cfg)
         snap_next = getattr(snap, "next", None)
         if snap_next:
-            snap_sub = await graph.aget_state(cfg, subgraphs=True)
-            resolved = await _resolve_interrupted(graph, snap_sub)
+            snap_sub = await child_graph.aget_state(cfg, subgraphs=True)
+            resolved = await _resolve_interrupted(child_graph, snap_sub)
             await _runs_db.update_status(run_id, "waiting_human")
             if resolved:
                 leaf_name, leaf_path, interrupt_val = resolved
@@ -305,11 +358,178 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str) -> str:
                     status="waiting_human",
                     payload=interrupt_val,
                     propagate=True,
-                    thread_id=thread_id,
+                    thread_id=child_thread_id,
                 )
                 await _maybe_start_render_session(run_id, interrupt_val)
             return "waiting_human"
         return "done"
+    except Exception as exc:
+        await _runs_db.update_status(run_id, "error")
+        await push_event(run_id, {
+            "type": "run_error",
+            "scope": stage,
+            "thread_id": child_thread_id,
+            "message": str(exc),
+        })
+        raise
+
+
+async def _resume_child(child_graph, child_thread_id: str, resume_value: Any, run_id: str, stage: str) -> None:
+    """Resume 子图 interrupt，子图跑完后继续驱动主图（委派架构）。
+
+    子图内部 interrupt（如 review_script）被用户 resume 后：
+    1) 继续驱动子图到 END 或下一个 interrupt；
+    2) 如果子图 done：提取 shared 字段 + 更新游标，resume 主图；
+    3) 如果子图再次 waiting_human：保持 park 状态等用户操作。
+    """
+    if _runs_db is None or child_graph is None or _main_graph is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+
+    child_status = await _drive_child(child_graph, child_thread_id, Command(resume=resume_value), run_id, stage)
+
+    if child_status == "waiting_human":
+        return
+
+    # 子图 done：提取 shared 字段 + 更新游标，resume 主图
+    child_snap = await child_graph.aget_state(_thread_config(child_thread_id))
+    child_state = getattr(child_snap, "values", {}) or {}
+    child_result = _extract_shared_fields(child_state)
+    _update_cursors(child_result, stage)
+
+    await _runs_db.mark_delegation(run_id, child_thread_id, "done")
+
+    asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=child_result), run_id))
+
+
+async def _drive(graph, thread_id: str, input: Any, run_id: str, *, checkpoint_id: str | None = None) -> str:
+    """驱动主图执行，把事件套统一信封转发进 run_id 的 SSE 队列。
+
+    委派架构下：
+    - 主图执行到 run_plan_stage/run_render_stage 时触发 __delegate interrupt
+    - 检测到 __delegate 后：在子 thread 上驱动子图到 END，提取 shared 字段 +
+      更新游标，用 Command(resume=child_result) 唤醒主图继续执行
+    - 子图内部 interrupt（审阅等）直接在子 thread 与前端交互，不冒泡到主图
+
+    checkpoint_id 参数用于 restart_stage_from 精准回退到目标 checkpoint。
+
+    返回 "done"（正常结束）或 "waiting_human"（interrupt 暂停）。
+    """
+    if _runs_db is None or graph is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+
+    cfg = _thread_config(thread_id, checkpoint_id=checkpoint_id)
+    q = get_or_create_sse_queue(run_id)
+    while not q.empty():
+        await q.get()
+
+    await _runs_db.update_status(run_id, "running")
+
+    try:
+        while True:
+            async for ns, mode, payload in graph.astream(
+                input, config=cfg, stream_mode=["updates", "debug"], subgraphs=True
+            ):
+                if mode == "debug":
+                    if payload.get("type") != "task":
+                        continue
+                    task_name = payload.get("payload", {}).get("name") if isinstance(payload.get("payload"), dict) else None
+                    if not task_name:
+                        continue
+                    await _emit_enveloped(
+                        run_id,
+                        node_path=_ns_to_path(ns, task_name),
+                        evt_type="node_status",
+                        status="running",
+                        propagate=True,
+                        thread_id=thread_id,
+                    )
+                    continue
+
+                event_dict = payload if isinstance(payload, dict) else {}
+                for node_name, _update in event_dict.items():
+                    if node_name == "__interrupt__":
+                        continue
+                    await _emit_enveloped(
+                        run_id,
+                        node_path=_ns_to_path(ns, node_name),
+                        evt_type="node_status",
+                        status="done",
+                        thread_id=thread_id,
+                    )
+
+            # astream 退出：检查是否 interrupt 暂停
+            snap = await graph.aget_state(cfg)
+            snap_next = getattr(snap, "next", None)
+            if not snap_next:
+                return "done"
+
+            # 解析 interrupt
+            snap_sub = await graph.aget_state(cfg, subgraphs=True)
+            resolved = await _resolve_interrupted(graph, snap_sub)
+            if not resolved:
+                # 有 next 但无法解析 interrupt → 异常态
+                await _runs_db.update_status(run_id, "error")
+                await push_event(run_id, {
+                    "type": "run_error",
+                    "scope": "main",
+                    "thread_id": thread_id,
+                    "message": "Main graph paused but no interrupt could be resolved",
+                })
+                return "error"
+
+            leaf_name, leaf_path, interrupt_val = resolved
+
+            # ── 委派检测：__delegate interrupt → 驱动子图 ──
+            if isinstance(interrupt_val, dict) and "__delegate" in interrupt_val:
+                stage = interrupt_val["__delegate"]
+                child_graph = _get_child_graph(stage)
+                if child_graph is None:
+                    raise RuntimeError(f"Child graph for stage {stage!r} not initialized")
+
+                child_thread = _child_thread(run_id, stage)
+                park_cid = (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id")
+
+                # 登记委派关系
+                await _runs_db.upsert_delegation(run_id, child_thread, stage, park_checkpoint_id=park_cid)
+
+                # 从主图 state 提取 shared 字段作为子图输入
+                main_state = getattr(snap, "values", {}) or {}
+                child_input = _extract_shared_fields(main_state)
+
+                # 驱动子图到 END 或 interrupt
+                child_status = await _drive_child(child_graph, child_thread, child_input, run_id, stage)
+
+                if child_status == "waiting_human":
+                    # 子图内部 interrupt：主图保持 park 状态，等用户操作子图
+                    return "waiting_human"
+
+                # 子图 done：提取 shared 字段 + 更新游标，resume 主图
+                child_snap = await child_graph.aget_state(_thread_config(child_thread))
+                child_state = getattr(child_snap, "values", {}) or {}
+                child_result = _extract_shared_fields(child_state)
+                _update_cursors(child_result, stage)
+
+                # 标记委派完成
+                await _runs_db.mark_delegation(run_id, child_thread, "done")
+
+                # resume 主图：interrupt() 返回 child_result，节点 return 合并回主图
+                input = Command(resume=child_result)
+                continue  # 继续驱动主图
+
+            # ── 非 delegate interrupt：正常审阅暂停 ──
+            await _runs_db.update_status(run_id, "waiting_human")
+            await _emit_enveloped(
+                run_id,
+                node_path=leaf_path,
+                evt_type="interrupt",
+                status="waiting_human",
+                payload=interrupt_val,
+                propagate=True,
+                thread_id=thread_id,
+            )
+            await _maybe_start_render_session(run_id, interrupt_val)
+            return "waiting_human"
+
     except Exception as exc:
         await _runs_db.update_status(run_id, "error")
         await push_event(run_id, {
@@ -324,13 +544,14 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str) -> str:
 async def start_run(params: dict) -> str:
     """新建 run 并执行：从主图 entry point（load_config）开始。
 
-    总图嵌子图架构：不再需要 orchestrate Python 循环，
-    LangGraph 条件边天然处理「规划→渲染→规划→渲染」交错流转。
+    委派架构：主图通过 interrupt 让渡控制权给子图，
+    graph_runner 控制器在子 thread 上驱动子图跑完后再 resume 主图。
     """
     if _runs_db is None or _main_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
-    run_id = _main_thread(str(params.get("novel_dir", ""))[:8] + "-" + str(Path(params.get("novel_dir", "")).name))
-    run_id = params.get("novel_title", "run")[:10] + "-" + run_id[:8]  # 保持可读性
+    # Bug 7: 加随机后缀保证 run_id 唯一（同一本书跑两次不冲突）
+    base = params.get("novel_title", "run")[:10] + "-" + str(Path(params.get("novel_dir", "")).name)[:8]
+    run_id = f"{base}-{uuid.uuid4().hex[:6]}"
     await _runs_db.insert(run_id, params.get("novel_dir", ""), params.get("novel_title", ""), params)
     get_or_create_sse_queue(run_id)
 
@@ -345,14 +566,13 @@ async def start_run(params: dict) -> str:
 
 
 async def resume_run(run_id: str, scope: str | None = None, thread_id: str | None = None, resume_value: Any = None) -> None:  # noqa: ARG001
-    """Resume 中断的 run：直接驱动主图，子图 interrupt 自动继续。
+    """Resume 中断的 run：委派架构下需判断当前暂停在主图还是子图。
 
-    scope / thread_id 参数为后向兼容（前端旧调用），总图单 thread 架构下已无意义，
-    直接忽略。实际 resume 值取 resume_value 位置参数。
+    scope / thread_id 参数为后向兼容（前端旧调用）。
+    - 如果有 active delegation（子图 interrupt），resume 子图；
+    - 否则 resume 主图（非委派 interrupt 或主图审阅）。
     """
     # 兼容旧调用：resume_run(run_id, scope, thread_id, value) 或 resume_run(run_id, value)
-    # scope 永远是字符串（前端传 "main"/"plan"/"render"），value 是 dict/None
-    # 所以：如果 scope 不是字符串且非 None，则真正的 resume 值在 scope 位置
     real_value = resume_value
     if isinstance(scope, (dict, list, str)) and not isinstance(scope, str) or (isinstance(scope, str) and scope not in ("main", "plan", "render")):
         real_value = scope
@@ -365,18 +585,39 @@ async def resume_run(run_id: str, scope: str | None = None, thread_id: str | Non
     render_session.stop_session(run_id)
 
     get_or_create_sse_queue(run_id)
+
+    # 委派架构：检查是否有 active delegation（子图暂停）
+    delegation = await _runs_db.get_active_delegation(run_id)
+    if delegation is not None:
+        child_thread = delegation["child_thread_id"]
+        stage = delegation["stage"]
+        child_graph = _get_child_graph(stage)
+        if child_graph is not None:
+            asyncio.create_task(_resume_child(child_graph, child_thread, real_value, run_id, stage))
+            return
+
+    # 无 active delegation：resume 主图
     asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=real_value), run_id))
 
 
 async def retry_run(run_id: str) -> None:
     """重试：从当前 checkpoint 继续执行（等价于 resume(None)）。
 
-    LangGraph resume(None) 语义：跳过当前 interrupt 节点，继续执行后续边。
-    刚好匹配"重试"语义（忽略卡住的节点，继续往下走）。
+    委派架构：如果有 active delegation 则 resume 子图，否则 resume 主图。
     """
     if _main_graph is None or _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     get_or_create_sse_queue(run_id)
+
+    delegation = await _runs_db.get_active_delegation(run_id)
+    if delegation is not None:
+        child_thread = delegation["child_thread_id"]
+        stage = delegation["stage"]
+        child_graph = _get_child_graph(stage)
+        if child_graph is not None:
+            asyncio.create_task(_resume_child(child_graph, child_thread, None, run_id, stage))
+            return
+
     asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=None), run_id))
 
 
@@ -413,10 +654,9 @@ async def restart_stage_from(run_id: str, scope_or_node: str, node: str | None =
     if target_cid is None:
         raise ValueError(f"未找到节点 {real_node!r} 执行前的 checkpoint（无法重跑）")
 
-    replay_cfg = _thread_config(thread_id, checkpoint_id=target_cid)
     get_or_create_sse_queue(run_id)
-    # resume(None) 从目标 checkpoint 继续执行（跳过原 interrupt，如果有的话）
-    asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=None), run_id))
+    # Bug 2: 传 checkpoint_id 给 _drive，精准回退到目标 checkpoint 再 resume
+    asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=None), run_id, checkpoint_id=target_cid))
 
 
 async def fork_from_checkpoint(run_id: str, scope_or_checkpoint_id: str | None, checkpoint_id: str | None = None) -> str:  # noqa: ARG001
@@ -485,9 +725,8 @@ async def fork_from_checkpoint(run_id: str, scope_or_checkpoint_id: str | None, 
     )
 
     # 5. 从目标 checkpoint 继续
-    new_cfg = _thread_config(new_thread_id, checkpoint_id=real_checkpoint_id)
     get_or_create_sse_queue(new_run_id)
-    asyncio.create_task(_drive(_main_graph, _main_thread(new_run_id), Command(resume=None), new_run_id))
+    asyncio.create_task(_drive(_main_graph, _main_thread(new_run_id), Command(resume=None), new_run_id, checkpoint_id=real_checkpoint_id))
     return new_run_id
 
 
@@ -575,10 +814,10 @@ async def get_checkpoints(run_id: str) -> list[dict]:
 
 
 async def get_current_run_state(run_id: str) -> dict:
-    """从主图 checkpoint 重建当前 run 的节点展示状态。
+    """从 checkpoint 重建当前 run 的节点展示状态（委派架构）。
 
-    总图单 thread 架构：_resolve_interrupted 递归下钻即可解析到任意深度子图的 interrupt。
-    node_path 天然带层级（如 plan_graph_subgraph/load_chapter），前端按 / 分割面包屑展示。
+    委派架构：如果有 active delegation，interrupt 在子图 thread 上，
+    需要从子图 checkpoint 解析；否则从主图 checkpoint 解析。
     """
     if _main_graph is None or _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
@@ -612,22 +851,47 @@ async def get_current_run_state(run_id: str) -> dict:
             node_statuses[node] = "done"
 
     if run_status == "waiting_human":
-        snap_sub = await _main_graph.aget_state(cfg, subgraphs=True)
-        resolved = await _resolve_interrupted(_main_graph, snap_sub)
-        if resolved:
-            leaf_name, leaf_path, interrupt_val = resolved
-            node_statuses[leaf_path] = "waiting_human"
-            parts = leaf_path.split("/")
-            for i in range(1, len(parts)):
-                ancestor = "/".join(parts[:i])
-                node_statuses[ancestor] = "waiting_human"
-            active_interaction = {
-                "scope": "main",  # 总图单线程架构：固定为 main
-                "thread_id": thread_id,
-                "node": leaf_name,
-                "path": leaf_path,
-                "payload": interrupt_val,
-            }
+        # 委派架构：先检查是否有 active delegation
+        delegation = await _runs_db.get_active_delegation(run_id)
+        if delegation is not None:
+            child_thread = delegation["child_thread_id"]
+            stage = delegation["stage"]
+            child_graph = _get_child_graph(stage)
+            if child_graph is not None:
+                child_cfg = _thread_config(child_thread)
+                snap_sub = await child_graph.aget_state(child_cfg, subgraphs=True)
+                resolved = await _resolve_interrupted(child_graph, snap_sub)
+                if resolved:
+                    leaf_name, leaf_path, interrupt_val = resolved
+                    node_statuses[leaf_path] = "waiting_human"
+                    parts = leaf_path.split("/")
+                    for i in range(1, len(parts)):
+                        ancestor = "/".join(parts[:i])
+                        node_statuses[ancestor] = "waiting_human"
+                    active_interaction = {
+                        "scope": stage,
+                        "thread_id": child_thread,
+                        "node": leaf_name,
+                        "path": leaf_path,
+                        "payload": interrupt_val,
+                    }
+        else:
+            snap_sub = await _main_graph.aget_state(cfg, subgraphs=True)
+            resolved = await _resolve_interrupted(_main_graph, snap_sub)
+            if resolved:
+                leaf_name, leaf_path, interrupt_val = resolved
+                node_statuses[leaf_path] = "waiting_human"
+                parts = leaf_path.split("/")
+                for i in range(1, len(parts)):
+                    ancestor = "/".join(parts[:i])
+                    node_statuses[ancestor] = "waiting_human"
+                active_interaction = {
+                    "scope": "main",
+                    "thread_id": thread_id,
+                    "node": leaf_name,
+                    "path": leaf_path,
+                    "payload": interrupt_val,
+                }
 
     return {
         "status": run_status,
@@ -671,7 +935,8 @@ async def delete_run(run_id: str) -> None:
         raise ValueError("run is running, cannot delete")
 
     import aiosqlite
-    threads = [_main_thread(run_id)]
+    # Bug 1: 委派架构下 checkpoint 存在 3 个 thread：主图 + plan 子图 + render 子图
+    threads = [_main_thread(run_id), _child_thread(run_id, "plan"), _child_thread(run_id, "render")]
     async with aiosqlite.connect(CHECKPOINT_DB) as db:
         async with db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
@@ -685,4 +950,6 @@ async def delete_run(run_id: str) -> None:
         await db.commit()
 
     _sse_queues.pop(run_id, None)
+    # Bug 1: 清理委派记录
+    await _runs_db.delete_delegations(run_id)
     await _runs_db.delete(run_id)
