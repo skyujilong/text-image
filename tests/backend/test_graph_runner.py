@@ -8,11 +8,15 @@ import services.graph_runner as runner
 
 @pytest.fixture(autouse=True)
 def reset_runner():
-    runner._compiled_graph = None
+    runner._main_graph = None
+    runner._plan_graph = None
+    runner._render_graph = None
     runner._runs_db = None
     runner._sse_queues.clear()
     yield
-    runner._compiled_graph = None
+    runner._main_graph = None
+    runner._plan_graph = None
+    runner._render_graph = None
     runner._runs_db = None
     runner._sse_queues.clear()
 
@@ -37,31 +41,36 @@ async def test_push_event_unknown_run_noop():
 
 
 async def test_resume_run_calls_command():
-    # astream 必须返回异步迭代器（_run_graph 用 async for 消费）；空流模拟"无事件直接结束"。
+    # astream 必须返回异步迭代器（_drive 用 async for 消费）；空流模拟"无事件直接结束"。
     async def _empty_stream(*_args, **_kwargs):
         return
         yield  # noqa: 让函数成为 async generator
 
     mock_graph = MagicMock()
     mock_graph.astream = MagicMock(side_effect=lambda *a, **k: _empty_stream())
-    # astream 退出后 _run_graph 走 aget_state 判定完成态：next 为空 → 标 done。
-    mock_graph.aget_state = AsyncMock(return_value=SimpleNamespace(next=None))
-    runner._compiled_graph = mock_graph
+    # astream 退出后 _drive 走 aget_state 判定完成态：next 为空 → 标 done。
+    mock_graph.aget_state = AsyncMock(return_value=SimpleNamespace(next=None, values={}))
+    mock_graph.aupdate_state = AsyncMock()
+    runner._main_graph = mock_graph
+    runner._plan_graph = mock_graph
+    runner._render_graph = mock_graph
     runner._runs_db = AsyncMock()
 
     from langgraph.types import Command
 
     # resume_run 通过 create_task 起后台任务，需等其跑完再断言。
-    await runner.resume_run("run-99", 2)
+    await runner.resume_run("run-99", "main", "run-99", 2)
     for _ in range(50):
         if mock_graph.astream.call_count:
             break
         await asyncio.sleep(0.01)
 
-    mock_graph.astream.assert_called_once()
-    cmd = mock_graph.astream.call_args[0][0]
-    assert isinstance(cmd, Command)
-    assert cmd.resume == 2
+    # resume_run 内部会 _drive + _orchestrate，astream 可能被调多次；
+    # 只需断言至少有一次且某次传了 Command(resume=2)。
+    assert mock_graph.astream.call_count >= 1
+    cmd_calls = [c[0][0] for c in mock_graph.astream.call_args_list if isinstance(c[0][0], Command)]
+    assert len(cmd_calls) >= 1
+    assert cmd_calls[0].resume == 2
 
 
 async def test_reconcile_zombie_runs_only_fixes_running(tmp_path):

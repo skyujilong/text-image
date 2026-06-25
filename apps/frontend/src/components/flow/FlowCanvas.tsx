@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   ReactFlow,
   Background,
@@ -9,7 +9,8 @@ import {
   type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { useRunStore, ROOT_LEVEL_KEY } from '@/store/runStore'
+import { Button } from '@/components/ui/button'
+import { useRunStore } from '@/store/runStore'
 import { useGraphSchema } from '@/hooks/useGraphSchema'
 import SubgraphNode from './SubgraphNode'
 import InternalNode from './InternalNode'
@@ -123,18 +124,40 @@ function useAutoFollow() {
   }, [nodeStatuses, drillPath, autoFollow, setDrillPath])
 }
 
-function FlowCanvasInner() {
-  const { drillPath, popDrill, runError, setRunError, autoFollow, setAutoFollow } =
-    useRunStore()
-  const currentSubgraph = drillPath[drillPath.length - 1] ?? null
-  const levelKey = currentSubgraph ?? ROOT_LEVEL_KEY
+/** 三图 scope 标签。 */
+const SCOPE_LABELS: Record<string, string> = {
+  main: '主流程',
+  plan: '规划阶段',
+  render: '渲染阶段',
+}
 
-  const { nodes, edges, isLoading } = useGraphSchema(currentSubgraph, drillPath)
+function FlowCanvasInner() {
+  const { drillPath, popDrill, resetDrill, runError, setRunError, autoFollow, setAutoFollow } =
+    useRunStore()
+
+  // 当前查看的顶层图 scope（main/plan/render）。下钻到子图时 scope 不变，
+  // 仅 drillPath 变化；schemaScope 取 currentSubgraph ?? graphScope。
+  const [graphScope, setGraphScope] = useState<'main' | 'plan' | 'render'>('main')
+
+  const currentSubgraph = drillPath[drillPath.length - 1] ?? null
+  const schemaScope = currentSubgraph ?? graphScope
+
+  const { nodes, edges, isLoading } = useGraphSchema(schemaScope, drillPath)
+
+  // 切换 scope 时重置下钻路径（plan/render 无子图可下钻，切回 main 也回到顶层）
+  const handleScopeChange = useCallback(
+    (scope: 'main' | 'plan' | 'render') => {
+      setGraphScope(scope)
+      resetDrill()
+    },
+    [resetDrill],
+  )
 
   // 视口恢复必须先于 useAutoCenter：先恢复该层记忆视口（或首次 fitView），
   // 再由 useAutoCenter 判断活跃节点是否在视口内、不在才 setCenter 跟随。
   const { getViewport, setViewport, fitView } = useReactFlow()
   const setViewportStore = useRunStore((s) => s.setViewport)
+  const levelKey = currentSubgraph ?? graphScope
 
   // 切层（或该层 nodes 首次就绪）时：有记忆视口则恢复，否则 fitView。
   // 不订阅整个 viewports（避免每次拖拽写 store 触发重渲染），在 effect 内按需 getState 读取。
@@ -158,33 +181,51 @@ function FlowCanvasInner() {
 
   return (
     <div className="relative w-full h-full">
-      {drillPath.length > 0 && (
-        <div className="absolute top-3 left-3 z-10 flex items-center gap-2 bg-white rounded shadow px-3 py-1 text-sm">
-          <button onClick={popDrill} className="text-blue-600 hover:underline">
-            ← 返回
-          </button>
-          <span className="text-gray-400">/</span>
-          <span>{currentSubgraph}</span>
+      {/* 左上角：scope 切换 tab + 面包屑 */}
+      <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
+        {/* 三图 scope 切换 */}
+        <div className="flex items-center gap-1 bg-background rounded-lg border border-border shadow-sm px-1 py-1">
+          {(['main', 'plan', 'render'] as const).map((s) => (
+            <Button
+              key={s}
+              variant={graphScope === s ? 'default' : 'ghost'}
+              size="sm"
+              className="text-xs h-7 px-2"
+              onClick={() => handleScopeChange(s)}
+            >
+              {SCOPE_LABELS[s]}
+            </Button>
+          ))}
         </div>
-      )}
-      {/* 右上角顶栏：跟随运行开关（交互区已常驻右侧，无需重开入口） */}
-      <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
-        {/* 跟随运行开关：手动下钻/返回会自动暂停，此处可重新开启 */}
-        <button
+
+        {/* 下钻面包屑（仅在子图内部时显示） */}
+        {drillPath.length > 0 && (
+          <div className="flex items-center gap-2 bg-background rounded border border-border shadow-sm px-3 py-1.5 text-sm">
+            <Button variant="ghost" size="sm" className="h-6 px-1 text-xs" onClick={popDrill}>
+              ← 返回
+            </Button>
+            <span className="text-muted-foreground">/</span>
+            <span className="text-foreground font-medium">{currentSubgraph}</span>
+          </div>
+        )}
+      </div>
+
+      {/* 右上角：跟随运行开关 */}
+      <div className="absolute top-3 right-3 z-10">
+        <Button
+          variant={autoFollow ? 'default' : 'outline'}
+          size="sm"
+          className="text-xs shadow-sm"
           onClick={() => setAutoFollow(!autoFollow)}
-          className={`rounded shadow px-3 py-1 text-sm ${
-            autoFollow
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : 'bg-white text-gray-500 hover:text-gray-700'
-          }`}
           title={autoFollow ? '自动跟随运行节点下钻（点击暂停）' : '已暂停跟随（点击恢复）'}
         >
           {autoFollow ? '跟随运行 ●' : '已暂停 ○'}
-        </button>
+        </Button>
       </div>
+
       {isLoading ? (
-        <div className="w-full h-full flex items-center justify-center text-gray-400 text-sm">
-          加载中...
+        <div className="w-full h-full flex items-center justify-center text-muted-foreground text-sm">
+          加载中…
         </div>
       ) : (
         <ReactFlow
@@ -197,6 +238,7 @@ function FlowCanvasInner() {
           <Controls />
         </ReactFlow>
       )}
+
       {runError && (
         <div className="absolute bottom-0 left-0 right-0 z-20 bg-red-50 border-t border-red-200 px-4 py-2 text-sm text-red-700 flex items-start gap-2">
           <span className="shrink-0 font-semibold">错误：</span>

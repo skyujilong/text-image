@@ -32,7 +32,7 @@ interface Props {
  * renderBoard 查图；非换图点标注「复用上一镜头画面」，不单独出图。
  */
 export default function ImageRenderPanel({ runId, chapterId, storyboard }: Props) {
-  const { setActiveInteraction, renderBoard, mergeRenderBoard } = useRunStore()
+  const { setActiveInteraction, renderBoard, mergeRenderBoard, activeInteraction } = useRunStore()
   const [submitting, setSubmitting] = useState(false)
 
   // 挂载时全量拉取看板（恢复刷新前已生成的图；SSE 后续增量更新）。
@@ -62,10 +62,10 @@ export default function ImageRenderPanel({ runId, chapterId, storyboard }: Props
   }).length
 
   const handleFinish = async () => {
-    if (!allDone || submitting) return
+    if (!allDone || submitting || !activeInteraction) return
     setSubmitting(true)
     try {
-      await api.resumeRun(runId, { decision: 'done' })
+      await api.resumeRun(runId, activeInteraction.scope, activeInteraction.thread_id, { decision: 'done' })
       setActiveInteraction(null)
     } catch (e) {
       console.error('完成渲染失败', e)

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import dagre from '@dagrejs/dagre'
 import { MarkerType, type Node, type Edge } from '@xyflow/react'
 import { api, type GraphSchema } from '@/api/client'
-import { useRunStore, ROOT_LEVEL_KEY } from '@/store/runStore'
+import { useRunStore } from '@/store/runStore'
 
 const NODE_WIDTH_SUBGRAPH = 180
 const NODE_HEIGHT_SUBGRAPH = 60
@@ -118,7 +118,7 @@ const failedLevels = new Set<string>()
 
 /**
  * 将后端 schema 转成带布局与 handle 的 React Flow nodes/edges。
- * statusKey = [...drillPath, nodeId].join('/')，下钻后子图内节点 key 带父路径前缀，
+ * statusKey = [...drillPath, n.id].join('/')，下钻后子图内节点 key 带父路径前缀，
  * 与后端 _ns_to_path 生成的 statusKey 对齐。
  */
 function buildFromSchema(
@@ -157,15 +157,21 @@ function buildFromSchema(
   return { nodes: withDegree, edges: withHandles as RawEdge[] }
 }
 
+/**
+ * 加载并缓存指定 scope 的图 schema，返回带 dagre 布局的 React Flow nodes/edges。
+ *
+ * @param scope 图 scope：'main' | 'plan' | 'render'，或下钻时的子图 ID（如 'character_setup_subgraph'）
+ * @param drillPath 下钻路径栈，用于构建 statusKey 前缀
+ */
 export function useGraphSchema(
-  subgraphId: string | null,
+  scope: string,
   drillPath: string[],
 ): { nodes: Node[]; edges: Edge[]; isLoading: boolean } {
-  const levelKey = subgraphId ?? ROOT_LEVEL_KEY
+  const levelKey = scope
   // version 仅用于在请求完成（写缓存）后触发重渲染，使下面的 useMemo 重读缓存。
   const [version, setVersion] = useState(0)
   // 订阅节点状态，用于派生「指向运行中节点的边」的高亮/流动动画。
-  // schema 本身的加载只在 subgraphId 变化时触发，状态变化不会重新请求。
+  // schema 本身的加载只在 scope 变化时触发，状态变化不会重新请求。
   const nodeStatuses = useRunStore((s) => s.nodeStatuses)
 
   // render 期同步读缓存并构建；未命中返回空，待 effect 请求完成后 setVersion 触发重算。
@@ -185,7 +191,7 @@ export function useGraphSchema(
     // 命中或已失败：无需请求。
     if (schemaCache.has(levelKey) || failedLevels.has(levelKey)) return
     let stale = false
-    api.getGraphSchema(subgraphId ?? undefined).then((schema) => {
+    api.getGraphSchema(scope).then((schema) => {
       if (stale) return
       schemaCache.set(levelKey, schema)
       setVersion((v) => v + 1)
@@ -195,7 +201,7 @@ export function useGraphSchema(
       setVersion((v) => v + 1)
     })
     return () => { stale = true }
-  }, [levelKey, subgraphId])
+  }, [levelKey, scope])
 
   // 派生最终边：统一 smoothstep 直角折线 + 箭头；回边橙色虚线走底部，前向活跃边蓝色流动。
   // 回边不叠加 animated（流动动画的 dasharray 会覆盖虚线），仅以加粗变色高亮活跃态。

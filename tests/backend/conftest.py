@@ -8,7 +8,9 @@ from httpx import ASGITransport, AsyncClient
 async def mock_runner(monkeypatch):
     import services.graph_runner as gr
 
-    monkeypatch.setattr(gr, "_compiled_graph", MagicMock())
+    monkeypatch.setattr(gr, "_main_graph", MagicMock())
+    monkeypatch.setattr(gr, "_plan_graph", MagicMock())
+    monkeypatch.setattr(gr, "_render_graph", MagicMock())
     monkeypatch.setattr(gr, "_runs_db", AsyncMock())
     monkeypatch.setattr(gr, "init_runner", AsyncMock())
     monkeypatch.setattr(gr, "shutdown_runner", AsyncMock())

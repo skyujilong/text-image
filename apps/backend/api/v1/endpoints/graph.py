@@ -6,6 +6,10 @@ router = APIRouter(prefix="/graph")
 
 
 def _serialize_graph(g, subgraph_id_set: set[str]) -> dict:
+    """将 LangGraph 的 DrawableGraph 序列化为前端可用的 schema。
+
+    过滤 __start__/__end__ 伪节点，DFS 检测回边，子图节点标记 type=subgraph。
+    """
     # 收集所有节点（过滤 __start__ / __end__）
     nodes = []
     for node_id, node_data in g.nodes.items():
@@ -76,43 +80,60 @@ def _serialize_graph(g, subgraph_id_set: set[str]) -> dict:
     return {"nodes": nodes, "edges": raw_edges}
 
 
-def _build_schemas() -> tuple[dict, dict[str, dict]]:
-    from novel2media import graph as _graph_module
+def _build_schemas() -> dict[str, dict]:
+    """构建三图（main/plan/render）及注册子图的 schema 拓扑。
 
-    subgraph_id_set = set(_graph_module.SUBGRAPH_REGISTRY.keys())
-    top = _serialize_graph(_graph_module.graph.get_graph(), subgraph_id_set)
-    # 子图序列化同样传入 subgraph_id_set：嵌套子图节点（如 init_subgraph 内的
-    # character_setup_subgraph）才能被标 type=subgraph，前端方可下钻。
-    # 传空集会让嵌套子图降级成 internal，前端无法展开其内部节点。
-    subs = {
-        k: _serialize_graph(v.get_graph(), subgraph_id_set)
-        for k, v in _graph_module.SUBGRAPH_REGISTRY.items()
+    三图直接调用 builder 编译（无 checkpointer），获取拓扑结构。
+    子图 schema 保留，供前端下钻使用。
+    """
+    from novel2media import graph as _graph_module
+    from novel2media.subgraphs.plan_graph import build_plan_graph
+    from novel2media.subgraphs.render_graph import build_render_graph
+
+    # 三图 builder（无 checkpointer，纯拓扑）
+    builders = {
+        "main": _graph_module.build_main_graph,
+        "plan": build_plan_graph,
+        "render": build_render_graph,
     }
-    return top, subs
+
+    # 子图 ID 集合（用于标记 subgraph 类型节点）
+    subgraph_id_set = set(_graph_module.SUBGRAPH_REGISTRY.keys())
+
+    schemas: dict[str, dict] = {}
+    for scope, builder in builders.items():
+        g = builder()
+        schemas[scope] = _serialize_graph(g.get_graph(), subgraph_id_set)
+
+    # 保留子图 schema（setup 子图下钻用）
+    for k, v in _graph_module.SUBGRAPH_REGISTRY.items():
+        schemas[k] = _serialize_graph(v.get_graph(), subgraph_id_set)
+
+    return schemas
 
 
 # 模块级延迟初始化（避免导入时触发图编译副作用）
-_top_schema: dict | None = None
-_subgraph_schemas: dict[str, dict] | None = None
+_schemas: dict[str, dict] | None = None
 
 
 def _ensure_schemas() -> None:
-    global _top_schema, _subgraph_schemas
-    if _top_schema is None:
-        _top_schema, _subgraph_schemas = _build_schemas()
+    global _schemas
+    if _schemas is None:
+        _schemas = _build_schemas()
 
 
 @router.get("/schema")
-def get_top_schema():
-    _ensure_schemas()
-    assert _top_schema is not None
-    return _top_schema
+def get_schema(scope: str = "main"):
+    """获取指定 scope 的图 schema。
 
-
-@router.get("/schema/{subgraph_id}")
-def get_subgraph_schema(subgraph_id: str):
+    scope 可选值：
+    - main: 主图（init + setup）
+    - plan: 规划图（逐章规划：剧本→分镜→章节推进）
+    - render: 渲染图（生图→音频→合成→导出）
+    - character_setup_subgraph: setup 子图（下钻用）
+    """
     _ensure_schemas()
-    assert _subgraph_schemas is not None
-    if subgraph_id not in _subgraph_schemas:
-        raise HTTPException(status_code=404, detail="subgraph not found")
-    return _subgraph_schemas[subgraph_id]
+    assert _schemas is not None
+    if scope not in _schemas:
+        raise HTTPException(status_code=404, detail=f"scope '{scope}' not found")
+    return _schemas[scope]

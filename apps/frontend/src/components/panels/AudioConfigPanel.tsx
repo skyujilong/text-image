@@ -52,7 +52,7 @@ interface Props {
  * 由右侧常驻区渲染（body-only，无 Sheet 包装）。
  */
 export default function AudioConfigPanel({ runId, current }: Props) {
-  const { setActiveInteraction } = useRunStore()
+  const { setActiveInteraction, activeInteraction } = useRunStore()
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
@@ -112,6 +112,7 @@ export default function AudioConfigPanel({ runId, current }: Props) {
   }
 
   const onSubmit = async (values: FormValues) => {
+    if (!activeInteraction) return
     try {
       // language 为下拉选定的合法值（zh/en/ja/auto_detect），直接透传给 dots
       const payload: Record<string, unknown> = {
@@ -121,7 +122,7 @@ export default function AudioConfigPanel({ runId, current }: Props) {
       }
       // 选了具体音色才传 voice_name；默认声音则不传（避免覆盖 dots 默认）
       if (selectedVoice && selectedVoice !== DEFAULT_VOICE) payload.voice_name = selectedVoice
-      await api.resumeRun(runId, payload)
+      await api.resumeRun(runId, activeInteraction.scope, activeInteraction.thread_id, payload)
       setActiveInteraction(null)
     } catch (e) {
       console.error('resume failed', e)

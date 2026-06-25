@@ -16,11 +16,12 @@ interface Props {
 export default function FinalDecisionPanel({
   runId, exportedCount, remainingPending,
 }: Props) {
-  const { setActiveInteraction } = useRunStore()
+  const { setActiveInteraction, activeInteraction } = useRunStore()
 
   const handle = async (choice: 'done' | 'continue') => {
+    if (!activeInteraction) return
     try {
-      await api.resumeRun(runId, choice)
+      await api.resumeRun(runId, activeInteraction.scope, activeInteraction.thread_id, choice)
       setActiveInteraction(null)
     } catch (e) {
       console.error('resume failed', e)

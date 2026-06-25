@@ -30,9 +30,12 @@ async def test_post_resume(client, mock_runner):
 
     mock_runner.resume_run = AsyncMock()
     mock_runner.get_run = AsyncMock(return_value=RunMeta(run_id="run-uuid-123", novel_dir="/x", novel_title="X"))
-    resp = await client.post("/runs/run-uuid-123/resume", json={"resume_value": 1})
+    resp = await client.post(
+        "/runs/run-uuid-123/resume",
+        json={"scope": "plan", "thread_id": "run-uuid-123::plan", "resume_value": 1}
+    )
     assert resp.status_code == 200
-    mock_runner.resume_run.assert_called_once_with("run-uuid-123", 1)
+    mock_runner.resume_run.assert_called_once_with("run-uuid-123", "plan", "run-uuid-123::plan", 1)
 
 
 async def test_validate_path_exists(client, tmp_path):

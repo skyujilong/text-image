@@ -51,133 +51,169 @@ class CharacterProfile(CharacterProfileRequired, total=False):
 
 
 # ---------------------------------------------------------------------------
-# State schema 分层设计
+# State schema 统一基础设计
 #
-# 主图与三个子图原本共用同一份 GraphState，导致子图的大字段
-# （current_chapter_text/current_script/current_storyboard 等）通过同名字段
-# 冒泡进主图 checkpoint，每条主图快照都冗余存一份整章文本。
+# 历史问题：MainGraphState 只声明了少量字段，load_config 返回的大量字段
+#（genre/setup_queue/pending_new_characters/_init_characters_review 等）
+# 不在 schema 中，被 LangGraph StateGraph 在 checkpoint 保存/恢复时丢弃。
+# 导致 parse_characters_llm 解析出的角色在 review_initial_characters 读取时
+# 变成空数组（pending_new_characters 被过滤）。
 #
-# 拆分后按层级定义 schema：子图用独立窄 schema，与父图仅通过**同名字段**
-# 通信（LangGraph 子图 state 隔离机制：同名自动传递，未在父图声明的字段
-# 只留在子图命名空间，不进入父图 checkpoint）。已验证：
-#   - 子图私有字段在子图内跨节点正常保留（load_chapter→adapt_script 不断）
-#   - 私有字段不 propagate 到父图 state（主图 checkpoint 体积下降）
+# 修复：MainGraphState 补全为包含所有跨图共享字段的统一基础 schema。
+# 子类（SetupSubgraphState/InitSubgraphState/ChapterSubgraphState/PlanGraphState/
+# RenderGraphState）只添加自己特有的中间态字段，不重复声明父类已有字段。
+# LangGraph 要求：节点返回的字段必须在 StateGraph 的 schema 中声明，否则丢弃。
 # ---------------------------------------------------------------------------
 
 
 class MainGraphState(TypedDict):
-    """主图 state：仅保留跨子图共享、需在主图持久化的字段。
+    """统一基础 state：包含所有跨图共享、需在 checkpoint 中持久化的字段。
 
-    不声明 current_*/setup_* —— 这些是子图内部中间态，不应进入主图
-    checkpoint。子图写同名字段（如 chapters_status）会正常回传主图。
+    三图（main/plan/render）和子图都通过同名字段通信。
+    节点返回的 dict 中任何不在 schema 中的字段都会被 LangGraph 丢弃，
+    因此此处必须声明所有 load_config 初始化 + 各节点读写过的字段。
     """
 
-    # 全局配置
+    # ── 全局配置（前端表单传入，load_config 初始化）──
     novel_title: str  # 小说标题
     novel_dir: str  # 小说资源根目录路径
     worldview: str  # 世界观设定文本
     character_profiles: str  # 前端 textarea 原始角色设定文本，供 init 阶段 LLM 解析
+    genre: str  # 题材类型
+    writing_style: str  # 写作风格
+    target_audience: str  # 目标受众
+    core_tone: str  # 核心基调
+    chapter_word_count: str  # 单章字数
+    total_word_count: str  # 总字数
+    core_theme: str  # 核心主题
+    core_conflicts: str  # 核心冲突
+    overall_outline: str  # 整体大纲
 
-    # 角色管理
-    characters_profile: dict[str, CharacterProfile]  # 角色完整档案（唯一真相），key 为角色名（name-based，无 id）
-    # characters_profile[name] 字段：name/appearance/character_trait/visual_trait/
-    # tri_view_prompt/tri_view_prompt_cn（必填）+ tri_view(本地相对路径)/voice_params(可选)。
-    # 详见 CharacterProfile。
+    # ── 角色管理 ──
+    characters_profile: dict[str, CharacterProfile]  # 角色完整档案（唯一真相），key 为角色名
     ignored_characters: list[str]  # 已忽略角色名列表
 
-    # 全局音频配置（单播：整本书一份音色参数，渲染阶段共用）。
-    # 由 chapter 子图 render 前的 configure_audio 节点配置一次，已配则跳过 interrupt 回填。
-    # 子图通过同名字段读写冒泡到主图 checkpoint，跨章节/跨批次持久。
-    audio_config: dict  # dots.tts 生成旋钮 {language, guidance_scale, speaker_scale} + 音色 voice_name（均可选）
+    # ── init/setup 阶段字段（load_config 初始化，各 init 节点读写）──
+    setup_queue: list[CharacterProfile]  # 待批量配置三视图的角色列表
+    setup_image_candidates: list[str]  # 候选图片路径列表
+    pending_new_characters: list[CharacterProfile]  # 待人工决策的新角色列表
+    _init_characters_review: str  # 初始角色审阅决策（pass/revise）
+    _init_characters_feedback: str  # 初始角色审阅打回意见
 
-    # 章节状态与产物（历史章节数据累积存储，支持跨章导出）
+    # ── 章节审阅路由控制字段（load_config 初始化为空串，各审阅节点读写）──
+    _script_review_decision: str  # 剧本审阅决策
+    _script_review_feedback: str  # 剧本审阅打回意见
+    _storyboard_review_decision: str  # 分镜审阅决策
+    _storyboard_review_feedback: str  # 分镜审阅打回意见
+    _characters_review_decision: str  # [已废弃] 新角色审阅决策，保留兼容历史 checkpoint
+    _characters_review_feedback: str  # [已废弃] 新角色审阅打回意见
+    _chapter_advance: str  # 章节推进决策（next/render）
+    _final_decision: str  # 收尾决策（done/continue）
+
+    # ── 通用路由复用字段 ──
+    _route: str  # 通用路由复用字段（如 check_needs_visual 分支）
+
+    # ── 全局音频配置（单播：整本书一份音色参数，渲染阶段共用）──
+    audio_config: dict  # dots.tts 生成旋钮 {language, guidance_scale, speaker_scale} + 音色 voice_name
+
+    # ── 章节状态与产物 ──
     chapters_status: dict[str, str]  # chapter_id → ChapterStatus
     chapters_artifacts: dict[str, ChapterArtifacts]  # chapter_id → 产物路径
 
-    # 渲染批次稿件缓存：规划阶段把每章 script/storyboard 入此数组，
-    # 渲染阶段逐章读取。一批渲染完成（无 planned 章）后清空、重新积累。
-    # 替代旧版 <ch>/script.json + <ch>/storyboard.json 落盘——稿件聚合到
-    # state，重跑/等待状态更清晰，不散落各章目录。
+    # ── 渲染批次稿件缓存 ──
     render_batch: list[dict]  # [{chapter_id, script, storyboard}]
 
+    # ── 进度游标（应用层编排的权威指针，不在节点内修改）──
+    chapter_order: list[str]  # 全书有序章节 id 列表（init 阶段确定一次）
+    plan_cursor: str | None  # 下一个待规划的 chapter_id（None=规划全部完成）
+    render_cursor: str | None  # 下一个待渲染的 chapter_id（None=渲染全部完成）
 
-class SetupSubgraphState(TypedDict):
-    """character_setup_subgraph 专用 state（完全闭环，批量化）。
 
-    与父图（init/chapter）通过同名字段通信：novel_dir、characters_profile、
-    setup_* 在父图 schema 中同名声明即可自动传递。
+class SetupSubgraphState(MainGraphState):
+    """character_setup_subgraph 专用 state。
 
-    批量化后不再逐个 pop 角色：setup_queue 一次性传给 batch_upload_tri_view，
-    由 batch_fix_profiles 批量落盘后清空。无 per-character 中间态。
+    所有共享字段已在 MainGraphState 中声明，此处无需额外字段。
+    与父图通过同名字段通信：setup_queue/characters_profile/novel_dir 等。
     """
 
-    novel_dir: str  # 文件操作根目录
-    characters_profile: dict[str, CharacterProfile]  # 写回父图（角色档案更新）
-    # 待批量配置三视图的角色列表（批量化：一次 interrupt 传全部，不再逐个弹出）
-    setup_queue: list[CharacterProfile]
-    setup_image_candidates: list[str]  # 候选图片路径列表（保留供未来扩展）
-    # init parse_characters_llm 中间结果（章节阶段 detect_new_characters_llm 直接写 setup_queue）
-    pending_new_characters: list[CharacterProfile]  # 待人工决策的新角色列表
-
-    # 通用路由复用字段（下划线前缀，interrupt 节点写回驱动条件边）。
-    # 显式声明：窄 schema 子图会丢弃未声明字段，不补则路由读不到用户决策。
-    # 默认值在各节点/路由函数用 state.get(..., 默认) 兜底，此处声明仅为持久化。
-    _route: str  # 通用路由复用字段（如 check_needs_visual 分支）
+    pass
 
 
-class InitSubgraphState(MainGraphState, SetupSubgraphState):
-    """init_subgraph 专用 state：主图字段 + setup 字段（init 内嵌 character_setup）。"""
+class InitSubgraphState(MainGraphState):
+    """init_subgraph 专用 state。
 
-    # init 阶段角色审阅路由控制字段（review_initial_characters 写回）。
-    # 显式声明：窄 schema 子图会丢弃未声明字段，不补则条件边路由读不到用户决策。
-    _init_characters_review: str  # pass / revise
-    # 初始角色审阅打回时的修改意见（review_initial_characters revise 写回，
-    # parse_characters_llm 读取拼进 prompt 后清空）。
-    _init_characters_feedback: str
+    所有共享字段已在 MainGraphState 中声明，此处无需额外字段。
+    init 阶段节点（load_config/parse_characters_llm/review_initial_characters）
+    读写的 _init_characters_review/_init_characters_feedback/pending_new_characters
+    等字段均已包含在 MainGraphState 中。
+    """
+
+    pass
 
 
-class ChapterSubgraphState(InitSubgraphState):
+class ChapterSubgraphState(MainGraphState):
     """chapter_loop_subgraph 专用 state。
 
+    继承 MainGraphState 的所有共享字段，只添加章节内部中间态。
     current_* 与审核计数器为章节内部中间态（load_chapter 时全部重置），
-    仅在本子图内跨节点流转，不进入主图 checkpoint。
+    仅在本子图内跨节点流转。
     """
 
     # 当前章节中间状态（load_chapter 时全部重置）
     current_chapter_id: str  # 当前处理的章节 ID
-    # 章节原文为不可变源文件，仅存路径避免每条 checkpoint 复制整章文本；
-    # 需要原文时按路径读取（novel_dir/chapters/<ch_id>.txt）
-    current_chapter_text_path: str
+    current_chapter_text_path: str  # 章节原文路径（避免 checkpoint 存整章文本）
     current_script: list[dict]  # 当前章节剧本（对白 + 动作序列）
     current_storyboard: list[dict]  # 当前章节分镜列表
     current_audio_path: str  # 当前章节合成音频文件路径
     current_subtitles_path: str  # 当前章节字幕文件路径
     current_timestamps: list[dict]  # 含全局偏移后时间戳
-    current_image_map: dict[int, str]  # storyboard_id（整数序号，0-based）→ image_path（generate_images 中间结果）
+    current_image_map: dict[int, str]  # storyboard_id → image_path
     current_timeline_path: str  # 当前章节时间轴文件路径
 
     # 审核重试计数器（load_chapter 统一重置）
     script_review_attempts: int  # 剧本审核已重试次数
     storyboard_review_attempts: int  # 分镜审核已重试次数
 
-    # 章节级细分审阅路由控制字段（审阅节点写回，load_chapter 统一重置）。
-    # 显式声明原因同 SetupSubgraphState：避免窄 schema 子图丢弃导致路由失控。
-    # 拆分自旧 _review_decision/_review_feedback：原 review_chapter 单点合并审阅
-    # 改为 review_script / review_storyboard 两处细分审阅，各自只审本步产物、
-    # revise 回到对应生成节点，指导意见精准注入对应 prompt。
-    # （新角色检测已并入 adapt_script + character_setup_subgraph，不再单独审阅。）
-    _script_review_decision: str  # review_script：pass / revise
-    # 剧本审阅打回意见（review_script revise 写回，adapt_script 读取拼进 prompt 后清空）
-    _script_review_feedback: str
-    _storyboard_review_decision: str  # review_storyboard：pass / revise
-    # 分镜审阅打回意见（review_storyboard revise 写回，generate_storyboard 读取拼进 prompt 后清空）
-    _storyboard_review_feedback: str
-    # [已废弃] 新角色检测已并入 adapt_script、不再单独 review；本字段不再被章节流程驱动，
-    # 仅保留以兼容历史 checkpoint（load_chapter 仍统一重置，无害）。
-    _characters_review_decision: str
-    _characters_review_feedback: str
-    _chapter_advance: str  # chapter_advance_decision：next / render
-    _final_decision: str  # final_decision：done / continue
+
+class PlanGraphState(MainGraphState):
+    """plan_graph 专用 state：主图共享字段 + 规划中间态。
+
+    规划图作为独立顶层图编译，拥有完整内部 checkpoint 历史，支持精准回溯。
+    与主图通过同名字段通信：chapters_status、render_batch、characters_profile 等
+    由 graph_runner 在图间显式传递。
+    """
+
+    # 当前章节中间状态（load_chapter 时全部重置）
+    current_chapter_id: str
+    current_chapter_text_path: str
+    current_script: list[dict]
+    current_storyboard: list[dict]
+
+    # 审核重试计数器（load_chapter 统一重置）
+    script_review_attempts: int
+    storyboard_review_attempts: int
+
+
+class RenderGraphState(MainGraphState):
+    """render_graph 专用 state：主图共享字段 + 渲染中间态。
+
+    渲染图作为独立顶层图编译，拥有完整内部 checkpoint 历史，支持精准回溯。
+    从 render_batch 读取稿件（script/storyboard），渲染完成后更新 chapters_status
+    与 chapters_artifacts。
+    """
+
+    # 当前章节中间状态（render_dispatch 时从 render_batch 读取）
+    current_chapter_id: str
+    current_chapter_text_path: str
+    current_script: list[dict]
+    current_storyboard: list[dict]
+
+    # 渲染中间态
+    current_image_map: dict[int, str]
+    current_audio_path: str
+    current_subtitles_path: str
+    current_timestamps: list[dict]
+    current_timeline_path: str
 
 
 # 向后兼容别名：等价于最全的 ChapterSubgraphState。

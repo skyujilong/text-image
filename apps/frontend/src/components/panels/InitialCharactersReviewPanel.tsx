@@ -24,14 +24,15 @@ interface Props {
  * 由右侧常驻区渲染（body-only，无 Sheet 包装）。
  */
 export default function InitialCharactersReviewPanel({ runId, characters }: Props) {
-  const { setActiveInteraction } = useRunStore()
+  const { setActiveInteraction, activeInteraction } = useRunStore()
   const [feedback, setFeedback] = useState('')
 
   const handle = async (decision: 'pass' | 'revise') => {
+    if (!activeInteraction) return
     try {
       // resume 值为对象 {decision, feedback}：打回时带修改意见供 parse_characters_llm 重解析参考；
       // 通过不需要意见。与后端 review_initial_characters 节点解析对齐。
-      await api.resumeRun(runId, decision === 'revise'
+      await api.resumeRun(runId, activeInteraction.scope, activeInteraction.thread_id, decision === 'revise'
         ? { decision: 'revise', feedback }
         : { decision: 'pass' })
       setActiveInteraction(null)

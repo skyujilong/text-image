@@ -32,7 +32,7 @@ interface RowState {
  * 由右侧常驻区渲染（body-only，无 Sheet 包装）。
  */
 export default function TriViewUploadPanel({ runId, characters }: Props) {
-  const { setActiveInteraction } = useRunStore()
+  const { setActiveInteraction, activeInteraction } = useRunStore()
   const [rows, setRows] = useState<Record<string, RowState>>(() => {
     const init: Record<string, RowState> = {}
     for (const c of characters) {
@@ -52,6 +52,7 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
   })
 
   const handleSubmit = async () => {
+    if (!activeInteraction) return
     setSubmitting(true)
     try {
       const tri_views: Record<string, string> = {}
@@ -69,7 +70,7 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
         tri_views[name] = path
         setRow(name, { uploading: false, uploadedPath: path })
       }
-      await api.resumeRun(runId, { tri_views, skipped })
+      await api.resumeRun(runId, activeInteraction.scope, activeInteraction.thread_id, { tri_views, skipped })
       setActiveInteraction(null)
     } catch (e) {
       console.error('upload/resume failed', e)
@@ -79,10 +80,11 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
   }
 
   const handleSkipAll = async () => {
+    if (!activeInteraction) return
     setSubmitting(true)
     try {
       const skipped = characters.map((c) => c.name ?? '未命名角色')
-      await api.resumeRun(runId, { tri_views: {}, skipped })
+      await api.resumeRun(runId, activeInteraction.scope, activeInteraction.thread_id, { tri_views: {}, skipped })
       setActiveInteraction(null)
     } catch (e) {
       console.error('resume failed', e)

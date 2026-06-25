@@ -29,7 +29,7 @@ async def restart_from(run_id: str, req: RestartFromRequest):
     meta = await runner.get_run(run_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="run not found")
-    await runner.restart_from_node(run_id, req.node_path)
+    await runner.restart_stage_from(run_id, req.scope, req.node)
     return {"ok": True}
 
 
@@ -50,7 +50,7 @@ async def fork_run(run_id: str, req: ForkRequest):
     meta = await runner.get_run(run_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="run not found")
-    new_run_id = await runner.fork_from_checkpoint(run_id, req.checkpoint_id)
+    new_run_id = await runner.fork_from_checkpoint(run_id, req.scope, req.checkpoint_id)
     return {"run_id": new_run_id}
 
 
@@ -82,11 +82,11 @@ async def delete_run(run_id: str):
 
 
 @router.get("/runs/{run_id}/state")
-async def get_node_state(run_id: str, node_path: str = Query(...)):
+async def get_node_state(run_id: str, scope: str = Query(...), node_path: str = Query(...)):
     meta = await runner.get_run(run_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="run not found")
-    state = await runner.get_node_state(run_id, node_path)
+    state = await runner.get_node_state(run_id, scope, node_path)
     if state is None:
         raise HTTPException(status_code=404, detail="node state not found")
     return state

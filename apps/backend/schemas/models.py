@@ -25,14 +25,18 @@ class StartRunRequest(BaseModel):
 
 
 class ResumeRequest(BaseModel):
+    scope: str  # "main" | "plan" | "render"
+    thread_id: str
     resume_value: Any
 
 
 class RestartFromRequest(BaseModel):
-    node_path: str
+    scope: str  # "main" | "plan" | "render"
+    node: str   # 图内节点名（如 "review_script"）
 
 
 class ForkRequest(BaseModel):
+    scope: str  # "main" | "plan" | "render"
     # 缺省从 run 最新 checkpoint 分叉；指定则从该历史 checkpoint 分叉
     checkpoint_id: str | None = None
 
@@ -54,9 +58,11 @@ class RunMeta(BaseModel):
 
 
 class SSEEvent(BaseModel):
-    type: Literal["node_status", "run_complete", "run_error"]
+    type: Literal["node_status", "interrupt", "run_complete", "run_error"]
+    scope: str | None = None        # "main" | "plan" | "render"
+    thread_id: str | None = None    # 该图 thread（回溯/resume 用）
+    node_path: str | None = None    # 图内节点路径
     node: str | None = None
-    status_key: str | None = None
     status: str | None = None
     payload: dict[str, Any] | None = None
     message: str | None = None

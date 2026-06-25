@@ -12,5 +12,5 @@ async def resume_run(run_id: str, req: ResumeRequest):
     meta = await runner.get_run(run_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="run not found")
-    await runner.resume_run(run_id, req.resume_value)
+    await runner.resume_run(run_id, req.scope, req.thread_id, req.resume_value)
     return {"ok": True}

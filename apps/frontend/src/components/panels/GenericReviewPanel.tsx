@@ -48,15 +48,21 @@ interface Props {
 export default function GenericReviewPanel({
   runId, type, chapterId, script = [], storyboard = [],
 }: Props) {
-  const { setActiveInteraction } = useRunStore()
+  const { setActiveInteraction, activeInteraction } = useRunStore()
   const [feedback, setFeedback] = useState('')
   const meta = META[type]
 
   const handle = async (decision: 'pass' | 'revise') => {
+    if (!activeInteraction) return
     try {
-      await api.resumeRun(runId, decision === 'revise'
-        ? { decision: 'revise', feedback }
-        : { decision: 'pass' })
+      await api.resumeRun(
+        runId,
+        activeInteraction.scope,
+        activeInteraction.thread_id,
+        decision === 'revise'
+          ? { decision: 'revise', feedback }
+          : { decision: 'pass' }
+      )
       setActiveInteraction(null)
       setFeedback('')
     } catch (e) {

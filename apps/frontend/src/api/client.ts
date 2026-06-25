@@ -35,6 +35,8 @@ export interface RunCurrentState {
   status: string
   node_statuses: Record<string, string>
   active_interaction: {
+    scope: string
+    thread_id: string
     node: string
     path: string
     payload: unknown
@@ -47,7 +49,8 @@ export interface CheckpointEntry {
   node: string | null
   created_at: string | null
   next: string[]
-  checkpoint_ns: string
+  scope: string
+  thread_id: string
 }
 
 /** 渲染看板单个候选图。 */
@@ -134,26 +137,26 @@ export const api = {
 
   listRuns: () => request<RunMeta[]>('/runs'),
 
-  resumeRun: (runId: string, resumeValue: unknown) =>
+  resumeRun: (runId: string, scope: string, threadId: string, resumeValue: unknown) =>
     request<{ ok: boolean }>(`/runs/${runId}/resume`, {
       method: 'POST',
-      body: JSON.stringify({ resume_value: resumeValue }),
+      body: JSON.stringify({ scope, thread_id: threadId, resume_value: resumeValue }),
     }),
 
   retryRun: (runId: string) =>
     request<{ ok: boolean }>(`/runs/${runId}/retry`, { method: 'POST' }),
 
-  restartFrom: (runId: string, nodePath: string) =>
+  restartFrom: (runId: string, scope: string, node: string) =>
     request<{ ok: boolean }>(`/runs/${runId}/restart-from`, {
       method: 'POST',
-      body: JSON.stringify({ node_path: nodePath }),
+      body: JSON.stringify({ scope, node }),
     }),
 
   // 从某 checkpoint 分叉出独立新 run（保留原 run 历史）
-  forkRun: (runId: string, checkpointId: string | null) =>
+  forkRun: (runId: string, scope: string, checkpointId: string | null) =>
     request<{ run_id: string }>(`/runs/${runId}/fork`, {
       method: 'POST',
-      body: JSON.stringify({ checkpoint_id: checkpointId }),
+      body: JSON.stringify({ scope, checkpoint_id: checkpointId }),
     }),
 
   // 重命名 run
@@ -175,12 +178,12 @@ export const api = {
 
   listNovels: () => request<{ dirs: string[] }>('/novels/list'),
 
-  getGraphSchema: (subgraphId?: string) =>
-    request<GraphSchema>(subgraphId ? `/graph/schema/${subgraphId}` : '/graph/schema'),
+  getGraphSchema: (scope?: string) =>
+    request<GraphSchema>(`/graph/schema?scope=${encodeURIComponent(scope || 'main')}`),
 
-  getNodeState: (runId: string, nodePath: string) =>
+  getNodeState: (runId: string, scope: string, nodePath: string) =>
     request<{ node: string; values: Record<string, unknown> }>(
-      `/runs/${runId}/state?node_path=${encodeURIComponent(nodePath)}`
+      `/runs/${runId}/state?scope=${encodeURIComponent(scope)}&node_path=${encodeURIComponent(nodePath)}`
     ),
 
   getCheckpoints: (runId: string) =>

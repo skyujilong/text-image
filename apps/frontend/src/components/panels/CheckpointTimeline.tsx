@@ -57,23 +57,22 @@ export default function CheckpointTimeline({ runId }: Props) {
     return () => clearInterval(timer)
   }, [runId, isActive])
 
-  // 覆盖重跑：在原 thread 上从该节点前重放（旧 checkpoint 在 append-only 树中保留）
-  const handleRestartFrom = async (nodePath: string) => {
-    setRunError(null) // 重新运行前先清空旧错误
-    await api.restartFrom(runId, nodePath)
+  // 覆盖重跑：在指定 scope 的 thread 上从该节点前重放（精准回溯）
+  const handleRestartFrom = async (scope: string, node: string) => {
+    setRunError(null)
+    await api.restartFrom(runId, scope, node)
     setCurrentRunId(runId)
     resetNodeStatuses()
     resetDrill()
     const run = runs[runId]
     if (run) upsertRun({ ...run, status: 'running' })
-    incrementStreamGeneration() // 触发 SSE 重新连接
+    incrementStreamGeneration()
   }
 
-  // 分叉：从该 checkpoint 复制出独立新 run，原 run 历史不动
-  // 仅顶层 checkpoint 支持分叉（子图内中间点 fork 暂不支持）
-  const handleFork = async (checkpointId: string) => {
+  // 分叉：从该 scope 的 checkpoint 复制出独立新 run，原 run 历史不动
+  const handleFork = async (scope: string, checkpointId: string) => {
     setRunError(null)
-    const { run_id: newId } = await api.forkRun(runId, checkpointId)
+    const { run_id: newId } = await api.forkRun(runId, scope, checkpointId)
     const all = await api.listRuns()
     setRuns(all)
     setCurrentRunId(newId)
@@ -100,14 +99,15 @@ export default function CheckpointTimeline({ runId }: Props) {
           {/* 撑开滚动总高度 */}
           <div style={{ height: totalHeight, position: 'relative' }}>
             {visibleEntries.map((e, i) => {
-              // 子图叶子（path 含 '/'）重跑粒度是整个父阶段，用不同图标区分顶层精确重跑
-              const isSubLeaf = !!e.node && e.node.includes('/')
               return (
               <div
-                key={e.checkpoint_id}
+                key={`${e.scope}-${e.checkpoint_id}`}
                 style={{ position: 'absolute', top: (startIdx + i) * ITEM_HEIGHT, left: 0, right: 0, height: ITEM_HEIGHT }}
                 className="group flex items-center gap-1.5 px-3 border-b border-border/60 hover:bg-accent"
               >
+                <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground/50 w-10">
+                  {e.scope}
+                </span>
                 <div className="flex-1 truncate text-foreground" title={e.node ?? ''}>
                   {formatNodePathLabel(e.node)}
                 </div>
@@ -117,19 +117,17 @@ export default function CheckpointTimeline({ runId }: Props) {
                 <button
                   className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-blue-600 hover:bg-blue-500/10 transition-colors"
                   title={formatRestartTooltip(e.node)}
-                  onClick={() => e.node && handleRestartFrom(e.node)}
+                  onClick={() => e.node && handleRestartFrom(e.scope, e.node)}
                 >
-                  {isSubLeaf ? <Layers className="size-3.5" /> : <RotateCcw className="size-3.5" />}
+                  <RotateCcw className="size-3.5" />
                 </button>
-                {e.checkpoint_ns === '' && (
-                  <button
-                    className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-green-600 hover:bg-green-500/10 transition-colors"
-                    title="从此点分叉新 Run（保留原历史）"
-                    onClick={() => handleFork(e.checkpoint_id)}
-                  >
-                    <GitBranch className="size-3.5" />
-                  </button>
-                )}
+                <button
+                  className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-green-600 hover:bg-green-500/10 transition-colors"
+                  title="从此点分叉新 Run（保留原历史）"
+                  onClick={() => handleFork(e.scope, e.checkpoint_id)}
+                >
+                  <GitBranch className="size-3.5" />
+                </button>
               </div>
               )
             })}

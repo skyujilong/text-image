@@ -10,7 +10,9 @@ def test_start_run_request_requires_novel_dir():
 
 
 def test_resume_request_fields():
-    r = ResumeRequest(resume_value=2)
+    r = ResumeRequest(scope="plan", thread_id="run-1::plan", resume_value=2)
+    assert r.scope == "plan"
+    assert r.thread_id == "run-1::plan"
     assert r.resume_value == 2
 
 
@@ -22,6 +24,9 @@ def test_run_meta_defaults():
 
 def test_sse_event_serialization():
     e = SSEEvent(
-        type="node_status", node="portrait_selector", status="waiting_human", payload={"candidates": ["a.png"]}
+        type="node_status", scope="plan", thread_id="run-1::plan",
+        node_path="review_script", node="review_script",
+        status="waiting_human", payload={"candidates": ["a.png"]}
     )
     assert e.model_dump()["type"] == "node_status"
+    assert e.model_dump()["scope"] == "plan"

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { api } from '@/api/client'
+import { useRunStore } from '@/store/runStore'
 
 interface Props {
   open: boolean
@@ -10,17 +11,19 @@ interface Props {
 }
 
 export default function StateInspector({ open, nodePath, runId, onClose }: Props) {
+  const { activeInteraction } = useRunStore()
   const [data, setData] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (!open || !nodePath || !runId) return
+    const scope = activeInteraction?.scope ?? 'main'
     setLoading(true)
-    api.getNodeState(runId, nodePath)
+    api.getNodeState(runId, scope, nodePath)
       .then((r) => setData(r.values))
       .catch(() => setData(null))
       .finally(() => setLoading(false))
-  }, [open, nodePath, runId])
+  }, [open, nodePath, runId, activeInteraction])
 
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>

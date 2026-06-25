@@ -4,6 +4,8 @@ import type { RunMeta, RenderShot } from '@/api/client'
 export type NodeStatus = 'pending' | 'running' | 'waiting_human' | 'done' | 'error'
 
 export interface ActiveInteraction {
+  scope: string
+  thread_id: string
   node: string
   payload: unknown
 }

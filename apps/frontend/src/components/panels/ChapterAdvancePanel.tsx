@@ -14,11 +14,12 @@ interface Props {
  * 由右侧常驻区渲染（body-only，无 Sheet 包装）。
  */
 export default function ChapterAdvancePanel({ runId, chapterId, plannedCount }: Props) {
-  const { setActiveInteraction } = useRunStore()
+  const { setActiveInteraction, activeInteraction } = useRunStore()
 
   const handle = async (choice: 'next' | 'render') => {
+    if (!activeInteraction) return
     try {
-      await api.resumeRun(runId, choice)
+      await api.resumeRun(runId, activeInteraction.scope, activeInteraction.thread_id, choice)
       setActiveInteraction(null)
     } catch (e) {
       console.error('resume failed', e)
