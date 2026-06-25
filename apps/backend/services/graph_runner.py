@@ -281,7 +281,8 @@ async def _emit_enveloped(
     祖先节点高亮跟随）。scope 委派架构下按 thread_id 区分：main/plan/render。
     """
     scope = "main" if thread_id == _main_thread(run_id) else thread_id.split("::")[-1]
-    keys = _ancestor_keys(node_path) if propagate else [node_path]
+    scoped_path = f"{scope}/{node_path}"
+    keys = _ancestor_keys(scoped_path) if propagate else [scoped_path]
     for key in keys:
         event: dict[str, Any] = {
             "type": evt_type,
@@ -290,8 +291,8 @@ async def _emit_enveloped(
             "node_path": key,
             "status": status,
         }
-        if key == node_path:
-            event["node"] = key.split("/")[-1]
+        if key == scoped_path:
+            event["node"] = node_path.split("/")[-1]
             if payload is not None:
                 event["payload"] = payload
         await push_event(run_id, event)
@@ -461,6 +462,8 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, checkpoint_i
             snap = await graph.aget_state(cfg)
             snap_next = getattr(snap, "next", None)
             if not snap_next:
+                await _runs_db.update_status(run_id, "done")
+                await push_event(run_id, {"type": "run_complete", "scope": "main", "thread_id": thread_id})
                 return "done"
 
             # 解析 interrupt
@@ -839,10 +842,23 @@ async def get_current_run_state(run_id: str) -> dict:
         real_next = [n for n in snap_next if n not in _VIRTUAL]
         if latest_snap is None and real_next:
             latest_snap = snap
-        seen_nodes.update(real_next)
+        seen_nodes.update(f"main/{n}" for n in real_next)
+
+    # 有 active delegation 时，合并子图历史中的已完成节点（带 scope 前缀）
+    delegation = await _runs_db.get_active_delegation(run_id)
+    if delegation is not None:
+        child_thread = delegation["child_thread_id"]
+        stage = delegation["stage"]
+        child_graph = _get_child_graph(stage)
+        if child_graph is not None:
+            child_cfg = _thread_config(child_thread)
+            async for snap in child_graph.aget_state_history(child_cfg):
+                snap_next = list(getattr(snap, "next", []) or [])
+                real_next = [n for n in snap_next if n not in _VIRTUAL]
+                seen_nodes.update(f"{stage}/{n}" for n in real_next)
 
     latest_next = (
-        [n for n in (getattr(latest_snap, "next", []) or []) if n not in _VIRTUAL]
+        [f"main/{n}" for n in (getattr(latest_snap, "next", []) or []) if n not in _VIRTUAL]
         if latest_snap is not None
         else []
     )
@@ -851,8 +867,6 @@ async def get_current_run_state(run_id: str) -> dict:
             node_statuses[node] = "done"
 
     if run_status == "waiting_human":
-        # 委派架构：先检查是否有 active delegation
-        delegation = await _runs_db.get_active_delegation(run_id)
         if delegation is not None:
             child_thread = delegation["child_thread_id"]
             stage = delegation["stage"]
@@ -863,8 +877,9 @@ async def get_current_run_state(run_id: str) -> dict:
                 resolved = await _resolve_interrupted(child_graph, snap_sub)
                 if resolved:
                     leaf_name, leaf_path, interrupt_val = resolved
-                    node_statuses[leaf_path] = "waiting_human"
-                    parts = leaf_path.split("/")
+                    scoped_leaf_path = f"{stage}/{leaf_path}"
+                    node_statuses[scoped_leaf_path] = "waiting_human"
+                    parts = scoped_leaf_path.split("/")
                     for i in range(1, len(parts)):
                         ancestor = "/".join(parts[:i])
                         node_statuses[ancestor] = "waiting_human"
@@ -872,7 +887,7 @@ async def get_current_run_state(run_id: str) -> dict:
                         "scope": stage,
                         "thread_id": child_thread,
                         "node": leaf_name,
-                        "path": leaf_path,
+                        "path": scoped_leaf_path,
                         "payload": interrupt_val,
                     }
         else:
@@ -880,8 +895,9 @@ async def get_current_run_state(run_id: str) -> dict:
             resolved = await _resolve_interrupted(_main_graph, snap_sub)
             if resolved:
                 leaf_name, leaf_path, interrupt_val = resolved
-                node_statuses[leaf_path] = "waiting_human"
-                parts = leaf_path.split("/")
+                scoped_leaf_path = f"main/{leaf_path}"
+                node_statuses[scoped_leaf_path] = "waiting_human"
+                parts = scoped_leaf_path.split("/")
                 for i in range(1, len(parts)):
                     ancestor = "/".join(parts[:i])
                     node_statuses[ancestor] = "waiting_human"
@@ -889,7 +905,7 @@ async def get_current_run_state(run_id: str) -> dict:
                     "scope": "main",
                     "thread_id": thread_id,
                     "node": leaf_name,
-                    "path": leaf_path,
+                    "path": scoped_leaf_path,
                     "payload": interrupt_val,
                 }
 
