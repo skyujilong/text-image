@@ -123,10 +123,13 @@ const failedLevels = new Set<string>()
  */
 function buildFromSchema(
   schema: GraphSchema,
+  scope: string,
   drillPath: string[],
 ): { nodes: Node[]; edges: RawEdge[] } {
   const rawNodes: Node[] = schema.nodes.map((n) => {
-    const statusKey = [...drillPath, n.id].join('/')
+    // statusKey = scope/drillPath/nodeId，与后端 _ns_to_path 输出格式完全一致
+    // 保证主图/规划图/渲染图的同名节点（如 character_setup_subgraph）互不覆盖
+    const statusKey = [scope, ...drillPath, n.id].join('/')
     if (n.type === 'subgraph') {
       return {
         id: n.id,
@@ -179,10 +182,10 @@ export function useGraphSchema(
   const { nodes, edges } = useMemo(() => {
     const cached = schemaCache.get(levelKey)
     if (!cached) return { nodes: [] as Node[], edges: [] as RawEdge[] }
-    return buildFromSchema(cached, drillPath)
+    return buildFromSchema(cached, scope, drillPath)
     // version 不在函数体内引用，仅用作请求完成（写缓存）后触发重渲染重读缓存的重放触发器。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [levelKey, drillPath, version])
+  }, [levelKey, scope, drillPath, version])
 
   // isLoading 派生：缓存无数据且未失败时才 loading（请求中）。
   const isLoading = !schemaCache.has(levelKey) && !failedLevels.has(levelKey)

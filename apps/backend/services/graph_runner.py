@@ -57,8 +57,14 @@ def _thread_config(thread_id: str, checkpoint_id: str | None = None) -> dict:
     return cfg
 
 
-def _ns_to_path(ns: tuple, node_name: str) -> str:
+def _ns_to_path(scope: str, ns: tuple, node_name: str) -> str:
+    """将 LangGraph 的 ns tuple + node_name 转换为带 scope 前缀的唯一路径。
+
+    scope 前缀保证主图/规划图/渲染图的同名节点（如 character_setup_subgraph）
+    在 node_statuses 中互不覆盖。格式：scope/path/to/node。
+    """
     parts = [p.split(":", 1)[0] for p in ns]
+    parts.insert(0, scope)
     parts.append(node_name)
     return "/".join(parts)
 
@@ -299,7 +305,7 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, scope: str) 
                     continue
                 await _emit_enveloped(
                     run_id, scope=scope, thread_id=thread_id,
-                    node_path=_ns_to_path(ns, task_name),
+                    node_path=_ns_to_path(scope, ns, task_name),
                     evt_type="node_status", status="running", propagate=True,
                 )
                 continue
@@ -310,7 +316,7 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, scope: str) 
                     continue
                 await _emit_enveloped(
                     run_id, scope=scope, thread_id=thread_id,
-                    node_path=_ns_to_path(ns, node_name),
+                    node_path=_ns_to_path(scope, ns, node_name),
                     evt_type="node_status", status="done",
                 )
 
@@ -324,9 +330,11 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, scope: str) 
             log.info("_drive waiting_human scope=%s resolved=%s", scope, resolved)
             if resolved:
                 leaf_name, leaf_path, interrupt_val = resolved
+                # interrupt 的 leaf_path 不带 scope，需补上保证全局唯一
+                full_path = f"{scope}/{leaf_path}" if leaf_path else scope
                 await _emit_enveloped(
                     run_id, scope=scope, thread_id=thread_id,
-                    node_path=leaf_path, evt_type="interrupt", status="waiting_human",
+                    node_path=full_path, evt_type="interrupt", status="waiting_human",
                     payload=interrupt_val, propagate=True,
                 )
                 log.info("_drive 已发 interrupt scope=%s leaf=%s", scope, leaf_path)
@@ -835,7 +843,8 @@ async def get_current_run_state(run_id: str) -> dict:
             if latest_snap is not None
             else []
         )
-        prefix = f"{scope}/" if scope != "main" else ""
+        # 所有 scope 统一加前缀，保证全局唯一：main/load_config、plan/load_chapter、render/render_generate_images
+        prefix = f"{scope}/"
         for node in seen_nodes:
             if node not in latest_next:
                 node_statuses[f"{prefix}{node}"] = "done"
@@ -845,10 +854,12 @@ async def get_current_run_state(run_id: str) -> dict:
             resolved = await _resolve_interrupted(graph, snap_sub)
             if resolved:
                 leaf_name, leaf_path, interrupt_val = resolved
-                node_statuses[f"{prefix}{leaf_path}"] = "waiting_human"
+                full_path = f"{prefix}{leaf_path}"
+                node_statuses[full_path] = "waiting_human"
                 parts = leaf_path.split("/")
-                for i in range(1, len(parts)):
-                    ancestor = "/".join(parts[:i])
+                # 祖先路径逐层加前缀
+                for i in range(1, len(parts) + 1):
+                    ancestor = f"{scope}/{'/'.join(parts[:i])}"
                     node_statuses[ancestor] = "waiting_human"
                 active_interaction = {
                     "scope": scope,

@@ -17,13 +17,16 @@ export default function StateInspector({ open, nodePath, runId, onClose }: Props
 
   useEffect(() => {
     if (!open || !nodePath || !runId) return
-    const scope = activeInteraction?.scope ?? 'main'
+    // nodePath 格式: scope/path/to/node，提取第一段为 scope
+    const parts = nodePath.split('/')
+    const scope = parts[0] ?? 'main'
+    const internalPath = parts.slice(1).join('/')
     setLoading(true)
-    api.getNodeState(runId, scope, nodePath)
+    api.getNodeState(runId, scope, internalPath)
       .then((r) => setData(r.values))
       .catch(() => setData(null))
       .finally(() => setLoading(false))
-  }, [open, nodePath, runId, activeInteraction])
+  }, [open, nodePath, runId])
 
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>

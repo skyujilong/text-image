@@ -31,7 +31,6 @@ class ChapterArtifacts(ChapterArtifactsRequired, total=False):
     渲染阶段从 state 读，故本表不再含 script_path/storyboard_path。"""
 
 
-
 class CharacterProfileRequired(TypedDict):
     """角色档案必填字段（name-based，全局唯一 key=角色名）。"""
 
@@ -51,34 +50,59 @@ class CharacterProfile(CharacterProfileRequired, total=False):
 
 
 # ---------------------------------------------------------------------------
-# State schema 统一基础设计
+# 三层继承设计：语义最小化，避免字段污染
 #
-# 历史问题：MainGraphState 只声明了少量字段，load_config 返回的大量字段
-#（genre/setup_queue/pending_new_characters/_init_characters_review 等）
-# 不在 schema 中，被 LangGraph StateGraph 在 checkpoint 保存/恢复时丢弃。
-# 导致 parse_characters_llm 解析出的角色在 review_initial_characters 读取时
-# 变成空数组（pending_new_characters 被过滤）。
+# 1. SharedGraphState（13 个字段）：三图间 orchestrate 传递的最小公共集合
+#    → MainGraphState / PlanGraphState / RenderGraphState 都继承
 #
-# 修复：MainGraphState 补全为包含所有跨图共享字段的统一基础 schema。
-# 子类（SetupSubgraphState/InitSubgraphState/ChapterSubgraphState/PlanGraphState/
-# RenderGraphState）只添加自己特有的中间态字段，不重复声明父类已有字段。
-# LangGraph 要求：节点返回的字段必须在 StateGraph 的 schema 中声明，否则丢弃。
+# 2. MainGraphState：SharedGraphState + init/setup 专属字段 + 审阅控制字段
+#    → 仅主图 init 阶段与 init/setup 子图使用
+#
+# 3. PlanGraphState / RenderGraphState：SharedGraphState + 各自中间态
+#    → 独立顶层编译，不与主图节点共享字段
 # ---------------------------------------------------------------------------
 
 
-class MainGraphState(TypedDict):
-    """统一基础 state：包含所有跨图共享、需在 checkpoint 中持久化的字段。
+class SharedGraphState(TypedDict):
+    """三图共享最小 state：orchestrate 在图间显式传递的字段集合。
 
-    三图（main/plan/render）和子图都通过同名字段通信。
-    节点返回的 dict 中任何不在 schema 中的字段都会被 LangGraph 丢弃，
-    因此此处必须声明所有 load_config 初始化 + 各节点读写过的字段。
+    仅含跨图通信必需字段，主图 init/setup 的专属字段不下放给 plan/render。
     """
 
-    # ── 全局配置（前端表单传入，load_config 初始化）──
+    # 全局配置（小说基础信息，全流程只读）
     novel_title: str  # 小说标题
     novel_dir: str  # 小说资源根目录路径
     worldview: str  # 世界观设定文本
     character_profiles: str  # 前端 textarea 原始角色设定文本，供 init 阶段 LLM 解析
+
+    # 角色管理（init 写入，plan/render 只读）
+    characters_profile: dict[str, CharacterProfile]  # 角色完整档案（唯一真相），key 为角色名
+    ignored_characters: list[str]  # 已忽略角色名列表
+
+    # 全局音频配置（单播：整本书一份音色参数，渲染阶段共用）
+    audio_config: dict  # dots.tts 生成旋钮 {language, guidance_scale, speaker_scale} + 音色 voice_name
+
+    # 章节状态与产物（orchestrate 维护，plan/render 读写）
+    chapters_status: dict[str, str]  # chapter_id → ChapterStatus
+    chapters_artifacts: dict[str, ChapterArtifacts]  # chapter_id → 产物路径
+
+    # 渲染批次稿件缓存（plan 写入，render 读取）
+    render_batch: list[dict]  # [{chapter_id, script, storyboard}]
+
+    # 进度游标（orchestrate 权威维护，节点内不修改）
+    chapter_order: list[str]  # 全书有序章节 id 列表（init 后确定一次）
+    plan_cursor: str | None  # 下一个待规划的 chapter_id（None=规划全部完成）
+    render_cursor: str | None  # 下一个待渲染的 chapter_id（None=渲染全部完成）
+
+
+class MainGraphState(SharedGraphState):
+    """主图专属 state：SharedGraphState + init/setup 专属字段 + 审阅控制字段。
+
+    仅主图 init 拍平节点与 character_setup_subgraph 使用。
+    plan_graph / render_graph 独立编译，不继承此字段。
+    """
+
+    # ── 全局配置（前端表单传入，load_config 初始化，plan/render 不需要） ──
     genre: str  # 题材类型
     writing_style: str  # 写作风格
     target_audience: str  # 目标受众
@@ -89,18 +113,14 @@ class MainGraphState(TypedDict):
     core_conflicts: str  # 核心冲突
     overall_outline: str  # 整体大纲
 
-    # ── 角色管理 ──
-    characters_profile: dict[str, CharacterProfile]  # 角色完整档案（唯一真相），key 为角色名
-    ignored_characters: list[str]  # 已忽略角色名列表
-
-    # ── init/setup 阶段字段（load_config 初始化，各 init 节点读写）──
+    # ── init/setup 阶段字段（load_config 初始化，仅 init/setup 节点读写） ──
     setup_queue: list[CharacterProfile]  # 待批量配置三视图的角色列表
     setup_image_candidates: list[str]  # 候选图片路径列表
     pending_new_characters: list[CharacterProfile]  # 待人工决策的新角色列表
     _init_characters_review: str  # 初始角色审阅决策（pass/revise）
     _init_characters_feedback: str  # 初始角色审阅打回意见
 
-    # ── 章节审阅路由控制字段（load_config 初始化为空串，各审阅节点读写）──
+    # ── 章节审阅路由控制字段（load_config 初始化为空串，各审阅节点读写） ──
     _script_review_decision: str  # 剧本审阅决策
     _script_review_feedback: str  # 剧本审阅打回意见
     _storyboard_review_decision: str  # 分镜审阅决策
@@ -113,50 +133,29 @@ class MainGraphState(TypedDict):
     # ── 通用路由复用字段 ──
     _route: str  # 通用路由复用字段（如 check_needs_visual 分支）
 
-    # ── 全局音频配置（单播：整本书一份音色参数，渲染阶段共用）──
-    audio_config: dict  # dots.tts 生成旋钮 {language, guidance_scale, speaker_scale} + 音色 voice_name
-
-    # ── 章节状态与产物 ──
-    chapters_status: dict[str, str]  # chapter_id → ChapterStatus
-    chapters_artifacts: dict[str, ChapterArtifacts]  # chapter_id → 产物路径
-
-    # ── 渲染批次稿件缓存 ──
-    render_batch: list[dict]  # [{chapter_id, script, storyboard}]
-
-    # ── 进度游标（应用层编排的权威指针，不在节点内修改）──
-    chapter_order: list[str]  # 全书有序章节 id 列表（init 阶段确定一次）
-    plan_cursor: str | None  # 下一个待规划的 chapter_id（None=规划全部完成）
-    render_cursor: str | None  # 下一个待渲染的 chapter_id（None=渲染全部完成）
-
 
 class SetupSubgraphState(MainGraphState):
     """character_setup_subgraph 专用 state。
 
-    所有共享字段已在 MainGraphState 中声明，此处无需额外字段。
-    与父图通过同名字段通信：setup_queue/characters_profile/novel_dir 等。
+    与父图 MainGraphState 字段完全对齐，setup_queue/characters_profile/novel_dir 等直接透传。
     """
 
     pass
 
 
 class InitSubgraphState(MainGraphState):
-    """init_subgraph 专用 state。
+    """init 子图专用 state（已拍平到主图，保留供历史代码引用）。
 
-    所有共享字段已在 MainGraphState 中声明，此处无需额外字段。
-    init 阶段节点（load_config/parse_characters_llm/review_initial_characters）
-    读写的 _init_characters_review/_init_characters_feedback/pending_new_characters
-    等字段均已包含在 MainGraphState 中。
+    所有共享字段已在 MainGraphState 中声明。
     """
 
     pass
 
 
 class ChapterSubgraphState(MainGraphState):
-    """chapter_loop_subgraph 专用 state。
+    """旧流程 chapter_loop_subgraph 专用 state（已废弃，保留兼容历史 checkpoint）。
 
-    继承 MainGraphState 的所有共享字段，只添加章节内部中间态。
-    current_* 与审核计数器为章节内部中间态（load_chapter 时全部重置），
-    仅在本子图内跨节点流转。
+    新流程 chapter_loop 已拆分为独立的 plan_graph / render_graph 顶层图。
     """
 
     # 当前章节中间状态（load_chapter 时全部重置）
@@ -175,12 +174,11 @@ class ChapterSubgraphState(MainGraphState):
     storyboard_review_attempts: int  # 分镜审核已重试次数
 
 
-class PlanGraphState(MainGraphState):
-    """plan_graph 专用 state：主图共享字段 + 规划中间态。
+class PlanGraphState(SharedGraphState):
+    """plan_graph 专用 state：共享字段 + 规划中间态 + 审阅控制字段。
 
-    规划图作为独立顶层图编译，拥有完整内部 checkpoint 历史，支持精准回溯。
-    与主图通过同名字段通信：chapters_status、render_batch、characters_profile 等
-    由 graph_runner 在图间显式传递。
+    独立顶层编译，拥有完整内部 checkpoint 历史，支持精准回溯。
+    与主图通过 orchestrate 显式传递 SharedGraphState 字段通信。
     """
 
     # 当前章节中间状态（load_chapter 时全部重置）
@@ -193,11 +191,21 @@ class PlanGraphState(MainGraphState):
     script_review_attempts: int
     storyboard_review_attempts: int
 
+    # ── plan_graph 内部路由控制字段 ──
+    # 注：字段名与 MainGraphState 相同，但语义范围不同（主图是全局，plan_graph 是单章）
+    # 历史原因保留同名：节点函数签名复用 GraphState（ChapterSubgraphState）
+    setup_queue: list[CharacterProfile]  # 本章检测到的新角色待配置三视图队列
+    _script_review_decision: str  # 剧本审阅决策（pass/revise）
+    _script_review_feedback: str  # 剧本审阅打回意见
+    _storyboard_review_decision: str  # 分镜审阅决策（pass/revise）
+    _storyboard_review_feedback: str  # 分镜审阅打回意见
+    _chapter_advance: str  # 章节推进决策（next/render）
 
-class RenderGraphState(MainGraphState):
-    """render_graph 专用 state：主图共享字段 + 渲染中间态。
 
-    渲染图作为独立顶层图编译，拥有完整内部 checkpoint 历史，支持精准回溯。
+class RenderGraphState(SharedGraphState):
+    """render_graph 专用 state：共享字段 + 渲染中间态 + 控制字段。
+
+    独立顶层编译，拥有完整内部 checkpoint 历史，支持精准回溯。
     从 render_batch 读取稿件（script/storyboard），渲染完成后更新 chapters_status
     与 chapters_artifacts。
     """
@@ -214,6 +222,9 @@ class RenderGraphState(MainGraphState):
     current_subtitles_path: str
     current_timestamps: list[dict]
     current_timeline_path: str
+
+    # ── render_graph 内部路由控制字段 ──
+    _final_decision: str  # 最终决策（done/continue），由 final_decision 节点写入
 
 
 # 向后兼容别名：等价于最全的 ChapterSubgraphState。
