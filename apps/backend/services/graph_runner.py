@@ -906,41 +906,54 @@ async def fork_from_checkpoint(run_id: str, scope_or_checkpoint_id: str | None, 
     return new_run_id
 
 
-async def get_node_state(run_id: str, scope: str | None = None, node_path: str | None = None) -> dict | None:  # noqa: ARG001
-    """查看某节点执行前的 state 快照（节点路径格式：subgraph_name/node_name）。
+async def get_node_state(run_id: str, scope: str | None = None, node_path: str | None = None) -> dict | None:
+    """查看某节点执行前的 state 快照。
 
-    API 兼容：旧调用 (run_id, scope, node_path) → 忽略 scope，node_path 就是完整路径。
-    新调用 (run_id, node_path) 也支持。
+    委派架构下：
+    - scope=main → 查主图 thread，节点为顶层节点名（如 load_config）
+    - scope=plan → 查子图 thread，节点为 plan 子图内节点名（如 generate_storyboard）
+    - scope=render → 渲染工作台（无 graph 状态，返回 None）
 
-    总图嵌子图架构下：
-    - 顶层节点：node_path = "load_config" 等
-    - 子图节点：node_path = "plan_graph_subgraph/load_chapter" 等
+    API 兼容：旧调用 (run_id, scope, node_path)。
     """
     if _main_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
 
-    # 兼容新旧签名：如果第二个参数是 scope（字符串但不是路径），则第三个参数才是 node_path
-    real_node_path = node_path if node_path is not None else scope
-    if scope is not None and node_path is not None:
-        real_node_path = node_path
+    # 委派架构：根据 scope 选择对应的 graph 和 thread
+    # scope=None 时回退旧逻辑（兼容总图嵌子图架构调用）
+    if scope == "plan" and _plan_graph is not None:
+        graph = _plan_graph
+        thread_id = _child_thread(run_id, "plan")
+        leaf_node = node_path or ""
+    elif scope == "render":
+        # 渲染工作台无 graph 状态（独立文件持久化）
+        return None
+    else:
+        # scope=None 或 "main"：主图
+        graph = _main_graph
+        thread_id = _main_thread(run_id)
+        leaf_node = node_path or scope or ""
 
-    cfg = _thread_config(_main_thread(run_id))
-    parts = real_node_path.split("/") if real_node_path else []
-    leaf_node = parts[-1] if parts else ""
+    cfg = _thread_config(thread_id)
 
-    async for snap in _main_graph.aget_state_history(cfg):
+    async for snap in graph.aget_state_history(cfg):
         snap_next = list(getattr(snap, "next", []) or [])
         if leaf_node in snap_next:
             return {"node": leaf_node, "values": getattr(snap, "values", {})}
+        # 如果找不到，尝试找完整路径匹配（总图嵌子图格式 "subgraph/node"）
+        if leaf_node and "/" not in leaf_node:
+            for n in snap_next:
+                if n.endswith(f"/{leaf_node}"):
+                    return {"node": n, "values": getattr(snap, "values", {})}
 
     # interrupt 节点：检查当前是否暂停在该节点
     try:
-        snap_sub = await _main_graph.aget_state(cfg, subgraphs=True)
-        resolved = await _resolve_interrupted(_main_graph, snap_sub)
+        snap_sub = await graph.aget_state(cfg, subgraphs=True)
+        resolved = await _resolve_interrupted(graph, snap_sub)
     except Exception:
         resolved = None
     if resolved and resolved[1] == node_path:
-        latest = await _main_graph.aget_state(cfg)
+        latest = await graph.aget_state(cfg)
         if latest is not None:
             return {"node": leaf_node, "values": getattr(latest, "values", {})}
 
