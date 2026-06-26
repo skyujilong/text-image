@@ -146,10 +146,10 @@ export const api = {
   retryRun: (runId: string) =>
     request<{ ok: boolean }>(`/runs/${runId}/retry`, { method: 'POST' }),
 
-  restartFrom: (runId: string, scope: string, node: string) =>
+  restartFrom: (runId: string, scope: string, checkpointId: string, node: string) =>
     request<{ ok: boolean }>(`/runs/${runId}/restart-from`, {
       method: 'POST',
-      body: JSON.stringify({ scope, node }),
+      body: JSON.stringify({ scope, checkpoint_id: checkpointId, node }),
     }),
 
   // 从某 checkpoint 分叉出独立新 run（保留原 run 历史）

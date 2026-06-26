@@ -31,8 +31,9 @@ class ResumeRequest(BaseModel):
 
 
 class RestartFromRequest(BaseModel):
-    scope: str  # "main" | "plan" | "render"
-    node: str   # 图内节点名（如 "review_script"）
+    scope: str         # "main" | "plan" | "render"
+    checkpoint_id: str # 要回退到的 checkpoint ID
+    node: str          # 图内节点名（仅用于日志和校验，实际回退由 checkpoint_id 决定）
 
 
 class ForkRequest(BaseModel):

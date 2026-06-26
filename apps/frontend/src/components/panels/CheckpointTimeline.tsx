@@ -58,10 +58,10 @@ export default function CheckpointTimeline({ runId }: Props) {
     return () => clearInterval(timer)
   }, [runId, isActive])
 
-  // 覆盖重跑：在指定 scope 的 thread 上从该节点前重放（精准回溯）
-  const handleRestartFrom = async (scope: string, node: string) => {
+  // 覆盖重跑：在指定 scope 的 thread 上从该 checkpoint 重放（精准回溯）
+  const handleRestartFrom = async (scope: string, checkpointId: string, node: string) => {
     setRunError(null)
-    await api.restartFrom(runId, scope, node)
+    await api.restartFrom(runId, scope, checkpointId, node)
     setCurrentRunId(runId)
     resetNodeStatuses()
     resetDrill()
@@ -121,7 +121,7 @@ export default function CheckpointTimeline({ runId }: Props) {
                 <button
                   className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-blue-600 hover:bg-blue-500/10 transition-colors"
                   title={formatRestartTooltip(e.node)}
-                  onClick={() => e.node && handleRestartFrom(e.scope, e.node)}
+                  onClick={() => e.node && handleRestartFrom(e.scope, e.checkpoint_id, e.node)}
                 >
                   <RotateCcw className="size-3.5" />
                 </button>

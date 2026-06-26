@@ -29,7 +29,7 @@ async def restart_from(run_id: str, req: RestartFromRequest):
     meta = await runner.get_run(run_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="run not found")
-    await runner.restart_stage_from(run_id, req.scope, req.node)
+    await runner.restart_stage_from(run_id, req.scope, req.checkpoint_id, req.node)
     return {"ok": True}
 
 

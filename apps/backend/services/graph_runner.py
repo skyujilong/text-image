@@ -298,23 +298,28 @@ async def _emit_enveloped(
         await push_event(run_id, event)
 
 
-async def _drive_child(child_graph, child_thread_id: str, child_input: Any, run_id: str, stage: str) -> str:
+async def _drive_child(child_graph, child_thread_id: str, child_input: Any, run_id: str, stage: str, *, checkpoint_id: str | None = None) -> str:
     """驱动子图执行到 END 或 interrupt（委派架构）。
 
     子图在独立 thread（run_id::plan / run_id::render）上执行，拥有独立 checkpoint 历史。
     子图内部 interrupt（如 chapter_advance_decision、review_script）直接与前端交互，
     不冒泡到主图——graph_runner 只需在子图暂停时通知前端，在子图 resume 时继续驱动。
 
+    checkpoint_id 参数用于 restart_stage_from 精准回退到目标 checkpoint。
+
     返回 "done"（子图到达 END）或 "waiting_human"（子图内部 interrupt 暂停）。
     """
     if _runs_db is None or child_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
 
-    cfg = _thread_config(child_thread_id)
+    cfg = _thread_config(child_thread_id, checkpoint_id=checkpoint_id)
 
     try:
+        # Time travel: pass None (not Command(resume=None)) to avoid LangGraph
+        # resume_is_map UnboundLocalError when checkpoint_id is set.
+        stream_input = None if checkpoint_id else child_input
         async for ns, mode, payload in child_graph.astream(
-            child_input, config=cfg, stream_mode=["updates", "debug"], subgraphs=True
+            stream_input, config=cfg, stream_mode=["updates", "debug"], subgraphs=True
         ):
             if mode == "debug":
                 if payload.get("type") != "task":
@@ -343,6 +348,11 @@ async def _drive_child(child_graph, child_thread_id: str, child_input: Any, run_
                     status="done",
                     thread_id=child_thread_id,
                 )
+
+        # astream 退出：清除 checkpoint_id，后续 aget_state 用最新 state
+        if checkpoint_id:
+            checkpoint_id = None
+            cfg["configurable"].pop("checkpoint_id", None)
 
         snap = await child_graph.aget_state(cfg)
         snap_next = getattr(snap, "next", None)
@@ -427,8 +437,15 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, checkpoint_i
 
     try:
         while True:
+            # Time travel: pass None (not Command(resume=None)) on first call
+            # to avoid LangGraph resume_is_map UnboundLocalError.
+            # Clear checkpoint_id after first call so subsequent calls use latest state.
+            if checkpoint_id:
+                stream_input = None
+            else:
+                stream_input = input
             async for ns, mode, payload in graph.astream(
-                input, config=cfg, stream_mode=["updates", "debug"], subgraphs=True
+                stream_input, config=cfg, stream_mode=["updates", "debug"], subgraphs=True
             ):
                 if mode == "debug":
                     if payload.get("type") != "task":
@@ -457,6 +474,11 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, checkpoint_i
                         status="done",
                         thread_id=thread_id,
                     )
+
+            # astream 退出：清除 checkpoint_id，后续迭代用最新 state
+            if checkpoint_id:
+                checkpoint_id = None
+                cfg["configurable"].pop("checkpoint_id", None)
 
             # astream 退出：检查是否 interrupt 暂停
             snap = await graph.aget_state(cfg)
@@ -624,42 +646,84 @@ async def retry_run(run_id: str) -> None:
     asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=None), run_id))
 
 
-async def restart_stage_from(run_id: str, scope_or_node: str, node: str | None = None) -> None:  # noqa: ARG001
-    """在主图历史中找 node 执行前的 checkpoint，精准 replay。
+async def _restart_child_and_resume(child_graph, child_thread_id: str, run_id: str, stage: str, checkpoint_id: str, park_checkpoint_id: str | None = None) -> None:
+    """从指定 checkpoint 重启子图，完成后 resume 主图（委派架构）。
 
-    API 兼容：旧调用 (run_id, scope, node) → 忽略 scope，取 node。
-    新调用 (run_id, node_path) → 直接取完整路径。
+    类似 _resume_child，但从特定 checkpoint 回放而非 resume interrupt。
 
-    node_path 是层级路径（如 plan_graph_subgraph/load_chapter），需拆解：
-    - 顶层节点：直接找 next 含该 node 的 checkpoint
-    - 子图节点：找到达子图 entry point 前的 checkpoint，replay 时子图重新进入
+    park_checkpoint_id：主图委派该子图前的 checkpoint，用于重置委派状态。
     """
-    if _main_graph is None:
+    if _runs_db is None or child_graph is None or _main_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
 
-    # 兼容新旧签名：如果 node 是 None，则 scope_or_node 是完整 node_path
-    real_node = node if node is not None else scope_or_node
+    # 重置委派状态为 active（子图重试前先清除之前的 done 状态）
+    await _runs_db.upsert_delegation(run_id, child_thread_id, stage, park_checkpoint_id=park_checkpoint_id, status="active")
 
-    if real_node in ("__start__", "__end__"):
-        raise ValueError(f"不能从虚拟节点 {real_node!r} 重跑（无执行前 checkpoint）")
+    # 从指定 checkpoint 驱动子图
+    child_status = await _drive_child(
+        child_graph, child_thread_id, Command(resume=None), run_id, stage, checkpoint_id=checkpoint_id
+    )
 
-    thread_id = _main_thread(run_id)
-    cfg = _thread_config(thread_id)
-    target_cid = None
-    async for snap in _main_graph.aget_state_history(cfg):
-        snap_next = list(getattr(snap, "next", []) or [])
-        if real_node in snap_next:
-            target_cid = (
-                (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id")
-            )
-            if target_cid:
+    if child_status == "waiting_human":
+        return
+
+    # 子图 done：提取 shared 字段 + 更新游标，resume 主图
+    child_snap = await child_graph.aget_state(_thread_config(child_thread_id))
+    child_state = getattr(child_snap, "values", {}) or {}
+    child_result = _extract_shared_fields(child_state)
+    _update_cursors(child_result, stage)
+
+    await _runs_db.mark_delegation(run_id, child_thread_id, "done")
+
+    asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=child_result), run_id))
+
+
+async def restart_stage_from(run_id: str, scope: str, checkpoint_id: str, node: str | None = None) -> None:
+    """在指定 scope 的图上，从指定 checkpoint 精准回放。
+
+    scope="main" → 驱动主图。
+    scope="plan"/"render" → 驱动子图，同时回滚主图到委派点。
+
+    node 参数仅用于校验该 checkpoint 确实是节点执行前的快照，不参与查找逻辑。
+    """
+    if _main_graph is None or _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+
+    if scope == "main":
+        graph = _main_graph
+        thread_id = _main_thread(run_id)
+    else:
+        graph = _get_child_graph(scope)
+        if graph is None:
+            raise RuntimeError(f"Child graph for stage {scope!r} not initialized")
+        thread_id = _child_thread(run_id, scope)
+
+    # 校验：确认该 checkpoint 确实在该 thread 历史中，且 node 是其 next 之一（可选）
+    if node and node not in ("__start__", "__end__"):
+        found = False
+        cfg = _thread_config(thread_id)
+        async for snap in graph.aget_state_history(cfg):
+            cid = (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id")
+            if cid == checkpoint_id:
+                snap_next = list(getattr(snap, "next", []) or [])
+                if node in snap_next:
+                    found = True
                 break
-    if target_cid is None:
-        raise ValueError(f"未找到节点 {real_node!r} 执行前的 checkpoint（无法重跑）")
+        if not found:
+            raise ValueError(f"Checkpoint {checkpoint_id!r} 不是节点 {node!r} 执行前的快照（无法重跑）")
 
-    get_or_create_sse_queue(run_id)
-    # Bug 2: 传 checkpoint_id 给 _drive，精准回退到目标 checkpoint 再 resume
-    asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=None), run_id, checkpoint_id=target_cid))
+    q = get_or_create_sse_queue(run_id)
+    while not q.empty():
+        await q.get()
+    await _runs_db.update_status(run_id, "running")
+    if scope == "main":
+        asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=None), run_id, checkpoint_id=checkpoint_id))
+    else:
+        # 子图：查找委派记录中的 park_checkpoint_id，用于回滚主图
+        delegations = await _runs_db.list_delegations(run_id)
+        target_delegation = next((d for d in delegations if d["stage"] == scope), None)
+        park_cid = target_delegation["park_checkpoint_id"] if target_delegation else None
+        asyncio.create_task(_restart_child_and_resume(graph, thread_id, run_id, scope, checkpoint_id, park_checkpoint_id=park_cid))
 
 
 async def fork_from_checkpoint(run_id: str, scope_or_checkpoint_id: str | None, checkpoint_id: str | None = None) -> str:  # noqa: ARG001
