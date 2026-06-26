@@ -3,6 +3,7 @@ import { GitBranch, RotateCcw } from 'lucide-react'
 import { api, type CheckpointEntry } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 import { formatNodePathLabel, formatRestartTooltip } from '@/constants/nodeLabels'
+import { formatRelativeTime } from '@/utils/date'
 
 const ITEM_HEIGHT = 36 // px，每行高度（需与实际 py-1.5 + border 对齐）
 const OVERSCAN = 5   // 视窗外额外渲染行数，避免快速滚动白屏
@@ -115,8 +116,11 @@ export default function CheckpointTimeline({ runId }: Props) {
                 <div className="flex-1 truncate text-foreground" title={e.node ?? ''}>
                   {formatNodePathLabel(e.node)}
                 </div>
-                <div className="text-muted-foreground/70 shrink-0 tabular-nums">
-                  {e.created_at ? new Date(e.created_at).toLocaleTimeString() : '—'}
+                <div
+                  className="text-muted-foreground/70 shrink-0 tabular-nums"
+                  title={e.created_at ?? ''}
+                >
+                  {formatRelativeTime(e.created_at)}
                 </div>
                 <button
                   className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-blue-600 hover:bg-blue-500/10 transition-colors"

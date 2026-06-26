@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,28 @@ DATA_DIR.mkdir(exist_ok=True)
 
 CHECKPOINT_DB = str(DATA_DIR / "checkpoints.db")
 RUNS_DB = str(DATA_DIR / "runs.db")
+
+
+def _uuid6_to_datetime(uuid_str: str | None) -> datetime | None:
+    """从 UUIDv6 字符串中提取创建时间。
+
+    UUIDv6 前 60 bit 是时间戳（100 纳秒间隔，从 1582-10-15 00:00:00 UTC 开始）。
+    """
+    if not uuid_str:
+        return None
+    try:
+        u = uuid.UUID(uuid_str)
+        if u.version != 6:
+            return None
+        # UUIDv6: time_high (32 bit) | time_mid (16 bit) | version (4 bit) | time_low (12 bit)
+        timestamp = (u.time >> 16) << 12 | (u.time & 0xFFF)
+        # 转换为 Unix 时间戳（秒）
+        # UUID 时间起点是 1582-10-15 00:00:00 UTC
+        unix_epoch = 0x01B21DD213814000  # 1970-01-01 00:00:00 UTC in UUID 时间单位
+        seconds = (timestamp - unix_epoch) / 10_000_000
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except Exception:
+        return None
 
 # 主图单例（委派架构：主图通过 interrupt 让渡控制权给子图）
 _main_graph = None
@@ -859,13 +882,18 @@ async def get_checkpoints(run_id: str) -> list[dict]:
         step = meta.get("step", -1)
         snap_next = list(getattr(snap, "next", []) or [])
         node_name = snap_next[0] if snap_next and snap_next[0] not in _VIRTUAL else None
+        checkpoint_id = (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id", "")
+        # 优先用 snap.created_at（已经是 ISO 字符串格式），fallback 到 checkpoint_id (UUIDv6) 的时间
         created_at = getattr(snap, "created_at", None)
+        if created_at is None:
+            dt = _uuid6_to_datetime(checkpoint_id)
+            created_at = dt.isoformat() if dt else None
         result.append(
             {
-                "checkpoint_id": (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id", ""),
+                "checkpoint_id": checkpoint_id,
                 "step": step,
                 "node": node_name,
-                "created_at": created_at.isoformat() if created_at and hasattr(created_at, "isoformat") else None,
+                "created_at": created_at,
                 "next": snap_next,
                 "scope": "main",
                 "thread_id": thread_id,
@@ -886,13 +914,18 @@ async def get_checkpoints(run_id: str) -> list[dict]:
             step = meta.get("step", -1)
             snap_next = list(getattr(snap, "next", []) or [])
             node_name = snap_next[0] if snap_next and snap_next[0] not in _VIRTUAL else None
+            checkpoint_id = (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id", "")
+            # 优先用 snap.created_at（已经是 ISO 字符串格式），fallback 到 checkpoint_id (UUIDv6) 的时间
             created_at = getattr(snap, "created_at", None)
+            if created_at is None:
+                dt = _uuid6_to_datetime(checkpoint_id)
+                created_at = dt.isoformat() if dt else None
             result.append(
                 {
-                    "checkpoint_id": (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id", ""),
+                    "checkpoint_id": checkpoint_id,
                     "step": step,
                     "node": node_name,
-                    "created_at": created_at.isoformat() if created_at and hasattr(created_at, "isoformat") else None,
+                    "created_at": created_at,
                     "next": snap_next,
                     "scope": stage,
                     "thread_id": child_thread,
@@ -907,7 +940,8 @@ async def get_checkpoints(run_id: str) -> list[dict]:
         if existing is None or entry["step"] > existing["step"]:
             seen[key] = entry
     deduped = list(seen.values())
-    deduped.sort(key=lambda r: (r["scope"], r["step"] if r["step"] >= 0 else 999999))
+    # 每个 scope 内部按 step 逆序（最新执行的在最上面），scope 之间按 main → plan → render 顺序
+    deduped.sort(key=lambda r: (r["scope"], -(r["step"] if r["step"] >= 0 else 999999)))
     return deduped
 
 
