@@ -166,6 +166,17 @@ class RunsDB:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def list_delegations(self, parent_run_id: str) -> list[dict]:
+        """返回某 run 的全部委派记录（不限 status），按创建时间排序。"""
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        async with self._conn.execute(
+            "SELECT * FROM delegations WHERE parent_run_id=? ORDER BY created_at",
+            (parent_run_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     async def delete_delegations(self, parent_run_id: str) -> None:
         """删除某 run 的全部委派记录（删 run 时清理）。"""
         if self._conn is None:

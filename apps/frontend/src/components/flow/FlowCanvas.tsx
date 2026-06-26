@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 import {
   ReactFlow,
   Background,
@@ -163,12 +163,13 @@ const SCOPE_LABELS: Record<string, string> = {
 }
 
 function FlowCanvasInner() {
-  const { drillPath, popDrill, resetDrill, runError, setRunError, autoFollow, setAutoFollow } =
+  const { drillPath, popDrill, resetDrill, runError, setRunError, autoFollow, setAutoFollow,
+          graphScope, setGraphScope } =
     useRunStore()
 
   // 当前查看的顶层图 scope（main/plan/render）。下钻到子图时 scope 不变，
   // 仅 drillPath 变化；schemaScope 取 currentSubgraph ?? graphScope。
-  const [graphScope, setGraphScope] = useState<'main' | 'plan' | 'render'>('main')
+  // graphScope 存于全局 store，供 Sidebar 执行历史等共享消费。
 
   const currentSubgraph = drillPath[drillPath.length - 1] ?? null
   const schemaScope = currentSubgraph ?? graphScope

@@ -775,19 +775,21 @@ async def get_node_state(run_id: str, scope: str | None = None, node_path: str |
 
 
 async def get_checkpoints(run_id: str) -> list[dict]:
-    """返回 run 的全部 checkpoint 历史条目。
+    """返回 run 的全部 checkpoint 历史条目（主图 + 子图）。
 
-    总图单 thread 架构下不再按 scope 分组，直接返回全部历史，
-    前端按 node_path 的子图前缀自行分组展示。
+    委派架构：主图在独立 thread 上执行，plan/render 子图在各自独立 thread 上执行。
+    此处合并主图与所有子图 thread 的 checkpoint 历史，每条带 scope 字段
+    （main/plan/render），前端按 scope 过滤展示对应阶段的历史。
     """
     _VIRTUAL = ("__start__", "__end__")
-    if _main_graph is None:
+    if _main_graph is None or _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
 
     result = []
+
+    # ── 主图 checkpoint（scope=main）──
     thread_id = _main_thread(run_id)
     cfg = _thread_config(thread_id)
-
     async for snap in _main_graph.aget_state_history(cfg):
         meta = getattr(snap, "metadata", {}) or {}
         step = meta.get("step", -1)
@@ -801,18 +803,47 @@ async def get_checkpoints(run_id: str) -> list[dict]:
                 "node": node_name,
                 "created_at": created_at.isoformat() if created_at and hasattr(created_at, "isoformat") else None,
                 "next": snap_next,
+                "scope": "main",
+                "thread_id": thread_id,
             }
         )
 
-    # 同一 node 只保留最新一条
+    # ── 子图 checkpoint（scope=plan/render）──
+    delegations = await _runs_db.list_delegations(run_id)
+    for d in delegations:
+        stage = d["stage"]
+        child_thread = d["child_thread_id"]
+        child_graph = _get_child_graph(stage)
+        if child_graph is None:
+            continue
+        child_cfg = _thread_config(child_thread)
+        async for snap in child_graph.aget_state_history(child_cfg):
+            meta = getattr(snap, "metadata", {}) or {}
+            step = meta.get("step", -1)
+            snap_next = list(getattr(snap, "next", []) or [])
+            node_name = snap_next[0] if snap_next and snap_next[0] not in _VIRTUAL else None
+            created_at = getattr(snap, "created_at", None)
+            result.append(
+                {
+                    "checkpoint_id": (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id", ""),
+                    "step": step,
+                    "node": node_name,
+                    "created_at": created_at.isoformat() if created_at and hasattr(created_at, "isoformat") else None,
+                    "next": snap_next,
+                    "scope": stage,
+                    "thread_id": child_thread,
+                }
+            )
+
+    # 同一 (scope, node) 只保留最新一条
     seen: dict[str, dict] = {}
     for entry in result:
-        key = entry["node"] or "__end__"
+        key = f"{entry['scope']}/{entry['node'] or '__end__'}"
         existing = seen.get(key)
         if existing is None or entry["step"] > existing["step"]:
             seen[key] = entry
     deduped = list(seen.values())
-    deduped.sort(key=lambda r: r["step"] if r["step"] >= 0 else 999999)
+    deduped.sort(key=lambda r: (r["scope"], r["step"] if r["step"] >= 0 else 999999))
     return deduped
 
 
@@ -844,18 +875,30 @@ async def get_current_run_state(run_id: str) -> dict:
             latest_snap = snap
         seen_nodes.update(f"main/{n}" for n in real_next)
 
-    # 有 active delegation 时，合并子图历史中的已完成节点（带 scope 前缀）
-    delegation = await _runs_db.get_active_delegation(run_id)
-    if delegation is not None:
-        child_thread = delegation["child_thread_id"]
-        stage = delegation["stage"]
-        child_graph = _get_child_graph(stage)
-        if child_graph is not None:
-            child_cfg = _thread_config(child_thread)
-            async for snap in child_graph.aget_state_history(child_cfg):
-                snap_next = list(getattr(snap, "next", []) or [])
-                real_next = [n for n in snap_next if n not in _VIRTUAL]
-                seen_nodes.update(f"{stage}/{n}" for n in real_next)
+    # 合并所有子图（含已完成的历史委派）的已完成节点到 seen_nodes。
+    # 同时记录 active delegation 的子图最新快照，用于标记 running 状态。
+    all_delegations = await _runs_db.list_delegations(run_id)
+    active_delegation = await _runs_db.get_active_delegation(run_id)
+    child_latest_snap = None
+    child_stage = None
+    for d in all_delegations:
+        d_stage = d["stage"]
+        d_child_thread = d["child_thread_id"]
+        d_child_graph = _get_child_graph(d_stage)
+        if d_child_graph is None:
+            continue
+        d_child_cfg = _thread_config(d_child_thread)
+        d_first_real_snap = None
+        async for snap in d_child_graph.aget_state_history(d_child_cfg):
+            snap_next = list(getattr(snap, "next", []) or [])
+            real_next = [n for n in snap_next if n not in _VIRTUAL]
+            if d_first_real_snap is None and real_next:
+                d_first_real_snap = snap
+            seen_nodes.update(f"{d_stage}/{n}" for n in real_next)
+        # 只有 active delegation 的子图才需要标记 running
+        if active_delegation is not None and d["child_thread_id"] == active_delegation["child_thread_id"]:
+            child_latest_snap = d_first_real_snap
+            child_stage = d_stage
 
     latest_next = (
         [f"main/{n}" for n in (getattr(latest_snap, "next", []) or []) if n not in _VIRTUAL]
@@ -866,10 +909,23 @@ async def get_current_run_state(run_id: str) -> dict:
         if node not in latest_next:
             node_statuses[node] = "done"
 
+    # run 正在运行时，标记当前活跃节点为 running（主图 + 子图）
+    if run_status == "running":
+        for node in latest_next:
+            node_statuses[node] = "running"
+        if child_latest_snap is not None and child_stage:
+            child_latest_next = [
+                f"{child_stage}/{n}"
+                for n in (getattr(child_latest_snap, "next", []) or [])
+                if n not in _VIRTUAL
+            ]
+            for node in child_latest_next:
+                node_statuses[node] = "running"
+
     if run_status == "waiting_human":
-        if delegation is not None:
-            child_thread = delegation["child_thread_id"]
-            stage = delegation["stage"]
+        if active_delegation is not None:
+            child_thread = active_delegation["child_thread_id"]
+            stage = active_delegation["stage"]
             child_graph = _get_child_graph(stage)
             if child_graph is not None:
                 child_cfg = _thread_config(child_thread)

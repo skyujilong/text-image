@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { GitBranch, Layers, RotateCcw } from 'lucide-react'
+import { GitBranch, RotateCcw } from 'lucide-react'
 import { api, type CheckpointEntry } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 import { formatNodePathLabel, formatRestartTooltip } from '@/constants/nodeLabels'
@@ -22,6 +22,7 @@ export default function CheckpointTimeline({ runId }: Props) {
     setCurrentRunId,
     incrementStreamGeneration,
     setRunError,
+    graphScope,
   } = useRunStore()
 
   // 虚拟滚动状态
@@ -81,14 +82,17 @@ export default function CheckpointTimeline({ runId }: Props) {
     incrementStreamGeneration()
   }
 
-  const totalHeight = entries.length * ITEM_HEIGHT
+  // 按当前 scope 过滤执行历史（规划阶段只看 plan、渲染阶段只看 render、主流程只看 main）
+  const scopedEntries = entries.filter((e) => e.scope === graphScope)
+
+  const totalHeight = scopedEntries.length * ITEM_HEIGHT
   const startIdx = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN)
-  const endIdx = Math.min(entries.length, Math.ceil((scrollTop + viewHeight) / ITEM_HEIGHT) + OVERSCAN)
-  const visibleEntries = entries.slice(startIdx, endIdx)
+  const endIdx = Math.min(scopedEntries.length, Math.ceil((scrollTop + viewHeight) / ITEM_HEIGHT) + OVERSCAN)
+  const visibleEntries = scopedEntries.slice(startIdx, endIdx)
 
   return (
     <div className="text-xs flex flex-col h-full">
-      {entries.length === 0 ? (
+      {scopedEntries.length === 0 ? (
         <div className="px-3 py-3 text-muted-foreground text-center">暂无执行记录</div>
       ) : (
         <div

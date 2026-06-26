@@ -35,6 +35,8 @@ interface RunStore {
   runError: string | null
   inspectingNode: string | null
   streamGeneration: number
+  // 当前查看的顶层图 scope（main/plan/render），供 Sidebar 过滤执行历史等共享消费。
+  graphScope: 'main' | 'plan' | 'render'
 
   // 图片渲染看板：storyboard_id → shot。由 GET /render/state 全量初始化，
   // SSE render_image 事件增量更新单个 shot（逐张冒出）。区别于 activeInteraction
@@ -55,6 +57,7 @@ interface RunStore {
   // 自动跟随专用：整体替换 drillPath，不触碰 autoFollow。
   setDrillPath: (path: string[]) => void
   setAutoFollow: (v: boolean) => void
+  setGraphScope: (scope: 'main' | 'plan' | 'render') => void
   setViewport: (key: string, vp: ViewportState) => void
   setRunError: (msg: string | null) => void
   setInspectingNode: (path: string | null) => void
@@ -79,6 +82,7 @@ export const useRunStore = create<RunStore>((set) => ({
   runError: null,
   inspectingNode: null,
   streamGeneration: 0,
+  graphScope: 'main',
   renderBoard: {},
 
   setRuns: (runs) =>
@@ -141,6 +145,8 @@ export const useRunStore = create<RunStore>((set) => ({
   setDrillPath: (path) => set({ drillPath: path }),
 
   setAutoFollow: (v) => set({ autoFollow: v }),
+
+  setGraphScope: (scope) => set({ graphScope: scope }),
 
   setViewport: (key, vp) =>
     set((s) => ({ viewports: { ...s.viewports, [key]: vp } })),
