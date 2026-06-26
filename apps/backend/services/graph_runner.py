@@ -981,16 +981,27 @@ async def get_checkpoints(run_id: str) -> list[dict]:
                 }
             )
 
-    # 同一 (scope, node) 只保留最新一条
+    # 同一 (scope, node) 只保留最新一条（按 created_at 判断）
     seen: dict[str, dict] = {}
     for entry in result:
         key = f"{entry['scope']}/{entry['node'] or '__end__'}"
         existing = seen.get(key)
-        if existing is None or entry["step"] > existing["step"]:
+        if existing is None:
             seen[key] = entry
+        else:
+            # 按 created_at 比较，保留更新的；时间相同则 step 大的更新
+            entry_time = entry["created_at"] or ""
+            existing_time = existing["created_at"] or ""
+            if entry_time > existing_time or (entry_time == existing_time and entry["step"] > existing["step"]):
+                seen[key] = entry
     deduped = list(seen.values())
-    # 每个 scope 内部按 step 逆序（最新执行的在最上面），scope 之间按 main → plan → render 顺序
-    deduped.sort(key=lambda r: (r["scope"], -(r["step"] if r["step"] >= 0 else 999999)))
+    # 每个 scope 内部按 created_at 降序（最新执行的在最上面），符合"历史记录"直觉
+    # step 仅作为时间相同时的兜底排序
+    # scope 之间按 main → plan → render 顺序排列
+    deduped.sort(
+        key=lambda r: (r["scope"], r["created_at"] or "", r["step"]),
+        reverse=True
+    )
     return deduped
 
 
