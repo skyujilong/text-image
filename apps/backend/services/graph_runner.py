@@ -861,12 +861,53 @@ async def get_node_state(run_id: str, scope: str | None = None, node_path: str |
     return None
 
 
+async def _get_active_branch_checkpoint_ids(thread_id: str) -> set[str]:
+    """获取某 thread 活跃分支的 checkpoint_id 集合（通过 parent_checkpoint_id 反向追溯）。
+
+    LangGraph checkpointer 是 append-only 设计，回溯重跑后旧 checkpoints 不会被删除，
+    但它们的 parent_checkpoint_id 会与当前活跃分支脱节。本函数通过从最新 checkpoint
+    反向追溯 parent 链，获取当前活跃分支的所有 checkpoint_id。
+    """
+    import aiosqlite
+    active_ids: set[str] = set()
+    try:
+        async with aiosqlite.connect(CHECKPOINT_DB) as db:
+            db.row_factory = aiosqlite.Row
+            # 获取该 thread 所有 checkpoint 的 id + parent_id + step
+            async with db.execute(
+                "SELECT checkpoint_id, parent_checkpoint_id, "
+                "CAST(json_extract(metadata, '$.step') AS INTEGER) AS step "
+                "FROM checkpoints WHERE thread_id=? AND checkpoint_ns='' "
+                "ORDER BY step DESC",
+                (thread_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+            if not rows:
+                return active_ids
+            # 找到最新 checkpoint（step 最大的）作为追溯起点
+            latest = max(rows, key=lambda r: r["step"] if r["step"] is not None else -1)
+            # 构建 parent 映射
+            parent_map: dict[str, str] = {r["checkpoint_id"]: r["parent_checkpoint_id"] for r in rows}
+            # 反向追溯：从最新开始，沿着 parent 链一直到根
+            current_id = latest["checkpoint_id"]
+            while current_id and current_id not in active_ids:
+                active_ids.add(current_id)
+                current_id = parent_map.get(current_id)
+    except Exception:
+        # 查询失败时回退：返回空集合，get_checkpoints 将显示全部历史
+        pass
+    return active_ids
+
+
 async def get_checkpoints(run_id: str) -> list[dict]:
-    """返回 run 的全部 checkpoint 历史条目（主图 + 子图）。
+    """返回 run 的 checkpoint 历史条目（主图 + 子图），仅显示当前活跃分支。
 
     委派架构：主图在独立 thread 上执行，plan/render 子图在各自独立 thread 上执行。
     此处合并主图与所有子图 thread 的 checkpoint 历史，每条带 scope 字段
     （main/plan/render），前端按 scope 过滤展示对应阶段的历史。
+
+    活跃分支过滤：回溯重跑后旧 checkpoints 仍存在于 DB 但属于废弃分支，
+    通过 parent_checkpoint_id 反向追溯只保留当前活跃分支（LangGraph Dev 行为）。
     """
     _VIRTUAL = ("__start__", "__end__")
     if _main_graph is None or _runs_db is None:
@@ -876,13 +917,17 @@ async def get_checkpoints(run_id: str) -> list[dict]:
 
     # ── 主图 checkpoint（scope=main）──
     thread_id = _main_thread(run_id)
+    active_ids = await _get_active_branch_checkpoint_ids(thread_id)
     cfg = _thread_config(thread_id)
     async for snap in _main_graph.aget_state_history(cfg):
+        checkpoint_id = (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id", "")
+        # 活跃分支过滤：有 active_ids 集合时只保留集合内的 checkpoint
+        if active_ids and checkpoint_id not in active_ids:
+            continue
         meta = getattr(snap, "metadata", {}) or {}
         step = meta.get("step", -1)
         snap_next = list(getattr(snap, "next", []) or [])
         node_name = snap_next[0] if snap_next and snap_next[0] not in _VIRTUAL else None
-        checkpoint_id = (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id", "")
         # 优先用 snap.created_at（已经是 ISO 字符串格式），fallback 到 checkpoint_id (UUIDv6) 的时间
         created_at = getattr(snap, "created_at", None)
         if created_at is None:
@@ -908,13 +953,17 @@ async def get_checkpoints(run_id: str) -> list[dict]:
         child_graph = _get_child_graph(stage)
         if child_graph is None:
             continue
+        child_active_ids = await _get_active_branch_checkpoint_ids(child_thread)
         child_cfg = _thread_config(child_thread)
         async for snap in child_graph.aget_state_history(child_cfg):
+            checkpoint_id = (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id", "")
+            # 活跃分支过滤
+            if child_active_ids and checkpoint_id not in child_active_ids:
+                continue
             meta = getattr(snap, "metadata", {}) or {}
             step = meta.get("step", -1)
             snap_next = list(getattr(snap, "next", []) or [])
             node_name = snap_next[0] if snap_next and snap_next[0] not in _VIRTUAL else None
-            checkpoint_id = (getattr(snap, "config", {}) or {}).get("configurable", {}).get("checkpoint_id", "")
             # 优先用 snap.created_at（已经是 ISO 字符串格式），fallback 到 checkpoint_id (UUIDv6) 的时间
             created_at = getattr(snap, "created_at", None)
             if created_at is None:
