@@ -91,3 +91,17 @@ export function formatRestartTooltip(nodePath: string | null): string {
   }
   return '从此节点重跑（覆盖当前分支）'
 }
+
+/**
+ * 解析 chapter_id（格式 chapter_002_屏间惨叫证灾变）→ { seq, title }。
+ *
+ * 规划阶段是多章 loop，checkpoint 历史按 (scope, node, chapter_id) 去重后保留每章每节点，
+ * 前端用此函数把 chapter_id 转成「第N章」序号标签 + 完整标题 tooltip，便于辨认 loop 中
+ * 某条记录属于哪一章。非该格式（主图条目 chapter_id 恒空 / 入口 checkpoint）返回 null。
+ */
+export function parseChapterId(chapterId: string | null | undefined): { seq: number; title: string } | null {
+  if (!chapterId) return null
+  const m = chapterId.match(/^chapter_(\d+)_(.+)$/)
+  if (!m) return null
+  return { seq: parseInt(m[1], 10), title: m[2] }
+}

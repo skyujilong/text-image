@@ -1019,6 +1019,9 @@ async def get_checkpoints(run_id: str) -> list[dict]:
         if created_at is None:
             dt = _uuid6_to_datetime(checkpoint_id)
             created_at = dt.isoformat() if dt else None
+        # 从 state 提取当前章节（主图无章节概念，恒为 None）
+        values = getattr(snap, "values", {}) or {}
+        chapter_id = values.get("current_chapter_id") or None
         result.append(
             {
                 "checkpoint_id": checkpoint_id,
@@ -1028,6 +1031,7 @@ async def get_checkpoints(run_id: str) -> list[dict]:
                 "next": snap_next,
                 "scope": "main",
                 "thread_id": thread_id,
+                "chapter_id": chapter_id,
             }
         )
 
@@ -1055,6 +1059,10 @@ async def get_checkpoints(run_id: str) -> list[dict]:
             if created_at is None:
                 dt = _uuid6_to_datetime(checkpoint_id)
                 created_at = dt.isoformat() if dt else None
+            # 从 state 提取当前章节（plan loop 每章 current_chapter_id 不同；
+            # load_chapter 前的入口 checkpoint 为 None）
+            values = getattr(snap, "values", {}) or {}
+            chapter_id = values.get("current_chapter_id") or None
             result.append(
                 {
                     "checkpoint_id": checkpoint_id,
@@ -1064,13 +1072,17 @@ async def get_checkpoints(run_id: str) -> list[dict]:
                     "next": snap_next,
                     "scope": stage,
                     "thread_id": child_thread,
+                    "chapter_id": chapter_id,
                 }
             )
 
-    # 同一 (scope, node) 只保留最新一条（按 created_at 判断）
+    # 同一 (scope, node, chapter_id) 只保留最新一条（按 created_at 判断）。
+    # key 含 chapter_id：规划阶段多章 loop 同节点名每章执行一次，加章节维度后
+    # 保留每章每节点；同章同节点 revise 重跑仍去重留最新。主图 chapter_id 恒空，
+    # 行为同原逻辑。
     seen: dict[str, dict] = {}
     for entry in result:
-        key = f"{entry['scope']}/{entry['node'] or '__end__'}"
+        key = f"{entry['scope']}/{entry['node'] or '__end__'}/{entry.get('chapter_id') or ''}"
         existing = seen.get(key)
         if existing is None:
             seen[key] = entry

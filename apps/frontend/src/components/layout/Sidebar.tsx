@@ -151,7 +151,7 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
   const currentStatus = currentRun?.status ? STATUS_META[currentRun.status] : undefined
 
   return (
-    <aside className="w-64 border-r border-sidebar-border bg-sidebar flex flex-col h-full">
+    <aside className="w-96 border-r border-sidebar-border bg-sidebar flex flex-col h-full">
       {/* 顶部：新建 Run */}
       <div className="p-3 border-b border-sidebar-border">
         <Button className="w-full" size="sm" onClick={onNewRun}>

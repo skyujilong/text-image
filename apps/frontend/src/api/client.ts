@@ -51,6 +51,7 @@ export interface CheckpointEntry {
   next: string[]
   scope: string
   thread_id: string
+  chapter_id?: string | null
 }
 
 /** 渲染看板单个候选图。 */

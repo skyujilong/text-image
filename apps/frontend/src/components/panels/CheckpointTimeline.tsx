@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { GitBranch, RotateCcw } from 'lucide-react'
 import { api, type CheckpointEntry } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
-import { formatNodePathLabel, formatRestartTooltip } from '@/constants/nodeLabels'
+import { formatNodePathLabel, formatRestartTooltip, parseChapterId } from '@/constants/nodeLabels'
 import { formatRelativeTime } from '@/utils/date'
 
 const ITEM_HEIGHT = 36 // px，每行高度（需与实际 py-1.5 + border 对齐）
@@ -113,6 +113,17 @@ export default function CheckpointTimeline({ runId }: Props) {
                 <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground/50 w-10">
                   {e.scope}
                 </span>
+                {(() => {
+                  const ch = parseChapterId(e.chapter_id)
+                  return ch ? (
+                    <span
+                      className="shrink-0 text-[10px] text-blue-600 dark:text-blue-400 tabular-nums"
+                      title={`第${ch.seq}章 ${ch.title}`}
+                    >
+                      第{ch.seq}章
+                    </span>
+                  ) : null
+                })()}
                 <div className="flex-1 truncate text-foreground" title={e.node ?? ''}>
                   {formatNodePathLabel(e.node)}
                 </div>
