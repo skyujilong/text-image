@@ -80,6 +80,30 @@ export interface RenderBoard {
   pending: string[]
 }
 
+/** 渲染工作台章节列表项（GET /runs/{id}/render/chapters）。 */
+export interface RenderChapter {
+  chapter_id: string
+  status: string
+  has_script: boolean
+  has_storyboard: boolean
+  storyboard_count?: number
+  chapter_text_path?: string
+  storyboard?: Array<Record<string, unknown>>
+}
+
+/** 音频合成状态（GET /runs/{id}/render/chapter/{ch_id}/audio）。 */
+export interface AudioStatus {
+  chapter_id: string
+  status: string
+  audio_path: string | null
+}
+
+/** 时间轴数据（GET /runs/{id}/render/chapter/{ch_id}/timeline）。 */
+export interface TimelineData {
+  chapter_id: string
+  timeline: unknown | null
+}
+
 // dots.tts 音色预设（GET /voices 返回项）。audio_url 指向 dots 服务端音频，前端仅展示名称。
 export interface VoicePreset {
   name: string
@@ -209,6 +233,44 @@ export const api = {
     request<{ ok: boolean }>(`/runs/${runId}/render/select`, {
       method: 'POST',
       body: JSON.stringify({ shot_id: shotId, candidate }),
+    }),
+
+  // ─── 渲染工作台 ─────────────────────────────────────────────
+  // 章节列表 + 渲染状态（后端返回 {chapters: [...]}，解包为裸数组）
+  getRenderChapters: (runId: string) =>
+    request<{ chapters: RenderChapter[] }>(`/runs/${runId}/render/chapters`).then((r) => r.chapters),
+
+  // 启动某章节渲染
+  startChapterRender: (runId: string, chapterId: string) =>
+    request<{ ok: boolean }>(`/runs/${runId}/render/chapter/${chapterId}/start`, {
+      method: 'POST',
+    }),
+
+  // 提交 TTS 合成
+  synthesizeAudio: (runId: string, chapterId: string, audioConfig: Record<string, unknown>) =>
+    request<{ ok: boolean }>(`/runs/${runId}/render/chapter/${chapterId}/audio`, {
+      method: 'POST',
+      body: JSON.stringify(audioConfig),
+    }),
+
+  // 查询音频合成状态
+  getAudioStatus: (runId: string, chapterId: string) =>
+    request<AudioStatus>(`/runs/${runId}/render/chapter/${chapterId}/audio`),
+
+  // 生成时间轴
+  buildTimeline: (runId: string, chapterId: string) =>
+    request<{ ok: boolean }>(`/runs/${runId}/render/chapter/${chapterId}/timeline`, {
+      method: 'POST',
+    }),
+
+  // 获取时间轴数据
+  getTimeline: (runId: string, chapterId: string) =>
+    request<TimelineData>(`/runs/${runId}/render/chapter/${chapterId}/timeline`),
+
+  // 导出剪映草稿
+  exportDraft: (runId: string) =>
+    request<{ export_path: string; chapters_status: Record<string, string> }>(`/runs/${runId}/render/export`, {
+      method: 'POST',
     }),
 
   // 上传文件（如角色三视图）到 run 的 novel_dir/characters，按 {小说名}-{人物名}.ext 命名。

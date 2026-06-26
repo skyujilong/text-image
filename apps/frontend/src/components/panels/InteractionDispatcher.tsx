@@ -4,9 +4,6 @@ import InitialCharactersReviewPanel from './InitialCharactersReviewPanel'
 import TriViewUploadPanel from './TriViewUploadPanel'
 import ChapterAdvancePanel from './ChapterAdvancePanel'
 import FinalDecisionPanel from './FinalDecisionPanel'
-import AudioConfigPanel from './AudioConfigPanel'
-import ImageRenderPanel from './ImageRenderPanel'
-import ServerReadyPanel from './ServerReadyPanel'
 
 interface Props {
   runId: string
@@ -25,9 +22,6 @@ const PAYLOAD_TYPE_TO_NODE: Record<string, string> = {
   storyboard_review: 'review_storyboard',
   chapter_advance: 'chapter_advance_decision',
   final_decision: 'final_decision',
-  audio_config: 'configure_audio',
-  image_render: 'render_generate_images',
-  server_ready: 'wait_for_server_ready',
 }
 
 /**
@@ -118,30 +112,6 @@ function InteractionBody({ runId, interaction }: { runId: string; interaction: A
           runId={runId}
           exportedCount={(p.exported_count as number) ?? 0}
           remainingPending={(p.remaining_pending as number) ?? 0}
-        />
-      )
-    case 'configure_audio':
-      return (
-        <AudioConfigPanel
-          runId={runId}
-          current={p.current as Record<string, unknown> | undefined}
-        />
-      )
-    case 'render_generate_images':
-      return (
-        <ImageRenderPanel
-          runId={runId}
-          chapterId={p.chapter_id as string | undefined}
-          storyboard={(p.storyboard as Record<string, unknown>[]) ?? []}
-        />
-      )
-    case 'wait_for_server_ready':
-      return (
-        <ServerReadyPanel
-          runId={runId}
-          operation={p.operation as string | undefined}
-          chapterId={p.chapter_id as string | undefined}
-          message={p.message as string | undefined}
         />
       )
     default:

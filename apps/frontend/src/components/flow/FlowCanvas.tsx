@@ -91,30 +91,41 @@ function useAutoCenter(nodes: Node[]) {
 /**
  * 自动切换 scope tab：始终跟踪活跃节点（running/waiting_human）所在的顶层 scope，
  * 不受 autoFollow 开关影响。保证顶部 tab 与实际执行位置一致。
- * waiting_human 强优先，避免 running 节点在 scope 切换瞬间抢夺 tab。
+ *
+ * 委派架构下，主图委派节点（run_plan_stage）让渡控制权后会永驻 running，与子图活跃
+ * 节点并存导致同分锁死。因此优先用后端 delegate 事件锁定的 delegatedScope：
+ *   - delegatedScope 非空（委派 active）：强制锁该 scope，不受 running 节点干扰，
+ *     子图内部节点切换/短暂无 running 也不抖动；子图 done 才解锁。
+ *   - delegatedScope 为空：回退到按活跃节点抢分（waiting_human 强优先）。
  */
-function useAutoScope(graphScope: string, setGraphScope: (s: 'main' | 'plan' | 'render') => void) {
+function useAutoScope(graphScope: string, setGraphScope: (s: 'main' | 'plan') => void) {
   const nodeStatuses = useRunStore((s) => s.nodeStatuses)
-  const drillPath = useRunStore((s) => s.drillPath)
+  const delegatedScope = useRunStore((s) => s.delegatedScope)
   const setDrillPath = useRunStore((s) => s.setDrillPath)
 
   useEffect(() => {
     let bestScope: string | null = null
-    let bestScore = -1
-    for (const [key, st] of Object.entries(nodeStatuses)) {
-      if (st !== 'running' && st !== 'waiting_human') continue
-      const scope = key.split('/')[0]
-      if (!['main', 'plan', 'render'].includes(scope)) continue
-      const score = st === 'waiting_human' ? 1000 : 0
-      if (score > bestScore) {
-        bestScore = score
-        bestScope = scope
+    if (delegatedScope) {
+      // 委派 active：锁定该 scope，忽略节点 running 抢分
+      bestScope = delegatedScope
+    } else {
+      // 无委派：按活跃节点抢分
+      let bestScore = -1
+      for (const [key, st] of Object.entries(nodeStatuses)) {
+        if (st !== 'running' && st !== 'waiting_human') continue
+        const scope = key.split('/')[0]
+        if (!['main', 'plan'].includes(scope)) continue
+        const score = st === 'waiting_human' ? 1000 : 0
+        if (score > bestScore) {
+          bestScore = score
+          bestScope = scope
+        }
       }
     }
     if (!bestScope || bestScope === graphScope) return
-    setGraphScope(bestScope as 'main' | 'plan' | 'render')
+    setGraphScope(bestScope as 'main' | 'plan')
     setDrillPath([])
-  }, [nodeStatuses, graphScope, setGraphScope, setDrillPath, drillPath])
+  }, [nodeStatuses, delegatedScope, graphScope, setGraphScope, setDrillPath])
 }
 
 /**
@@ -155,11 +166,10 @@ function useAutoFollow() {
   }, [nodeStatuses, drillPath, autoFollow, setDrillPath])
 }
 
-/** 三图 scope 标签。 */
+/** scope 标签。 */
 const SCOPE_LABELS: Record<string, string> = {
   main: '主流程',
   plan: '规划阶段',
-  render: '渲染阶段',
 }
 
 function FlowCanvasInner() {
@@ -167,7 +177,7 @@ function FlowCanvasInner() {
           graphScope, setGraphScope } =
     useRunStore()
 
-  // 当前查看的顶层图 scope（main/plan/render）。下钻到子图时 scope 不变，
+  // 当前查看的顶层图 scope（main/plan）。下钻到子图时 scope 不变，
   // 仅 drillPath 变化；schemaScope 取 currentSubgraph ?? graphScope。
   // graphScope 存于全局 store，供 Sidebar 执行历史等共享消费。
 
@@ -176,9 +186,9 @@ function FlowCanvasInner() {
 
   const { nodes, edges, isLoading } = useGraphSchema(schemaScope, drillPath, graphScope)
 
-  // 切换 scope 时重置下钻路径（plan/render 无子图可下钻，切回 main 也回到顶层）
+  // 切换 scope 时重置下钻路径（plan 无子图可下钻，切回 main 也回到顶层）
   const handleScopeChange = useCallback(
-    (scope: 'main' | 'plan' | 'render') => {
+    (scope: 'main' | 'plan') => {
       setGraphScope(scope)
       resetDrill()
     },
@@ -216,9 +226,9 @@ function FlowCanvasInner() {
     <div className="relative w-full h-full">
       {/* 左上角：scope 切换 tab + 面包屑 */}
       <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
-        {/* 三图 scope 切换 */}
+        {/* scope 切换 */}
         <div className="flex items-center gap-1 bg-background rounded-lg border border-border shadow-sm px-1 py-1">
-          {(['main', 'plan', 'render'] as const).map((s) => (
+          {(['main', 'plan'] as const).map((s) => (
             <Button
               key={s}
               variant={graphScope === s ? 'default' : 'ghost'}

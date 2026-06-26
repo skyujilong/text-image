@@ -4,6 +4,7 @@ from urllib.parse import quote
 
 import services.graph_runner as runner
 import services.render_session as render_session
+import services.render_service as render_service
 from fastapi import APIRouter, HTTPException
 from novel2media import render_planning, render_state
 from pydantic import BaseModel
@@ -162,3 +163,80 @@ async def select_candidate(run_id: str, req: SelectRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True}
+
+
+# ── 渲染工作台 API（Step 6 新增） ──────────────────────────────────────
+
+
+class AudioRequest(BaseModel):
+    audio_config: dict | None = None
+
+
+@router.get("/runs/{run_id}/render/chapters")
+async def get_render_chapters(run_id: str):
+    """渲染工作台：返回章节列表 + 渲染状态。"""
+    try:
+        chapters = await render_service.get_render_chapters(run_id)
+        return {"chapters": chapters}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/runs/{run_id}/render/chapter/{ch_id}/start")
+async def start_chapter_render(run_id: str, ch_id: str):
+    """启动某章节图片渲染：写 render_state + 启动 RenderSession。"""
+    try:
+        result = await render_service.start_chapter_render(run_id, ch_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/runs/{run_id}/render/chapter/{ch_id}/audio")
+async def synthesize_audio(run_id: str, ch_id: str, req: AudioRequest):
+    """提交 TTS 音频合成。"""
+    try:
+        result = await render_service.synthesize_audio(run_id, ch_id, req.audio_config)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/runs/{run_id}/render/chapter/{ch_id}/audio")
+async def get_audio_status(run_id: str, ch_id: str):
+    """查询音频合成状态 / 下载。"""
+    try:
+        result = await render_service.get_audio_status(run_id, ch_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/runs/{run_id}/render/chapter/{ch_id}/timeline")
+async def build_chapter_timeline(run_id: str, ch_id: str):
+    """生成某章节时间轴。"""
+    try:
+        result = await render_service.build_chapter_timeline(run_id, ch_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/runs/{run_id}/render/chapter/{ch_id}/timeline")
+async def get_chapter_timeline(run_id: str, ch_id: str):
+    """获取某章节时间轴数据。"""
+    try:
+        result = await render_service.get_chapter_timeline(run_id, ch_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/runs/{run_id}/render/export")
+async def export_draft(run_id: str):
+    """导出剪映草稿。"""
+    try:
+        result = await render_service.export_draft(run_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

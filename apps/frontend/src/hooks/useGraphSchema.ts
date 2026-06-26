@@ -164,10 +164,10 @@ function buildFromSchema(
 /**
  * 加载并缓存指定 scope 的图 schema，返回带 dagre 布局的 React Flow nodes/edges。
  *
- * @param scope 图 scope：'main' | 'plan' | 'render'，或下钻时的子图 ID（如 'character_setup_subgraph'）
+ * @param scope 图 scope：'main' | 'plan'，或下钻时的子图 ID（如 'character_setup_subgraph'）
  * @param drillPath 下钻路径栈，用于构建 statusKey 前缀
- * @param graphScope 顶层图 scope（main/plan/render），用于 statusKey 前缀；
- *   下钻时与 scope 不同（scope=子图ID, graphScope=plan/render）
+ * @param graphScope 顶层图 scope（main/plan），用于 statusKey 前缀；
+ *   下钻时与 scope 不同（scope=子图ID, graphScope=plan）
  */
 export function useGraphSchema(
   scope: string,

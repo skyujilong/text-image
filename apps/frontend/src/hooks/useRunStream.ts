@@ -4,7 +4,7 @@ import type { NodeStatus } from '@/store/runStore'
 import { useRunStore } from '@/store/runStore'
 
 export function useRunStream(runId: string | null) {
-  const { setNodeStatus, setActiveInteraction, upsertRun, setRunError, streamGeneration, batchSetNodeStatuses } = useRunStore()
+  const { setNodeStatus, setActiveInteraction, upsertRun, setRunError, streamGeneration, batchSetNodeStatuses, setDelegatedScope } = useRunStore()
   const esRef = useRef<EventSource | null>(null)
 
   // 从 checkpoint 历史恢复节点展示状态。初次加载与 SSE 重连成功后都复用：
@@ -13,6 +13,8 @@ export function useRunStream(runId: string | null) {
     api.getRunCurrentState(id)
       .then((state) => {
         batchSetNodeStatuses(state.node_statuses as Record<string, NodeStatus>)
+        // 重建委派 scope 锁定态：委派进行中刷新后仍需锁定 plan tab
+        setDelegatedScope((state.delegated_scope as 'main' | 'plan' | null) ?? null)
         if (state.active_interaction) {
           setActiveInteraction({
             scope: state.active_interaction.scope,
@@ -26,7 +28,7 @@ export function useRunStream(runId: string | null) {
         console.log('[restore] run_id=%s status=%s restored %d node statuses', id, state.status, Object.keys(state.node_statuses).length)
       })
       .catch((err) => console.warn('[restore] failed to restore run state:', err))
-  }, [batchSetNodeStatuses, setActiveInteraction])
+  }, [batchSetNodeStatuses, setActiveInteraction, setDelegatedScope])
 
   // 切换 run 或刷新页面后，从 checkpoint 历史恢复节点展示状态
   useEffect(() => {
@@ -119,6 +121,14 @@ export function useRunStream(runId: string | null) {
         } else {
           setNodeStatus(nodePath, status as 'running' | 'done' | 'error')
         }
+      }
+
+      if (type === 'delegate') {
+        // 委派生命周期事件：active → 锁定该 scope tab；done → 解锁回退到主流程
+        const scope = event.scope as 'main' | 'plan'
+        const status = event.status as 'active' | 'done'
+        console.log('[SSE] 委派:', scope, status)
+        setDelegatedScope(status === 'active' ? scope : null)
       }
 
       if (type === 'render_image') {

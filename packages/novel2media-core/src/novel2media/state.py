@@ -92,14 +92,14 @@ class SharedGraphState(TypedDict):
     # 进度游标（orchestrate 权威维护，节点内不修改）
     chapter_order: list[str]  # 全书有序章节 id 列表（init 后确定一次）
     plan_cursor: str | None  # 下一个待规划的 chapter_id（None=规划全部完成）
-    render_cursor: str | None  # 下一个待渲染的 chapter_id（None=渲染全部完成）
+    render_cursor: str | None  # 下一个待渲染的 chapter_id（None=渲染全部完成）— 主图不再使用，后端 API 追踪渲染进度时读写
 
 
 class MainGraphState(SharedGraphState):
     """主图专属 state：SharedGraphState + init/setup 专属字段 + 审阅控制字段。
 
     仅主图 init 拍平节点与 character_setup_subgraph 使用。
-    plan_graph / render_graph 独立编译，不继承此字段。
+    plan_graph 独立编译，不继承此字段。render_graph 已移除（改为独立工作台）。
     """
 
     # ── 全局配置（前端表单传入，load_config 初始化，plan/render 不需要） ──
@@ -191,28 +191,6 @@ class PlanGraphState(MainGraphState):
     # 审核重试计数器（load_chapter 统一重置）
     script_review_attempts: int
     storyboard_review_attempts: int
-
-
-class RenderGraphState(MainGraphState):
-    """render_graph 专用 state：主图完整字段 + 渲染中间态。
-
-    作为子图嵌入主图节点执行：LangGraph 把子图节点的 state 更新合并回主图 state。
-    从 render_batch 读取稿件（script/storyboard），渲染完成后更新 chapters_status
-    与 chapters_artifacts。继承 MainGraphState 确保渲染需要的所有字段天然可用。
-    """
-
-    # 当前章节中间状态（render_dispatch 时从 render_batch 读取）
-    current_chapter_id: str
-    current_chapter_text_path: str
-    current_script: list[dict]
-    current_storyboard: list[dict]
-
-    # 渲染中间态
-    current_image_map: dict[int, str]
-    current_audio_path: str
-    current_subtitles_path: str
-    current_timestamps: list[dict]
-    current_timeline_path: str
 
 
 # 向后兼容别名：等价于最全的 ChapterSubgraphState。

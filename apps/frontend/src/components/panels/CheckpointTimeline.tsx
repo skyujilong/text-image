@@ -83,7 +83,7 @@ export default function CheckpointTimeline({ runId }: Props) {
     incrementStreamGeneration()
   }
 
-  // 按当前 scope 过滤执行历史（规划阶段只看 plan、渲染阶段只看 render、主流程只看 main）
+  // 按当前 scope 过滤执行历史（规划阶段只看 plan、主流程只看 main）
   const scopedEntries = entries.filter((e) => e.scope === graphScope)
 
   const totalHeight = scopedEntries.length * ITEM_HEIGHT

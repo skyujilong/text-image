@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useParams } from 'react-router-dom'
 import Sidebar from '@/components/layout/Sidebar'
 import MainContent from '@/components/layout/MainContent'
 import InteractionDispatcher from '@/components/panels/InteractionDispatcher'
@@ -8,9 +9,17 @@ import { useRunStore } from '@/store/runStore'
 import type { RunMeta } from '@/api/client'
 
 export default function RunPage() {
+  const { runId } = useParams<{ runId: string }>()
   const [showNewRunForm, setShowNewRunForm] = useState(false)
   const [cloneParams, setCloneParams] = useState<Record<string, unknown> | null>(null)
-  const { currentRunId, inspectingNode, setInspectingNode } = useRunStore()
+  const { currentRunId, setCurrentRunId, inspectingNode, setInspectingNode } = useRunStore()
+
+  // URL param → store sync：路由变化时更新 currentRunId
+  useEffect(() => {
+    if (runId && runId !== currentRunId) {
+      setCurrentRunId(runId)
+    }
+  }, [runId, currentRunId, setCurrentRunId])
 
   const handleStarted = (_runId: string) => {
     setShowNewRunForm(false)

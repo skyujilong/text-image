@@ -45,8 +45,9 @@ def _uuid6_to_datetime(uuid_str: str | None) -> datetime | None:
 
 # 主图单例（委派架构：主图通过 interrupt 让渡控制权给子图）
 _main_graph = None
-# 子图单例（委派架构：plan/render 各为独立顶层图，由 graph_runner 在独立子 thread 上驱动）
-# 复用旧变量名 _plan_graph/_render_graph，测试 mock 仍可直接赋值。
+# 子图单例（委派架构：plan 为独立顶层图，由 graph_runner 在独立子 thread 上驱动）
+# 复用旧变量名 _plan_graph，测试 mock 仍可直接赋值。
+# render_graph 已移除（渲染改为独立工作台），_render_graph 保留为 None 兼容旧 checkpoint。
 _plan_graph = None
 _render_graph = None
 _runs_db: RunsDB | None = None
@@ -111,8 +112,7 @@ def _get_child_graph(stage: str):
     """根据阶段名返回编译好的子图单例。"""
     if stage == "plan":
         return _plan_graph
-    if stage == "render":
-        return _render_graph
+    # render 阶段已移除（渲染改为独立工作台），旧 checkpoint 恢复时不会触发此分支
     raise ValueError(f"Unknown delegation stage: {stage!r}")
 
 
@@ -203,19 +203,18 @@ async def _expand_subgraph_state(graph, state_snap: object) -> object | None:
 
 async def init_runner():
     """初始化 runner：创建 checkpointer + 编译主图 + 编译子图（委派架构）。"""
-    global _main_graph, _plan_graph, _render_graph, _runs_db, _checkpointer_ctx
+    global _main_graph, _plan_graph, _runs_db, _checkpointer_ctx
     from novel2media.graph import build_main_graph
     from novel2media.subgraphs.plan_graph import build_plan_graph
-    from novel2media.subgraphs.render_graph import build_render_graph
 
     ctx = AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB)
     checkpointer = await ctx.__aenter__()
     _checkpointer_ctx = ctx
 
-    # 委派架构：主图 + plan/render 子图各自独立编译（共享同一 checkpointer）
+    # 委派架构：主图 + plan 子图各自独立编译（共享同一 checkpointer）
+    # render_graph 已移除（渲染改为独立工作台），不再编译
     _main_graph = build_main_graph(checkpointer=checkpointer)
     _plan_graph = build_plan_graph(checkpointer=checkpointer)
-    _render_graph = build_render_graph(checkpointer=checkpointer)
 
     _runs_db = RunsDB(RUNS_DB)
     await _runs_db.__aenter__()
@@ -241,14 +240,13 @@ async def _reconcile_zombie_runs() -> None:
 
 
 async def shutdown_runner():
-    global _main_graph, _plan_graph, _render_graph, _runs_db, _checkpointer_ctx
+    global _main_graph, _plan_graph, _runs_db, _checkpointer_ctx
     if _runs_db:
         await _runs_db.__aexit__(None, None, None)
     if _checkpointer_ctx:
         await _checkpointer_ctx.__aexit__(None, None, None)
     _main_graph = None
     _plan_graph = None
-    _render_graph = None
     _runs_db = None
 
 
@@ -265,6 +263,23 @@ async def push_event(run_id: str, event: dict) -> None:
     q = _sse_queues.get(run_id)
     if q is not None:
         await q.put(event)
+
+
+async def _emit_delegate(run_id: str, stage: str, child_thread: str, status: str) -> None:
+    """发委派生命周期事件，前端据此锁定/解锁 scope tab。
+
+    委派架构下，主图委派节点（run_plan_stage）调用 interrupt() 让渡控制权后会永驻
+    running（astream 的 __interrupt__ update 被跳过，不发 done），与子图活跃节点并存。
+    若仅靠节点 running 抢分切换 scope，前端会在 main/plan 间同分锁死或抖动。
+    因此在委派 active（控制权转入子 thread）与 done（子图 END、主图即将 resume）时
+    各发一个权威事件：active → 前端锁定该 scope；done → 前端解锁回退到主流程。
+    """
+    await push_event(run_id, {
+        "type": "delegate",
+        "scope": stage,
+        "thread_id": child_thread,
+        "status": status,
+    })
 
 
 async def _maybe_start_render_session(run_id: str, interrupt_val: Any) -> None:
@@ -301,7 +316,7 @@ async def _emit_enveloped(
     """统一事件信封：所有进度/interrupt/error 套同一结构，前端按 node_path 分流。
 
     propagate=True 时，对路径上每个祖先节点都发一份同名 status 事件（用于节点面板
-    祖先节点高亮跟随）。scope 委派架构下按 thread_id 区分：main/plan/render。
+    祖先节点高亮跟随）。scope 委派架构下按 thread_id 区分：main/plan。
     """
     scope = "main" if thread_id == _main_thread(run_id) else thread_id.split("::")[-1]
     scoped_path = f"{scope}/{node_path}"
@@ -431,6 +446,8 @@ async def _resume_child(child_graph, child_thread_id: str, resume_value: Any, ru
     _update_cursors(child_result, stage)
 
     await _runs_db.mark_delegation(run_id, child_thread_id, "done")
+    # 通知前端：子图 END，解锁 scope tab，主图即将 resume 回主流程
+    await _emit_delegate(run_id, stage, child_thread_id, "done")
 
     asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=child_result), run_id))
 
@@ -439,7 +456,7 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, checkpoint_i
     """驱动主图执行，把事件套统一信封转发进 run_id 的 SSE 队列。
 
     委派架构下：
-    - 主图执行到 run_plan_stage/run_render_stage 时触发 __delegate interrupt
+    - 主图执行到 run_plan_stage 时触发 __delegate interrupt
     - 检测到 __delegate 后：在子 thread 上驱动子图到 END，提取 shared 字段 +
       更新游标，用 Command(resume=child_result) 唤醒主图继续执行
     - 子图内部 interrupt（审阅等）直接在子 thread 与前端交互，不冒泡到主图
@@ -539,6 +556,8 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, checkpoint_i
 
                 # 登记委派关系
                 await _runs_db.upsert_delegation(run_id, child_thread, stage, park_checkpoint_id=park_cid)
+                # 通知前端：控制权已转入子 thread，锁定该 scope tab 直到子图 done
+                await _emit_delegate(run_id, stage, child_thread, "active")
 
                 # 从主图 state 提取 shared 字段作为子图输入
                 main_state = getattr(snap, "values", {}) or {}
@@ -559,6 +578,8 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, checkpoint_i
 
                 # 标记委派完成
                 await _runs_db.mark_delegation(run_id, child_thread, "done")
+                # 通知前端：子图 END，解锁 scope tab，主图即将 resume 回主流程
+                await _emit_delegate(run_id, stage, child_thread, "done")
 
                 # resume 主图：interrupt() 返回 child_result，节点 return 合并回主图
                 input = Command(resume=child_result)
@@ -622,7 +643,7 @@ async def resume_run(run_id: str, scope: str | None = None, thread_id: str | Non
     """
     # 兼容旧调用：resume_run(run_id, scope, thread_id, value) 或 resume_run(run_id, value)
     real_value = resume_value
-    if isinstance(scope, (dict, list, str)) and not isinstance(scope, str) or (isinstance(scope, str) and scope not in ("main", "plan", "render")):
+    if isinstance(scope, (dict, list, str)) and not isinstance(scope, str) or (isinstance(scope, str) and scope not in ("main", "plan")):
         real_value = scope
     if isinstance(thread_id, (dict, list, tuple)):
         real_value = thread_id
@@ -681,6 +702,8 @@ async def _restart_child_and_resume(child_graph, child_thread_id: str, run_id: s
 
     # 重置委派状态为 active（子图重试前先清除之前的 done 状态）
     await _runs_db.upsert_delegation(run_id, child_thread_id, stage, park_checkpoint_id=park_checkpoint_id, status="active")
+    # 重试仍是委派 active：重新锁定该 scope tab（之前的 done 已解锁，此处重锁）
+    await _emit_delegate(run_id, stage, child_thread_id, "active")
 
     # 从指定 checkpoint 驱动子图
     child_status = await _drive_child(
@@ -697,6 +720,8 @@ async def _restart_child_and_resume(child_graph, child_thread_id: str, run_id: s
     _update_cursors(child_result, stage)
 
     await _runs_db.mark_delegation(run_id, child_thread_id, "done")
+    # 通知前端：子图 END，解锁 scope tab，主图即将 resume 回主流程
+    await _emit_delegate(run_id, stage, child_thread_id, "done")
 
     asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=child_result), run_id))
 
@@ -705,7 +730,7 @@ async def restart_stage_from(run_id: str, scope: str, checkpoint_id: str, node: 
     """在指定 scope 的图上，从指定 checkpoint 精准回放。
 
     scope="main" → 驱动主图。
-    scope="plan"/"render" → 驱动子图，同时回滚主图到委派点。
+    scope="plan" → 驱动子图，同时回滚主图到委派点。
 
     node 参数仅用于校验该 checkpoint 确实是节点执行前的快照，不参与查找逻辑。
     """
@@ -902,9 +927,9 @@ async def _get_active_branch_checkpoint_ids(thread_id: str) -> set[str]:
 async def get_checkpoints(run_id: str) -> list[dict]:
     """返回 run 的 checkpoint 历史条目（主图 + 子图），仅显示当前活跃分支。
 
-    委派架构：主图在独立 thread 上执行，plan/render 子图在各自独立 thread 上执行。
+    委派架构：主图在独立 thread 上执行，plan 子图在独立 thread 上执行。
     此处合并主图与所有子图 thread 的 checkpoint 历史，每条带 scope 字段
-    （main/plan/render），前端按 scope 过滤展示对应阶段的历史。
+    （main/plan），前端按 scope 过滤展示对应阶段的历史。
 
     活跃分支过滤：回溯重跑后旧 checkpoints 仍存在于 DB 但属于废弃分支，
     通过 parent_checkpoint_id 反向追溯只保留当前活跃分支（LangGraph Dev 行为）。
@@ -945,7 +970,7 @@ async def get_checkpoints(run_id: str) -> list[dict]:
             }
         )
 
-    # ── 子图 checkpoint（scope=plan/render）──
+    # ── 子图 checkpoint（scope=plan）──
     delegations = await _runs_db.list_delegations(run_id)
     for d in delegations:
         stage = d["stage"]
@@ -1123,11 +1148,30 @@ async def get_current_run_state(run_id: str) -> dict:
                     "payload": interrupt_val,
                 }
 
+    # 当前 active delegation 的 scope：刷新/SSE 重连时前端据此重建 scope 锁定态
+    # （委派期间主图委派节点维持 running，靠此字段锁定 tab，不受 running 节点抢分干扰）
+    delegated_scope = active_delegation["stage"] if active_delegation is not None else None
+
     return {
         "status": run_status,
         "node_statuses": node_statuses,
         "active_interaction": active_interaction,
+        "delegated_scope": delegated_scope,
     }
+
+
+async def get_run_state_values(run_id: str) -> dict:
+    """从主图 checkpoint 提取最新 state 的 SharedGraphState 字段值。
+
+    供 render_service 等后端服务读取 chapters_status / render_batch / characters_profile /
+    chapters_artifacts 等字段，无需经过图流程驱动。
+    """
+    if _main_graph is None or _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+    cfg = _thread_config(_main_thread(run_id))
+    snap = await _main_graph.aget_state(cfg)
+    state = getattr(snap, "values", {}) or {}
+    return _extract_shared_fields(state)
 
 
 async def list_runs():

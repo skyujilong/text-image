@@ -515,80 +515,31 @@ def final_decision(state: dict) -> dict:
     return {"_final_decision": choice}
 
 
-def wait_for_server_ready(state: dict, operation: str) -> dict:
-    """interrupt：等待用户确认远程服务器已就绪。
 
-    operation: "audio_synthesis" | "image_render"
-    - audio_synthesis: TTS 音频合成服务器
-    - image_render: ComfyUI 图像渲染服务器
-
-    用于租赁服务器场景：在耗时操作前人工确认服务器已启动，避免流程自动跑浪费租期。
-    resume 必须传 "ready"。
-    """
-    ch_id = state.get("current_chapter_id")
-    result = interrupt(
-        {
-            "type": "server_ready",
-            "operation": operation,
-            "chapter_id": ch_id,
-            "message": f"请确认 {operation} 服务器已启动并配置完成",
-        }
-    )
-    if result != "ready":
-        raise ValueError(f"wait_for_server_ready: 非法 resume 值（应为 'ready'）: {result!r}")
-    log.info("wait_for_server_ready: 服务器就绪确认完成", operation=operation, chapter=ch_id)
-    return {}
+# ─── 渲染阶段纯函数（从图节点提取，供后端 API 直接调用）──────────────────
 
 
-def configure_audio(state: dict) -> dict:
-    """interrupt：配置全局合成参数（dots.tts 单播，整本书一份）。已配则跳过 interrupt 回填。
+def render_dispatch(render_batch: list[dict], chapters_status: dict[str, str], novel_dir: str) -> dict:
+    """取下一个 planned 章节，从 render_batch 读 script/storyboard 返回章节信息。
 
-    数据存 MainGraphState.audio_config（同名字段冒泡到主图 checkpoint，跨章节/批次持久）。
-    收集 dots.tts 生成旋钮（language/guidance_scale/speaker_scale）与音色（voice_name），均可选，
-    缺省走 services.json 默认；voice_name 缺省则用 dots 默认声音。
-    - audio_config 非空：直接返回（已配过，回填不重填），流到 render_dispatch。
-    - audio_config 空：interrupt 让用户填生成参数，resume 写回。
-    - resume 非 dict → 抛错暴露，不静默接受。
-    """
-    current = state.get("audio_config") or {}
-    if current:
-        log.info("configure_audio: 已配置，跳过（回填）")
-        return {}
-    result = interrupt({"type": "audio_config", "current": current})
-    if not isinstance(result, dict):
-        raise ValueError(f"configure_audio: 非法 resume 值（应为 dict）: {result!r}")
-    log.info("configure_audio: 已配置", params=result)
-    return {"audio_config": result}
+    纯函数（从图节点提取）：不再依赖图 state，由后端 API 直接调用。
+    逐章串行：选取策略 sorted 后取第一个 `planned` 章节。
 
-
-# ─── 渲染阶段节点（逐章串行，状态细化：planned→images_done→audio_done→rendered）──
-# step 02 桩实现；step 05 接真实 ComfyUI/TTS + 从 render_batch 取稿 + 状态推进。
-
-
-def render_dispatch(state: dict) -> dict:
-    """取下一个 planned 章节，从 render_batch 读 script/storyboard 写入 current_*。
-
-    逐章串行：选取策略 sorted 后取第一个 `planned` 章节，从 render_batch 取该章稿件
-    （替代旧版从盘读 storyboard.json）。章节状态经图→音→视频逐步推进至 rendered。
-
-    无 planned（本批全渲染完）→ 清空 render_batch（重新积累下一批），由条件边去 export。
+    无 planned → 返回空 chapter_id（调用方据此判断本批渲染完）。
     planned 章节缺 render_batch 稿件属异常，显式抛错不静默跳过。
     """
-    chapters_status = dict(state.get("chapters_status", {}))
     planned = sorted([ch for ch, st in chapters_status.items() if st == "planned"])
     if not planned:
-        # 无 planned：本批渲染完，清空 render_batch 重新积累，条件边去 export_to_jianying
-        log.info("render_dispatch: 无 planned 章节，清空 render_batch，交由条件边去 export")
-        return {"current_chapter_id": "", "render_batch": []}
+        log.info("render_dispatch: 无 planned 章节")
+        return {"current_chapter_id": ""}
 
     ch_id = planned[0]
-    batch = state.get("render_batch", [])
-    item = next((it for it in batch if it.get("chapter_id") == ch_id), None)
+    item = next((it for it in render_batch if it.get("chapter_id") == ch_id), None)
     if item is None:
         raise ValueError(
-            f"render_dispatch: planned 章节 {ch_id} 在 render_batch 中无稿件（review_chapter 未入?）"
+            f"render_dispatch: planned 章节 {ch_id} 在 render_batch 中无稿件"
         )
-    ch_text_path = str(Path(state["novel_dir"]) / "chapters" / f"{ch_id}.txt")
+    ch_text_path = str(Path(novel_dir) / "chapters" / f"{ch_id}.txt")
     storyboard = item.get("storyboard", [])
     script = item.get("script", [])
     log.info("render_dispatch: 选取渲染章节", chapter=ch_id, shots=len(storyboard))
@@ -597,55 +548,34 @@ def render_dispatch(state: dict) -> dict:
         "current_chapter_text_path": ch_text_path,
         "current_script": script,
         "current_storyboard": storyboard,
-        "current_image_map": {},
-        "current_audio_path": "",
-        "current_subtitles_path": "",
-        "current_timestamps": [],
     }
 
 
-def render_generate_images(state: dict) -> dict:
-    """场景图生成（ComfyUI，用角色三视图 tri_view 作 reference，不切图）。
+def render_generate_images(
+    novel_dir: str,
+    chapter_id: str,
+    storyboard: list[dict],
+    characters_profile: dict,
+) -> list[dict]:
+    """场景图生成纯函数：写初始 render_state，返回 shot specs 供 API 启动 RenderSession。
 
-    薄节点 + 节点外长驻渲染队列服务模式（LangGraph 接外部服务的推荐做法）：
-    - 真正的生图副作用在后端 RenderSession（节点外）跑，节点只做「写初始 render_state →
-      interrupt 等审批 → resume 读最终 image_map」。
-    - 含 interrupt 的节点 resume 时会从头重跑整个函数，故 interrupt 之前必须幂等：
-      初始 render_state 已存在则合并保留已生成候选（重入不重跑）。
-
-    流程：
+    从图节点提取为纯函数（不再含 interrupt）：
     1. 解析换图点 shot 规格（subjects→tri_view 决定 t2i/edit、参考图），写初始 render_state
        （已存在的 shot 保留 candidates/selected/status，不覆盖——重入不重跑）。
-    2. interrupt({type:'image_render', ...})：后端 graph_runner 据此启动 RenderSession 喂 GPU，
-       前端 ImageRenderPanel 逐张展示 + 改词重抽。
-    3. resume（{decision:'done'}）后兜底校验无空帧（有未完成 shot 则抛错暴露），
-       读 selected 终图展开回填 current_image_map，章节状态 → images_done。
+    2. 返回 specs 供后端 API 启动 RenderSession 喂 GPU，前端逐张展示 + 抽卡。
+
+    内容指纹判定 + 全量重建剪枝逻辑保留（改稿后画面内容已变则视为新镜头，丢弃旧候选重出）。
     """
     from novel2media import render_planning, render_state
 
-    ch_id = state["current_chapter_id"]
-    novel_dir = state["novel_dir"]
-    storyboard: list[dict] = state.get("current_storyboard", [])
-    characters_profile: dict = state.get("characters_profile", {})
-
-    # 1. 解析换图点 shot 规格 + 写初始 render_state（内容指纹判定 + 全量重建剪枝）
-    #
-    # render_state 用 storyboard_id 当 key，但 storyboard_id 是分镜重生成时按位置重排的
-    # 下标，不是稳定标识——「id 相同」不足以判定「同一镜头」。故复用旧候选的条件加内容指纹
-    # （prompt + ref_images + workflow 全等）：改稿后画面内容已变则视为新镜头，丢弃旧候选重出，
-    # 绝不把旧场景的图套到新场景上（避免串图）。
-    # 同时用 new_shots 全量重建 shots，自动剪掉本轮 specs 里没有的陈旧 shot（如改稿后不再是
-    # 换图点的旧镜头），否则 pending_shots() 会遍历到它卡住 resume，而前端按当前 storyboard
-    # 算换图点根本看不到它（前后端完成判定不一致）。
     specs = render_planning.build_shot_specs(storyboard, characters_profile, novel_dir)
-    data = render_state.load(novel_dir, ch_id) or {"chapter_id": ch_id, "shots": {}}
+    data = render_state.load(novel_dir, chapter_id) or {"chapter_id": chapter_id, "shots": {}}
     old_shots = data.get("shots", {})
     new_shots: dict = {}
     reused = 0
     for spec in specs:
         sid = str(spec["storyboard_id"])
         existing = old_shots.get(sid)
-        # 内容指纹一致 + 有候选 → 真·同一镜头，保留候选/选定/状态（重入不重跑）
         same_shot = bool(
             existing
             and existing.get("candidates")
@@ -654,11 +584,10 @@ def render_generate_images(state: dict) -> dict:
             and existing.get("workflow") == spec["workflow"]
         )
         if same_shot:
-            existing["subjects"] = spec["subjects"]  # subjects 仅展示用，可无条件刷新
+            existing["subjects"] = spec["subjects"]
             new_shots[sid] = existing
             reused += 1
         else:
-            # 新镜头 / 改稿后内容已变：丢弃旧候选，重置为待生成
             new_shots[sid] = {
                 "storyboard_id": spec["storyboard_id"],
                 "workflow": spec["workflow"],
@@ -670,133 +599,106 @@ def render_generate_images(state: dict) -> dict:
                 "status": "pending",
                 "error": None,
             }
-    data["shots"] = new_shots  # 全量替换 = 剪掉陈旧 shot
-    render_state.save(novel_dir, ch_id, data)
+    data["shots"] = new_shots
+    render_state.save(novel_dir, chapter_id, data)
     log.info(
         "render_generate_images: 写初始 render_state",
-        chapter=ch_id,
+        chapter=chapter_id,
         shots=len(specs),
         reused=reused,
         pruned=len(old_shots) - reused,
     )
-
-    # 2. interrupt：渲染交互（后端启动 RenderSession，前端逐张展示 + 抽卡）
-    raw = interrupt(
-        {
-            "type": "image_render",
-            "chapter_id": ch_id,
-            "storyboard": storyboard,  # 前端按数组顺序展示（含非换图点，复用上一换图点图）
-            "specs": specs,            # 换图点 shot 规格（含 prompt/subjects/workflow）
-        }
-    )
-
-    # 3. resume：兜底校验无空帧 + 回填 image_map
-    decision = raw.get("decision") if isinstance(raw, dict) else raw
-    if decision != "done":
-        raise ValueError(f"render_generate_images: 非法 resume 值（应为 done）: {raw!r}")
-
-    final = render_state.load(novel_dir, ch_id)
-    if final is None:
-        raise ValueError(f"render_generate_images: resume 时 render_state 缺失 chapter={ch_id}")
-    pending = render_state.pending_shots(final)
-    if pending:
-        # 不静默放行带空帧的渲染（与前端 disabled 双重把关）
-        raise ValueError(
-            f"render_generate_images: 仍有 {len(pending)} 个镜头未完成/未选定，不能完成渲染: {pending}"
-        )
-
-    # 换图点 selected → 展开到所有 storyboard_id（非换图点复用上一换图点图）
-    selected_by_sid = {
-        int(sid): shot["selected"] for sid, shot in final.get("shots", {}).items()
-    }
-    image_map = render_planning.expand_image_map(storyboard, selected_by_sid)
-
-    chapters_status = dict(state.get("chapters_status", {}))
-    chapters_status[ch_id] = "images_done"
-    log.info("render_generate_images: 渲染完成", chapter=ch_id, images=len(image_map))
-    return {"current_image_map": image_map, "chapters_status": chapters_status}
+    return specs
 
 
-def render_synthesize_audio(state: dict) -> dict:
-    """TTS 音频合成（dots.tts 异步 job）：整章脚本拼成整段文本提交，下载 final.wav 落盘。
+def render_synthesize_audio(
+    novel_dir: str,
+    chapter_id: str,
+    script: list[dict],
+    audio_config: dict | None = None,
+) -> dict:
+    """TTS 音频合成纯函数：整章脚本拼成整段文本提交，下载 final.wav 落盘。
 
+    从图节点提取为纯函数（不再依赖图 state），由后端 API 直接调用。
     dots.tts 服务端按换行把文本切 chunk、串行合成后拼成整段音频，单章只产出一段 final.wav。
-    本期不做逐句时间戳（current_timestamps 仍返回空），timeline 仍仅含图。
-    完成后推进章节状态：images_done → audio_done。
 
-    同步节点：synthesize 会阻塞轮询数十秒~数分钟，LangGraph 在 astream 异步执行图时
-    会把同步节点放线程池执行（与 render_generate_images 同），不阻塞后端事件循环。
+    返回 {audio_path, subtitles_path, timestamps} 供调用方更新 chapters_artifacts。
     """
     from novel2media.clients.tts import TTSClient
-    from novel2media.nodes.image_nodes import _load_config  # 复用同一配置加载（小说目录优先回退项目根）
+    from novel2media.nodes.image_nodes import _load_config
 
-    ch_id = state["current_chapter_id"]
-    novel_dir = Path(state["novel_dir"])
-    script: list[dict] = state.get("current_script", [])
+    novel_dir_path = Path(novel_dir)
 
-    # 1. 拼合成文本：逐条口播 text 用换行分隔（dots 按换行切 chunk 串行合成再拼整段）。
-    #    current_script 结构为 [{"text","action","speaker"}]，音频只取 text。
     lines = [str(it.get("text", "")).strip() for it in script if str(it.get("text", "")).strip()]
     if not lines:
-        # 空脚本异常暴露，不静默产出空音频
-        raise ValueError(f"render_synthesize_audio: 章节 {ch_id} current_script 为空，无可合成文本")
+        raise ValueError(f"render_synthesize_audio: 章节 {chapter_id} script 为空，无可合成文本")
     text = "\n".join(lines)
 
-    cfg = _load_config(state)
+    cfg = _load_config({"novel_dir": novel_dir})
     client = TTSClient(cfg.tts_url, cfg.tts_timeout, cfg.retry_max, cfg.retry_backoff)
 
-    # 2. 合成参数：dots 默认旋钮 + chunk 间静音 + audio_config 用户覆盖（全局单播）。
-    #    audio_config 含 voice_name 时引用对应音色预设，缺省则用 dots 默认声音。
     params = {
         **cfg.tts_params,
         "silence_ms": cfg.silence_ms,
-        **(state.get("audio_config") or {}),
+        **(audio_config or {}),
     }
 
-    # 3. submit→poll→download，落盘 novel_dir/ch_id/audio.wav（与图像产物、timeline.json 同目录）
     wav_bytes = client.synthesize(text, params)
-    out_dir = novel_dir / ch_id
+    out_dir = novel_dir_path / chapter_id
     out_dir.mkdir(parents=True, exist_ok=True)
     audio_path = out_dir / "audio.wav"
     audio_path.write_bytes(wav_bytes)
 
-    chapters_status = dict(state.get("chapters_status", {}))
-    chapters_status[ch_id] = "audio_done"
     log.info(
         "render_synthesize_audio: 合成完成",
-        chapter=ch_id,
+        chapter=chapter_id,
         audio=str(audio_path),
         chars=len(text),
     )
     return {
-        "current_audio_path": str(audio_path),
-        "current_subtitles_path": "",  # 本期不做字幕
-        "current_timestamps": [],  # 本期不做逐句时间戳
-        "chapters_status": chapters_status,
+        "audio_path": str(audio_path),
+        "subtitles_path": "",
+        "timestamps": [],
     }
 
 
-def render_build_timeline(state: dict) -> dict:
-    """生成 <ch>/timeline.json + 标 rendered（当前章 chapters_status → rendered）。
+def render_build_timeline(
+    novel_dir: str,
+    chapter_id: str,
+    image_map: dict,
+    audio_path: str,
+    timestamps: list[dict] | None = None,
+    chapters_artifacts: dict | None = None,
+) -> dict:
+    """生成 <ch>/timeline.json 纯函数，返回 timeline_path + 更新后的 chapters_artifacts。
 
-    复用 build_timeline 落盘 timeline 与 artifacts，额外把当前章置 `rendered`。
-    R8 关键：必须标 rendered，否则 _has_planned 恒真 → 渲染循环死循环 +
-    export_to_jianying 找不到可导章节。
+    从图节点提取为纯函数（不再依赖图 state），由后端 API 直接调用。
     """
-    result = build_timeline(state)
-    ch_id = state["current_chapter_id"]
-    chapters_status = dict(state.get("chapters_status", {}))
-    chapters_status[ch_id] = "rendered"
-    log.info("render_build_timeline: 标记 rendered", chapter=ch_id)
-    return {**result, "chapters_status": chapters_status}
+    result = build_timeline(
+        novel_dir=novel_dir,
+        chapter_id=chapter_id,
+        image_map=image_map,
+        audio_path=audio_path,
+        timestamps=timestamps or [],
+        chapters_artifacts=chapters_artifacts or {},
+    )
+    log.info("render_build_timeline: 完成", chapter=chapter_id)
+    return result
 
 
 
-def build_timeline(state: dict) -> dict:
-    novel_dir = Path(state["novel_dir"])
-    ch_id = state["current_chapter_id"]
-    timestamps: list[dict] = state.get("current_timestamps", [])
-    image_map: dict[str, str] = state.get("current_image_map", {})
+def build_timeline(
+    novel_dir: str,
+    chapter_id: str,
+    image_map: dict,
+    audio_path: str = "",
+    timestamps: list[dict] | None = None,
+    chapters_artifacts: dict | None = None,
+) -> dict:
+    """生成 timeline.json + 更新 chapters_artifacts（纯函数，不再依赖图 state）。"""
+    novel_dir_path = Path(novel_dir)
+    timestamps = timestamps or []
+    chapters_artifacts = chapters_artifacts or {}
 
     timeline = []
     for ts in timestamps:
@@ -812,43 +714,45 @@ def build_timeline(state: dict) -> dict:
             }
         )
 
-    out_dir = novel_dir / ch_id
+    out_dir = novel_dir_path / chapter_id
     out_dir.mkdir(parents=True, exist_ok=True)
     timeline_path = out_dir / "timeline.json"
     timeline_path.write_text(json.dumps(timeline, ensure_ascii=False, indent=2))
 
-    # merge 写入媒体产物路径（audio/subtitles/timeline），稿件不入 artifacts（在 render_batch）
-    artifacts = dict(state.get("chapters_artifacts", {}))
-    existing = dict(artifacts.get(ch_id, {}))
+    existing = dict(chapters_artifacts.get(chapter_id, {}))
     existing.update(
         {
-            "audio_path": state.get("current_audio_path", ""),
-            "subtitles_path": state.get("current_subtitles_path", ""),
+            "audio_path": audio_path,
+            "subtitles_path": "",
             "timeline_path": str(timeline_path),
         }
     )
-    artifacts[ch_id] = existing
-    log.info("build_timeline: 完成", chapter=ch_id, entries=len(timeline))
+    artifacts = dict(chapters_artifacts)
+    artifacts[chapter_id] = existing
+    log.info("build_timeline: 完成", chapter=chapter_id, entries=len(timeline))
     return {
-        "current_timeline_path": str(timeline_path),
+        "timeline_path": str(timeline_path),
         "chapters_artifacts": artifacts,
     }
 
 
-def export_to_jianying(state: dict) -> dict:
-    """导出 status=rendered 章节（增量，R9），置 exported。
+def export_to_jianying(
+    novel_dir: str,
+    chapters_status: dict[str, str],
+    chapters_artifacts: dict,
+) -> dict:
+    """导出 status=rendered 章节（增量），置 exported。
 
-    R9：新流程无 done 状态，渲染完成章为 `rendered`；过滤条件必须从 done 改 rendered，
-    否则永远找不到可导章节。
+    从图节点提取为纯函数（不再依赖图 state），由后端 API 直接调用。
+    返回更新后的 chapters_status。
     """
-    novel_dir = Path(state["novel_dir"])
-    chapters_status = dict(state.get("chapters_status", {}))
-    chapters_artifacts = state.get("chapters_artifacts", {})
+    novel_dir_path = Path(novel_dir)
+    chapters_status = dict(chapters_status)
 
     rendered_chapters = [ch for ch, st in chapters_status.items() if st == "rendered"]
     if not rendered_chapters:
         log.info("export_to_jianying: 无 rendered 章节")
-        return {}
+        return {"chapters_status": chapters_status}
 
     export_data = []
     for ch_id in sorted(rendered_chapters):
@@ -856,12 +760,11 @@ def export_to_jianying(state: dict) -> dict:
         export_data.append({"chapter_id": ch_id, **artifact})
         chapters_status[ch_id] = "exported"
 
-    out_path = novel_dir / "export" / "jianying_draft.json"
+    out_path = novel_dir_path / "export" / "jianying_draft.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(export_data, ensure_ascii=False, indent=2))
 
-    # 派生 chapters_status.json 只读视图
-    status_path = novel_dir / "chapters_status.json"
+    status_path = novel_dir_path / "chapters_status.json"
     status_path.write_text(json.dumps(chapters_status, ensure_ascii=False, indent=2))
 
     log.info("export_to_jianying: 导出完成", chapters=rendered_chapters)

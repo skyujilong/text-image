@@ -81,20 +81,19 @@ def _serialize_graph(g, subgraph_id_set: set[str]) -> dict:
 
 
 def _build_schemas() -> dict[str, dict]:
-    """构建三图（main/plan/render）及注册子图的 schema 拓扑。
+    """构建图（main/plan）及注册子图的 schema 拓扑。
 
-    三图直接调用 builder 编译（无 checkpointer），获取拓扑结构。
+    两图直接调用 builder 编译（无 checkpointer），获取拓扑结构。
     子图 schema 保留，供前端下钻使用。
+    render_graph 已移除（渲染改为独立工作台），不再包含其 schema。
     """
     from novel2media import graph as _graph_module
     from novel2media.subgraphs.plan_graph import build_plan_graph
-    from novel2media.subgraphs.render_graph import build_render_graph
 
-    # 三图 builder（无 checkpointer，纯拓扑）
+    # 两图 builder（无 checkpointer，纯拓扑）
     builders = {
         "main": _graph_module.build_main_graph,
         "plan": build_plan_graph,
-        "render": build_render_graph,
     }
 
     # 子图 ID 集合（用于标记 subgraph 类型节点）
@@ -129,7 +128,6 @@ def get_schema(scope: str = "main"):
     scope 可选值：
     - main: 主图（init + setup）
     - plan: 规划图（逐章规划：剧本→分镜→章节推进）
-    - render: 渲染图（生图→音频→合成→导出）
     - character_setup_subgraph: setup 子图（下钻用）
     """
     _ensure_schemas()

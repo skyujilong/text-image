@@ -1,7 +1,9 @@
 import { create } from 'zustand'
-import type { RunMeta, RenderShot } from '@/api/client'
+import type { RunMeta, RenderShot, RenderChapter } from '@/api/client'
 
 export type NodeStatus = 'pending' | 'running' | 'waiting_human' | 'done' | 'error'
+
+export type { RenderChapter }
 
 export interface ActiveInteraction {
   scope: string
@@ -35,8 +37,12 @@ interface RunStore {
   runError: string | null
   inspectingNode: string | null
   streamGeneration: number
-  // 当前查看的顶层图 scope（main/plan/render），供 Sidebar 过滤执行历史等共享消费。
-  graphScope: 'main' | 'plan' | 'render'
+  // 当前查看的顶层图 scope（main/plan），供 Sidebar 过滤执行历史等共享消费。
+  graphScope: 'main' | 'plan'
+  // 后端委派状态锁定的 scope：非空表示控制权在子 thread（如 plan），
+  // useAutoScope 据此强制锁定该 scope tab，不受 main/run_plan_stage running 抢分干扰；
+  // null 表示无委派，回退到按活跃节点抢分切换。
+  delegatedScope: 'main' | 'plan' | null
 
   // 图片渲染看板：storyboard_id → shot。由 GET /render/state 全量初始化，
   // SSE render_image 事件增量更新单个 shot（逐张冒出）。区别于 activeInteraction
@@ -57,7 +63,8 @@ interface RunStore {
   // 自动跟随专用：整体替换 drillPath，不触碰 autoFollow。
   setDrillPath: (path: string[]) => void
   setAutoFollow: (v: boolean) => void
-  setGraphScope: (scope: 'main' | 'plan' | 'render') => void
+  setGraphScope: (scope: 'main' | 'plan') => void
+  setDelegatedScope: (scope: 'main' | 'plan' | null) => void
   setViewport: (key: string, vp: ViewportState) => void
   setRunError: (msg: string | null) => void
   setInspectingNode: (path: string | null) => void
@@ -69,6 +76,9 @@ interface RunStore {
   // 增量更新单个 shot（SSE render_image 事件 / select 后局部刷新）
   upsertRenderShot: (shot: RenderShot) => void
   clearRenderBoard: () => void
+  // 渲染工作台章节列表
+  renderChapters: RenderChapter[]
+  setRenderChapters: (chapters: RenderChapter[]) => void
 }
 
 export const useRunStore = create<RunStore>((set) => ({
@@ -83,6 +93,7 @@ export const useRunStore = create<RunStore>((set) => ({
   inspectingNode: null,
   streamGeneration: 0,
   graphScope: 'main',
+  delegatedScope: null,
   renderBoard: {},
 
   setRuns: (runs) =>
@@ -107,6 +118,7 @@ export const useRunStore = create<RunStore>((set) => ({
         activeInteraction: null,
         drillPath: [],
         autoFollow: true,
+        delegatedScope: null,
       }
     }),
 
@@ -118,7 +130,7 @@ export const useRunStore = create<RunStore>((set) => ({
   batchSetNodeStatuses: (statuses) =>
     set((s) => ({ nodeStatuses: { ...statuses, ...s.nodeStatuses } })),
 
-  resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null }),
+  resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null, delegatedScope: null }),
 
   setRunError: (msg) => set({ runError: msg }),
 
@@ -147,6 +159,8 @@ export const useRunStore = create<RunStore>((set) => ({
   setAutoFollow: (v) => set({ autoFollow: v }),
 
   setGraphScope: (scope) => set({ graphScope: scope }),
+
+  setDelegatedScope: (scope) => set({ delegatedScope: scope }),
 
   setViewport: (key, vp) =>
     set((s) => ({ viewports: { ...s.viewports, [key]: vp } })),
@@ -177,4 +191,7 @@ export const useRunStore = create<RunStore>((set) => ({
     set((s) => ({ renderBoard: { ...s.renderBoard, [shot.storyboard_id]: shot } })),
 
   clearRenderBoard: () => set({ renderBoard: {} }),
+
+  renderChapters: [],
+  setRenderChapters: (chapters) => set({ renderChapters: chapters }),
 }))

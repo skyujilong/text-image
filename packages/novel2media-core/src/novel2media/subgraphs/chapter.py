@@ -5,16 +5,9 @@ from novel2media.nodes.chapter_nodes import (
     adapt_script,
     chapter_advance_decision,
     commit_chapter,
-    configure_audio,
     detect_new_characters_llm,
-    export_to_jianying,
-    final_decision,
     generate_storyboard,
     load_chapter,
-    render_build_timeline,
-    render_dispatch,
-    render_generate_images,
-    render_synthesize_audio,
     review_script,
     review_storyboard,
 )
@@ -50,32 +43,15 @@ def _route_review_storyboard(state: GraphState) -> str:
 
 
 def _route_chapter_advance(state: GraphState) -> str:
-    """章节推进路由：render→配置音色（已配自动跳过）后进入批量渲染；其它（next/空）→继续规划下一章。"""
-    return "configure_audio" if state.get("_chapter_advance") == "render" else "load_chapter"
+    """章节推进路由：next/空→继续规划下一章。
 
-
-def _has_planned(state: GraphState) -> bool:
-    """是否存在 status=planned 的章节（待渲染）。"""
-    return any(st == "planned" for st in state.get("chapters_status", {}).values())
-
-
-def _route_render_dispatch(state: GraphState) -> str:
-    """渲染调度入口：有 planned→开始渲染；无→直接导出。"""
-    return "render_generate_images" if _has_planned(state) else "export_to_jianying"
-
-
-def _route_render(state: GraphState) -> str:
-    """渲染循环路由：仍有 planned→继续渲染下一章；无→导出。"""
-    return "render_dispatch" if _has_planned(state) else "export_to_jianying"
-
-
-def _route_final(state: GraphState) -> str:
-    """最终决策路由：done→END；其它（continue/空）→回 load_chapter 继续规划（交错）。"""
-    return END if state.get("_final_decision") == "done" else "load_chapter"
+    渲染阶段已从图中移除（改为独立工作台），render 决策不再触发图内渲染。
+    """
+    return "load_chapter"
 
 
 def build_chapter_subgraph(checkpointer=None):
-    """两阶段 chapter 子图：规划阶段（LLM+细分审阅+推进）+ 渲染阶段（顺序循环）。
+    """chapter 子图：规划阶段（LLM+细分审阅+推进）。
 
     规划：load_chapter → adapt_script（只出脚本）→ review_script
           →(revise→adapt_script | pass→detect_new_characters_llm)
@@ -87,10 +63,8 @@ def build_chapter_subgraph(checkpointer=None):
     新角色检测独立成节点放分镜之前（合并进 adapt_script 会让单次输出过长被截断），
     检测后若有新角色先进 character_setup_subgraph 备好特征再分镜，从根上避免分镜/图生图角色对不上。
     均 pass 后 commit_chapter 统一提交（planned/render_batch）。
-    推进：commit_chapter → chapter_advance_decision →(load_chapter | configure_audio → render_dispatch)
-    渲染：render_dispatch → render_generate_images → render_synthesize_audio
-          → render_build_timeline →(render_dispatch | export_to_jianying)
-    收尾：export_to_jianying → final_decision →(END | load_chapter)
+    推进：commit_chapter → chapter_advance_decision → load_chapter（继续规划下一章）
+    渲染阶段已从图中移除（改为独立工作台），收尾节点也已移除。
 
     checkplayer 可选：主图作子图节点时由父图统一注入；独立测试可传 MemorySaver
     以支持 interrupt/resume 跨 invoke。
@@ -107,15 +81,6 @@ def build_chapter_subgraph(checkpointer=None):
     builder.add_node("commit_chapter", commit_chapter)
     builder.add_node("character_setup_subgraph", character_setup_subgraph_compiled)
     builder.add_node("chapter_advance_decision", chapter_advance_decision)
-    builder.add_node("configure_audio", configure_audio)
-    # 渲染阶段节点
-    builder.add_node("render_dispatch", render_dispatch)
-    builder.add_node("render_generate_images", render_generate_images)
-    builder.add_node("render_synthesize_audio", render_synthesize_audio)
-    builder.add_node("render_build_timeline", render_build_timeline)
-    # 收尾节点
-    builder.add_node("export_to_jianying", export_to_jianying)
-    builder.add_node("final_decision", final_decision)
 
     builder.set_entry_point("load_chapter")
 
@@ -148,36 +113,6 @@ def build_chapter_subgraph(checkpointer=None):
         {"generate_storyboard": "generate_storyboard", "commit_chapter": "commit_chapter"},
     )
     builder.add_edge("commit_chapter", "chapter_advance_decision")
-    builder.add_conditional_edges(
-        "chapter_advance_decision",
-        _route_chapter_advance,
-        {"load_chapter": "load_chapter", "configure_audio": "configure_audio"},
-    )
-    builder.add_edge("configure_audio", "render_dispatch")
-
-    # 渲染阶段边（顺序循环 + checkpoint 续跑）
-    builder.add_conditional_edges(
-        "render_dispatch",
-        _route_render_dispatch,
-        {
-            "render_generate_images": "render_generate_images",
-            "export_to_jianying": "export_to_jianying",
-        },
-    )
-    builder.add_edge("render_generate_images", "render_synthesize_audio")
-    builder.add_edge("render_synthesize_audio", "render_build_timeline")
-    builder.add_conditional_edges(
-        "render_build_timeline",
-        _route_render,
-        {"render_dispatch": "render_dispatch", "export_to_jianying": "export_to_jianying"},
-    )
-
-    # 收尾边
-    builder.add_edge("export_to_jianying", "final_decision")
-    builder.add_conditional_edges(
-        "final_decision",
-        _route_final,
-        {END: END, "load_chapter": "load_chapter"},
-    )
+    builder.add_edge("chapter_advance_decision", "load_chapter")
 
     return builder.compile(checkpointer=checkpointer)

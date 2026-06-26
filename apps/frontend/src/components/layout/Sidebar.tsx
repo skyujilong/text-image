@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Check,
   ChevronDown,
   GitBranch,
+  LayoutGrid,
   Pencil,
   Plus,
   RotateCcw,
@@ -35,6 +37,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
+  const navigate = useNavigate()
   const {
     runs,
     currentRunId,
@@ -75,6 +78,7 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
     resetDrill()
     setRunError(null) // 切换 Run 时清空错误
     setPickerOpen(false)
+    navigate(`/runs/${runId}`)
   }
 
   const handleRetry = async (e: React.MouseEvent, runId: string) => {
@@ -85,6 +89,7 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
       await api.retryRun(runId)
       upsertRun({ ...runs[runId], status: 'running' })
       setCurrentRunId(runId)
+      navigate(`/runs/${runId}`)
       resetNodeStatuses()
       resetDrill()
       incrementStreamGeneration() // 触发 SSE 重新连接
@@ -274,6 +279,13 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
                 title="改参数重跑" onClick={() => onCloneRun(currentRun)}>
                 <Settings2 className="size-3.5" />
                 改参数
+              </Button>
+            )}
+            {currentRun.status !== 'pending' && (
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground"
+                title="渲染工作台" onClick={() => navigate(`/runs/${currentRun.run_id}/render`)}>
+                <LayoutGrid className="size-3.5" />
+                渲染工作台
               </Button>
             )}
           </div>
