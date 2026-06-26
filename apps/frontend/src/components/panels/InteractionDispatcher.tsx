@@ -6,6 +6,7 @@ import ChapterAdvancePanel from './ChapterAdvancePanel'
 import FinalDecisionPanel from './FinalDecisionPanel'
 import AudioConfigPanel from './AudioConfigPanel'
 import ImageRenderPanel from './ImageRenderPanel'
+import ServerReadyPanel from './ServerReadyPanel'
 
 interface Props {
   runId: string
@@ -26,6 +27,7 @@ const PAYLOAD_TYPE_TO_NODE: Record<string, string> = {
   final_decision: 'final_decision',
   audio_config: 'configure_audio',
   image_render: 'render_generate_images',
+  server_ready: 'wait_for_server_ready',
 }
 
 /**
@@ -131,6 +133,15 @@ function InteractionBody({ runId, interaction }: { runId: string; interaction: A
           runId={runId}
           chapterId={p.chapter_id as string | undefined}
           storyboard={(p.storyboard as Record<string, unknown>[]) ?? []}
+        />
+      )
+    case 'wait_for_server_ready':
+      return (
+        <ServerReadyPanel
+          runId={runId}
+          operation={p.operation as string | undefined}
+          chapterId={p.chapter_id as string | undefined}
+          message={p.message as string | undefined}
         />
       )
     default:

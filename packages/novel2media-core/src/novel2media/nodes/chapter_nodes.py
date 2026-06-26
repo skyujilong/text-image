@@ -515,6 +515,31 @@ def final_decision(state: dict) -> dict:
     return {"_final_decision": choice}
 
 
+def wait_for_server_ready(state: dict, operation: str) -> dict:
+    """interrupt：等待用户确认远程服务器已就绪。
+
+    operation: "audio_synthesis" | "image_render"
+    - audio_synthesis: TTS 音频合成服务器
+    - image_render: ComfyUI 图像渲染服务器
+
+    用于租赁服务器场景：在耗时操作前人工确认服务器已启动，避免流程自动跑浪费租期。
+    resume 必须传 "ready"。
+    """
+    ch_id = state.get("current_chapter_id")
+    result = interrupt(
+        {
+            "type": "server_ready",
+            "operation": operation,
+            "chapter_id": ch_id,
+            "message": f"请确认 {operation} 服务器已启动并配置完成",
+        }
+    )
+    if result != "ready":
+        raise ValueError(f"wait_for_server_ready: 非法 resume 值（应为 'ready'）: {result!r}")
+    log.info("wait_for_server_ready: 服务器就绪确认完成", operation=operation, chapter=ch_id)
+    return {}
+
+
 def configure_audio(state: dict) -> dict:
     """interrupt：配置全局合成参数（dots.tts 单播，整本书一份）。已配则跳过 interrupt 回填。
 
