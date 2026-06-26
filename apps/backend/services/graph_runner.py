@@ -228,15 +228,43 @@ async def _reconcile_zombie_runs() -> None:
     但 status 未来得及落盘为 done/error。统一纠正为 error，使前端 retry 按钮
     （Sidebar 仅在 status==='error' 时显示）浮现，由用户手动从最新 checkpoint 续跑。
 
-    仅动 running：waiting_human 本就是"等用户操作、无协程在跑"的静止态，重启后
-    get_current_run_state 能完整重建审阅弹窗，用户提交审阅走 resume 续跑即可——
-    若误改为 error 会逼用户走 retry(input=None)，丢掉本该提交的审阅输入。
+    waiting_human 需区分两种情况：
+    - 真·审阅暂停：主图或 active 子图有 pending interrupt，重启后 get_current_run_state
+      能完整重建审阅弹窗，用户提交审阅走 resume 续跑——保持 waiting_human 不动，
+      否则会逼用户走 retry(input=None) 丢掉本该提交的审阅输入。
+    - 假·waiting_human（执行中被杀）：_drive_child 已标记 running，正常应被上面的 running
+      分支兜住。但若历史残留 status=waiting_human 却无任何 pending interrupt（子图停在
+      某节点 next 但无 interrupt），刷新后重建不出弹窗且无恢复入口——标 error 让 retry 浮现，
+      retry_run 会用 astream(None) 从最新 checkpoint 续跑。
     """
     if _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     for run in await _runs_db.list_all():
         if run.status == "running":
             await _runs_db.update_status(run.run_id, "error")
+            continue
+        if run.status == "waiting_human" and not await _run_has_resolvable_interrupt(run.run_id):
+            await _runs_db.update_status(run.run_id, "error")
+
+
+async def _run_has_resolvable_interrupt(run_id: str) -> bool:
+    """run 当前是否有可恢复的 pending interrupt（真·审阅暂停）。
+
+    用于 _reconcile_zombie_runs 区分真·审阅暂停与执行中被杀的假 waiting_human：
+    - 有 active delegation：主图停在 __delegate interrupt 是委派机制的内部 park 态
+      （由 graph_runner 自动处理，非用户操作），可恢复只看子图是否有 pending interrupt；
+      子图无 interrupt 即执行中被杀的僵尸态。
+    - 无 active delegation：主图若有 pending interrupt 即真·审阅暂停（如 review_initial_characters）。
+    """
+    if _main_graph is None:
+        return False
+    delegation = await _runs_db.get_active_delegation(run_id) if _runs_db else None
+    if delegation is not None:
+        child_graph = _get_child_graph(delegation["stage"])
+        if child_graph is None:
+            return False
+        return await _has_pending_interrupt(child_graph, delegation["child_thread_id"])
+    return await _has_pending_interrupt(_main_graph, _main_thread(run_id))
 
 
 async def shutdown_runner():
@@ -350,6 +378,11 @@ async def _drive_child(child_graph, child_thread_id: str, child_input: Any, run_
     if _runs_db is None or child_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
 
+    # 子图执行期间 run 确实在跑：标记 running，避免 astream 被进程重启杀掉后
+    # status 仍停留在执行前的 waiting_human（_reconcile_zombie_runs 只纠正 running→error，
+    # 假 waiting_human 会被当成干净 interrupt 态漏过，导致刷新后无 interrupt 可重建弹窗）。
+    await _runs_db.update_status(run_id, "running")
+
     cfg = _thread_config(child_thread_id, checkpoint_id=checkpoint_id)
 
     try:
@@ -423,18 +456,22 @@ async def _drive_child(child_graph, child_thread_id: str, child_input: Any, run_
         raise
 
 
-async def _resume_child(child_graph, child_thread_id: str, resume_value: Any, run_id: str, stage: str) -> None:
+async def _resume_child(child_graph, child_thread_id: str, resume_value: Any, run_id: str, stage: str, *, force_redrive: bool = False) -> None:
     """Resume 子图 interrupt，子图跑完后继续驱动主图（委派架构）。
 
     子图内部 interrupt（如 review_script）被用户 resume 后：
     1) 继续驱动子图到 END 或下一个 interrupt；
     2) 如果子图 done：提取 shared 字段 + 更新游标，resume 主图；
     3) 如果子图再次 waiting_human：保持 park 状态等用户操作。
+
+    force_redrive=True：子图无 pending interrupt 的僵尸态恢复——用 input=None 从最新
+    checkpoint 续跑，而非 Command(resume=None)（后者在无 interrupt 时抛 EmptyInputError）。
     """
     if _runs_db is None or child_graph is None or _main_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
 
-    child_status = await _drive_child(child_graph, child_thread_id, Command(resume=resume_value), run_id, stage)
+    child_input = None if force_redrive else Command(resume=resume_value)
+    child_status = await _drive_child(child_graph, child_thread_id, child_input, run_id, stage)
 
     if child_status == "waiting_human":
         return
@@ -670,9 +707,14 @@ async def resume_run(run_id: str, scope: str | None = None, thread_id: str | Non
 
 
 async def retry_run(run_id: str) -> None:
-    """重试：从当前 checkpoint 继续执行（等价于 resume(None)）。
+    """重试：从当前 checkpoint 续跑。
 
-    委派架构：如果有 active delegation 则 resume 子图，否则 resume 主图。
+    委派架构：有 active delegation 走子图，否则走主图。
+    关键：仅当目标图确有 pending interrupt 时才用 Command(resume=None) 续跑；
+    否则用 input=None 从最新 checkpoint 继续执行——Command(resume=None) 在无 interrupt 时
+    会被 LangGraph 判为空输入抛 EmptyInputError（resume 为 None 不进 resume 分支、
+    map_command 产出空 writes）。无 interrupt 的场景典型是「执行中进程重启被杀」留下的
+    僵尸态：子图停在某节点 next 但无 interrupt，status 误留 waiting_human。
     """
     if _main_graph is None or _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
@@ -684,10 +726,29 @@ async def retry_run(run_id: str) -> None:
         stage = delegation["stage"]
         child_graph = _get_child_graph(stage)
         if child_graph is not None:
-            asyncio.create_task(_resume_child(child_graph, child_thread, None, run_id, stage))
+            if await _has_pending_interrupt(child_graph, child_thread):
+                asyncio.create_task(_resume_child(child_graph, child_thread, None, run_id, stage))
+            else:
+                # 无 interrupt 的僵尸态：从最新 checkpoint 续跑（astream(None)）
+                asyncio.create_task(_resume_child(child_graph, child_thread, None, run_id, stage, force_redrive=True))
             return
 
-    asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=None), run_id))
+    if await _has_pending_interrupt(_main_graph, _main_thread(run_id)):
+        asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=None), run_id))
+    else:
+        asyncio.create_task(_drive(_main_graph, _main_thread(run_id), None, run_id))
+
+
+async def _has_pending_interrupt(graph, thread_id: str) -> bool:
+    """目标 thread 最新 state 是否有 pending interrupt（task 带 interrupts）。
+
+    用于 retry_run 判断该用 Command(resume=None) 还是 input=None 续跑。
+    """
+    if graph is None:
+        return False
+    snap = await graph.aget_state(_thread_config(thread_id))
+    tasks = getattr(snap, "tasks", []) or []
+    return any(getattr(t, "interrupts", None) for t in tasks)
 
 
 async def _restart_child_and_resume(child_graph, child_thread_id: str, run_id: str, stage: str, checkpoint_id: str, park_checkpoint_id: str | None = None) -> None:
