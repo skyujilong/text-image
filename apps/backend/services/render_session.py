@@ -396,8 +396,9 @@ class RenderSession:
             dest.write_bytes(data)
             cand_path = str(dest)
             cands.append(cand_path)
-            if not shot.get("selected"):
-                shot["selected"] = cand_path  # 首张默认选中
+            if not shot.get("selected") or len(cands) > 1:
+                # 首张默认选中；reroll 新图自动选中（用户主动重新抽卡，优先看新图效果）
+                shot["selected"] = cand_path
             shot["status"] = "done"
             shot["error"] = None
             render_state.save(self.novel_dir, self.chapter_id, data_state)
