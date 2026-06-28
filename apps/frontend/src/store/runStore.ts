@@ -79,6 +79,9 @@ interface RunStore {
   // 渲染工作台章节列表
   renderChapters: RenderChapter[]
   setRenderChapters: (chapters: RenderChapter[]) => void
+  // 标记章节是否已启动渲染（避免重复调用 start + 控制 getRenderState 时机）
+  renderStarted: Record<string, boolean>
+  setRenderStarted: (chapterId: string, started: boolean) => void
 }
 
 export const useRunStore = create<RunStore>((set) => ({
@@ -194,4 +197,7 @@ export const useRunStore = create<RunStore>((set) => ({
 
   renderChapters: [],
   setRenderChapters: (chapters) => set({ renderChapters: chapters }),
+  renderStarted: {},
+  setRenderStarted: (chapterId, started) =>
+    set((s) => ({ renderStarted: { ...s.renderStarted, [chapterId]: started } })),
 }))

@@ -240,3 +240,64 @@ async def export_draft(run_id: str):
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/runs/{run_id}/render/chapter/{ch_id}/preview")
+async def get_render_preview(run_id: str, ch_id: str):
+    """渲染预览：只读返回分镜规格信息，不触发渲染会话。
+
+    用于用户打开渲染工作台时的初始展示，不自动启动 GPU 渲染。
+    返回每个换图点的 storyboard_id、workflow、prompt、subjects 等规格信息，
+    但不包含候选图（除非已有 render_state 文件）。
+    """
+    import services.render_service as render_service
+
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    # 先尝试读取已有 render_state（如果之前已经渲染过）
+    existing_state = render_state.load(meta.novel_dir, ch_id)
+    if existing_state is not None:
+        # 已有渲染状态，直接返回（带候选图）
+        return _build_board(meta.novel_dir, ch_id)
+
+    # 尚无渲染状态：从 render_batch 读取分镜规格
+    state = await runner.get_run_state_values(run_id)
+    render_batch: list[dict] = state.get("render_batch", [])
+    characters_profile: dict = state.get("characters_profile", {})
+
+    item = next((it for it in render_batch if it.get("chapter_id") == ch_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"chapter {ch_id} not found")
+
+    storyboard = item.get("storyboard", [])
+    if not storyboard:
+        raise HTTPException(status_code=400, detail=f"chapter {ch_id} has empty storyboard")
+
+    # 构建 shot specs（只含规格信息，无候选图）
+    from novel2media import render_planning
+
+    specs = render_planning.build_shot_specs(storyboard, characters_profile, meta.novel_dir)
+    shots_out = []
+    for spec in specs:
+        shots_out.append(
+            {
+                "storyboard_id": spec.get("storyboard_id"),
+                "workflow": spec.get("workflow"),
+                "prompt": spec.get("prompt", ""),
+                "subjects": spec.get("subjects", []),
+                "status": "pending",
+                "error": None,
+                "candidates": [],
+                "selected": None,
+                "selected_url": None,
+            }
+        )
+    shots_out.sort(key=lambda s: s["storyboard_id"])
+    return {
+        "chapter_id": ch_id,
+        "shots": shots_out,
+        "all_done": False,
+        "pending": [s["storyboard_id"] for s in shots_out],
+    }

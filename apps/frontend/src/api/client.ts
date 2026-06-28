@@ -241,6 +241,10 @@ export const api = {
   getRenderChapters: (runId: string) =>
     request<{ chapters: RenderChapter[] }>(`/runs/${runId}/render/chapters`).then((r) => r.chapters),
 
+  // 渲染预览：只读返回分镜规格信息，不触发渲染会话。用于初始展示。
+  getRenderPreview: (runId: string, chapterId: string) =>
+    request<RenderBoard>(`/runs/${runId}/render/chapter/${chapterId}/preview`),
+
   // 启动某章节渲染
   startChapterRender: (runId: string, chapterId: string) =>
     request<{ ok: boolean }>(`/runs/${runId}/render/chapter/${chapterId}/start`, {

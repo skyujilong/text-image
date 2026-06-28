@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Loader2, Play, ImageIcon, AudioLines, Clock } from 'lucide-react'
+import { ArrowLeft, Loader2, ImageIcon, AudioLines, Clock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
@@ -18,8 +18,6 @@ export default function RenderWorkbenchPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [rendering, setRendering] = useState(false)
-  const [startingRender, setStartingRender] = useState(false)
   const [activeTab, setActiveTab] = useState<'images' | 'audio' | 'timeline'>('images')
 
   useRunStream(runId ?? null)
@@ -55,28 +53,6 @@ export default function RenderWorkbenchPage() {
   }
 
   const selectedChapter = renderChapters.find((c) => c.chapter_id === selectedId)
-
-  // Reset rendering state when switching chapters
-  useEffect(() => {
-    setRendering(false)
-  }, [selectedId])
-
-  const handleStartRender = async () => {
-    if (!runId || !selectedId) return
-    setStartingRender(true)
-    try {
-      await api.startChapterRender(runId, selectedId)
-      setRendering(true)
-    } catch (e) {
-      console.error('启动渲染失败', e)
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setStartingRender(false)
-    }
-  }
-
-  // Chapters already in rendering/rendered state show the board directly
-  const showBoard = rendering || (selectedChapter && ['rendering', 'images_done', 'audio_done', 'rendered', 'exported'].includes(selectedChapter.status))
 
   return (
     <div className="flex h-screen overflow-hidden flex-col">
@@ -116,7 +92,7 @@ export default function RenderWorkbenchPage() {
         {/* Middle: Work area */}
         <div className="flex-1 overflow-hidden bg-background flex flex-col">
           {selectedChapter ? (
-            showBoard && runId ? (
+            selectedChapter.has_storyboard ? (
               <>
                 {/* Tab bar */}
                 <div className="flex items-center gap-1 px-4 border-b border-border shrink-0">
@@ -142,59 +118,43 @@ export default function RenderWorkbenchPage() {
                 </div>
                 {/* Tab content */}
                 <div className="flex-1 overflow-hidden">
-                  {activeTab === 'images' && (
+                  {activeTab === 'images' && runId && (
                     <ImageRenderBoard
                       runId={runId}
                       chapterId={selectedChapter.chapter_id}
                       storyboard={(selectedChapter.storyboard as Array<Record<string, unknown>>) ?? []}
                     />
                   )}
-                  {activeTab === 'audio' && (
+                  {activeTab === 'audio' && runId && (
                     <AudioSynthesisPanel runId={runId} chapterId={selectedChapter.chapter_id} />
                   )}
-                  {activeTab === 'timeline' && (
+                  {activeTab === 'timeline' && runId && (
                     <TimelinePreview runId={runId} chapterId={selectedChapter.chapter_id} />
                   )}
                 </div>
               </>
+            ) : ['pending', 'processing'].includes(selectedChapter.status) ? (
+              <div className="p-6 flex flex-col items-start gap-4">
+                <h2 className="text-lg font-semibold">{selectedChapter.chapter_id}</h2>
+                <div className="flex flex-col gap-2">
+                  <p className="text-sm text-muted-foreground">
+                    该章节尚未完成规划（脚本和分镜还未生成）
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => navigate(`/runs/${runId}`)}
+                  >
+                    前往规划页面
+                  </Button>
+                </div>
+              </div>
             ) : (
               <div className="p-6 flex flex-col items-start gap-4">
                 <h2 className="text-lg font-semibold">{selectedChapter.chapter_id}</h2>
-                <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                  <span>状态: {selectedChapter.status}</span>
-                  <span>脚本: {selectedChapter.has_script ? '✓' : '✗'}</span>
-                  <span>分镜: {selectedChapter.has_storyboard ? '✓' : '✗'}</span>
-                  {selectedChapter.storyboard_count && (
-                    <span>{selectedChapter.storyboard_count} 镜头</span>
-                  )}
-                </div>
-                {selectedChapter.has_storyboard ? (
-                  <Button onClick={handleStartRender} disabled={startingRender}>
-                    {startingRender ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <Play className="size-4" />
-                    )}
-                    开始渲染
-                  </Button>
-                ) : ['pending', 'processing'].includes(selectedChapter.status) ? (
-                  <div className="flex flex-col gap-2">
-                    <p className="text-sm text-muted-foreground">
-                      该章节尚未完成规划（脚本和分镜还未生成）
-                    </p>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => navigate(`/runs/${runId}`)}
-                    >
-                      前往规划页面
-                    </Button>
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    该章节暂无分镜数据，无法渲染
-                  </p>
-                )}
+                <p className="text-sm text-muted-foreground">
+                  该章节暂无分镜数据，无法渲染
+                </p>
               </div>
             )
           ) : (
