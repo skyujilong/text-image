@@ -77,6 +77,7 @@ async def start_chapter_render(run_id: str, chapter_id: str) -> dict:
     state = await _get_shared_state(run_id)
     render_batch: list[dict] = state.get("render_batch", [])
     characters_profile: dict = state.get("characters_profile", {})
+    chapters_status: dict[str, str] = dict(state.get("chapters_status", {}))
 
     # 直接按 chapter_id 查找稿件（render_dispatch 自动选章，这里按需指定）
     item = next((it for it in render_batch if it.get("chapter_id") == chapter_id), None)
@@ -93,6 +94,10 @@ async def start_chapter_render(run_id: str, chapter_id: str) -> dict:
         run_id, novel_dir, chapter_id, specs, runner.push_event
     )
 
+    # 更新章节状态为 rendering，确保刷新页面后渲染看板仍可见
+    chapters_status[chapter_id] = "rendering"
+    await runner.update_run_state_values(run_id, {"chapters_status": chapters_status})
+
     return {
         "chapter_id": chapter_id,
         "specs_count": len(specs),
@@ -105,6 +110,8 @@ async def synthesize_audio(run_id: str, chapter_id: str, audio_config: dict | No
     novel_dir = await _get_novel_dir(run_id)
     state = await _get_shared_state(run_id)
     render_batch: list[dict] = state.get("render_batch", [])
+    chapters_status: dict[str, str] = dict(state.get("chapters_status", {}))
+    chapters_artifacts: dict = dict(state.get("chapters_artifacts", {}))
 
     item = next((it for it in render_batch if it.get("chapter_id") == chapter_id), None)
     if item is None:
@@ -115,6 +122,18 @@ async def synthesize_audio(run_id: str, chapter_id: str, audio_config: dict | No
         raise ValueError(f"chapter {chapter_id} has empty script")
 
     result = render_synthesize_audio(novel_dir, chapter_id, script, audio_config)
+
+    # 更新章节状态为 audio_done，并保存产物路径
+    chapters_status[chapter_id] = "audio_done"
+    chapters_artifacts[chapter_id] = result
+    await runner.update_run_state_values(
+        run_id,
+        {
+            "chapters_status": chapters_status,
+            "chapters_artifacts": chapters_artifacts,
+        },
+    )
+
     return result
 
 
@@ -166,6 +185,23 @@ async def build_chapter_timeline(run_id: str, chapter_id: str) -> dict:
         timestamps=timestamps,
         chapters_artifacts=chapters_artifacts,
     )
+
+    # 更新章节状态为 rendered，并保存时间轴路径
+    chapters_status: dict[str, str] = dict(state.get("chapters_status", {}))
+    chapters_status[chapter_id] = "rendered"
+    chapters_artifacts = dict(state.get("chapters_artifacts", {}))
+    chapters_artifacts[chapter_id] = {
+        **chapters_artifacts.get(chapter_id, {}),
+        "timeline_path": result.get("timeline_path"),
+    }
+    await runner.update_run_state_values(
+        run_id,
+        {
+            "chapters_status": chapters_status,
+            "chapters_artifacts": chapters_artifacts,
+        },
+    )
+
     return result
 
 

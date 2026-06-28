@@ -234,6 +234,19 @@ class RenderSession:
                 model_swaps=swaps,
                 drain_seconds=round(time.monotonic() - worker_start, 1),
             )
+            # 检查是否所有图片都已完成，是则更新章节状态为 images_done
+            # 注意：用户仍需手动选择每张图的候选，这里只是标记图片生成完成
+            from novel2media import render_state
+            import services.graph_runner as runner
+            data = render_state.load(self.novel_dir, self.chapter_id)
+            if data:
+                # 所有 shot 都有候选（candidates 非空），视为图片生成完成
+                shots = data.get("shots", {})
+                if shots and all(s.get("candidates") for s in shots.values()):
+                    state = await runner.get_run_state_values(self.run_id)
+                    chapters_status = dict(state.get("chapters_status", {}))
+                    chapters_status[self.chapter_id] = "images_done"
+                    await runner.update_run_state_values(self.run_id, {"chapters_status": chapters_status})
 
     def _take_next_job(self) -> dict | None:
         """取下一个 job：优先取与「队列中最多的 workflow 类型」一致的，减少底模切换。

@@ -3,9 +3,11 @@ import type { RenderChapter } from '@/api/client'
 
 const STATUS_META: Record<string, { label: string; dot: string; badge: string }> = {
   planned: { label: '待渲染', dot: 'bg-gray-400', badge: 'bg-gray-100 text-gray-600' },
-  pending: { label: '待渲染', dot: 'bg-gray-400', badge: 'bg-gray-100 text-gray-600' },
+  pending: { label: '待规划', dot: 'bg-yellow-500', badge: 'bg-yellow-100 text-yellow-700' },
+  processing: { label: '规划中', dot: 'bg-blue-400', badge: 'bg-blue-100 text-blue-600' },
   rendering: { label: '生图中', dot: 'bg-blue-500', badge: 'bg-blue-100 text-blue-700' },
-  audio: { label: '音频中', dot: 'bg-orange-500', badge: 'bg-orange-100 text-orange-700' },
+  images_done: { label: '生图完成', dot: 'bg-cyan-500', badge: 'bg-cyan-100 text-cyan-700' },
+  audio_done: { label: '音频完成', dot: 'bg-orange-500', badge: 'bg-orange-100 text-orange-700' },
   rendered: { label: '已完成', dot: 'bg-green-500', badge: 'bg-green-100 text-green-700' },
   done: { label: '已完成', dot: 'bg-green-500', badge: 'bg-green-100 text-green-700' },
   exported: { label: '已导出', dot: 'bg-emerald-600', badge: 'bg-emerald-100 text-emerald-700' },

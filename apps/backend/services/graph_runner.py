@@ -1260,6 +1260,18 @@ async def get_run_state_values(run_id: str) -> dict:
     return _extract_shared_fields(state)
 
 
+async def update_run_state_values(run_id: str, updates: dict) -> None:
+    """更新主图 state 的 SharedGraphState 字段。
+
+    供 render_service 等后端服务更新 chapters_status / chapters_artifacts 等字段，
+    无需经过图流程驱动。
+    """
+    if _main_graph is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+    cfg = _thread_config(_main_thread(run_id))
+    await _main_graph.aupdate_state(cfg, updates)
+
+
 async def list_runs():
     if _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")

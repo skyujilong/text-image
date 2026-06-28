@@ -50,8 +50,8 @@ export default function RenderWorkbenchPage() {
   const stats = {
     total: renderChapters.length,
     done: renderChapters.filter((c) => ['rendered', 'exported', 'done'].includes(c.status)).length,
-    inProgress: renderChapters.filter((c) => ['rendering', 'audio'].includes(c.status)).length,
-    pending: renderChapters.filter((c) => ['planned', 'pending'].includes(c.status)).length,
+    inProgress: renderChapters.filter((c) => ['rendering', 'images_done', 'audio_done'].includes(c.status)).length,
+    pending: renderChapters.filter((c) => ['planned', 'pending', 'processing'].includes(c.status)).length,
   }
 
   const selectedChapter = renderChapters.find((c) => c.chapter_id === selectedId)
@@ -76,7 +76,7 @@ export default function RenderWorkbenchPage() {
   }
 
   // Chapters already in rendering/rendered state show the board directly
-  const showBoard = rendering || (selectedChapter && ['rendering', 'rendered', 'audio', 'exported'].includes(selectedChapter.status))
+  const showBoard = rendering || (selectedChapter && ['rendering', 'images_done', 'audio_done', 'rendered', 'exported'].includes(selectedChapter.status))
 
   return (
     <div className="flex h-screen overflow-hidden flex-col">
@@ -177,6 +177,19 @@ export default function RenderWorkbenchPage() {
                     )}
                     开始渲染
                   </Button>
+                ) : ['pending', 'processing'].includes(selectedChapter.status) ? (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm text-muted-foreground">
+                      该章节尚未完成规划（脚本和分镜还未生成）
+                    </p>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => navigate(`/runs/${runId}`)}
+                    >
+                      前往规划页面
+                    </Button>
+                  </div>
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     该章节暂无分镜数据，无法渲染
