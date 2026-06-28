@@ -417,18 +417,43 @@ class RenderSession:
 
     async def _emit(self, shot_id: int, **fields) -> None:
         """推送单 shot 状态变化到 run 的 SSE 队列（前端增量更新看板）。"""
-        event = {"type": "render_image", "shot_id": shot_id, **fields}
+        event = {"type": "render_image", "chapter_id": self.chapter_id, "shot_id": shot_id, **fields}
         await self._push_event(self.run_id, event)
 
 
 # ─── per-run 会话注册表 ────────────────────────────────────────────
+from typing import Tuple
 
-_sessions: dict[str, RenderSession] = {}
+_sessions: dict[Tuple[str, str], RenderSession] = {}  # (run_id, chapter_id) → session
+_active: dict[str, Tuple[str, str]] = {}  # run_id → 当前活跃的 (run_id, chapter_id)
+_session_lock = None  # lazy init asyncio.Lock
 
 
-def get_session(run_id: str) -> RenderSession | None:
-    """取某 run 的渲染会话（不存在返回 None）。"""
-    return _sessions.get(run_id)
+def _get_lock():
+    """懒加载锁（避免 import 时事件循环未初始化）。"""
+    global _session_lock
+    if _session_lock is None:
+        import asyncio
+        _session_lock = asyncio.Lock()
+    return _session_lock
+
+
+def get_session(run_id: str, chapter_id: str | None = None) -> RenderSession | None:
+    """取渲染会话。
+
+    - chapter_id 为 None 时，返回该 run 当前活跃的会话
+    - chapter_id 已指定时，返回对应章节的会话
+    """
+    if chapter_id is None:
+        active_key = _active.get(run_id)
+        return _sessions.get(active_key) if active_key else None
+    return _sessions.get((run_id, chapter_id))
+
+
+def get_active_chapter(run_id: str) -> str | None:
+    """获取当前 run 正在渲染的章节 ID（用于冲突检测）。"""
+    active_key = _active.get(run_id)
+    return active_key[1] if active_key else None
 
 
 def start_session(
@@ -438,30 +463,57 @@ def start_session(
     specs: list[dict],
     push_event,
 ) -> RenderSession:
-    """创建/复用某 run 的渲染会话并播种未完成 shot，启动 worker。
+    """创建/复用渲染会话并启动 worker。
 
-    幂等：同 run 已有会话（同章节）则复用、重新播种未完成 shot（重入不重跑）。
-    切换到新章节渲染时替换旧会话。
+    如果该 run 已有其他章节在渲染，会先停止旧会话再启动新的。
+    调用方应该先调用 get_active_chapter() 检测冲突，再决定是否 start。
     """
-    existing = _sessions.get(run_id)
-    if existing is not None and existing.chapter_id == chapter_id:
-        existing.seed_pending(specs)
-        existing.start()
-        return existing
-    if existing is not None:
-        existing.stop()
+    active_key = _active.get(run_id)
+
+    # 同章节已在运行：复用 + 重新播种
+    if active_key == (run_id, chapter_id):
+        session = _sessions[active_key]
+        session.seed_pending(specs)
+        session.start()
+        return session
+
+    # 停止旧会话（如果有不同章节在运行）
+    if active_key is not None and active_key[1] != chapter_id:
+        old_session = _sessions.pop(active_key, None)
+        if old_session is not None:
+            old_session.stop()
+
+    # 创建新会话
     session = RenderSession(run_id, novel_dir, chapter_id, push_event)
-    _sessions[run_id] = session
+    key = (run_id, chapter_id)
+    _sessions[key] = session
+    _active[run_id] = key
     session.seed_pending(specs)
     session.start()
     return session
 
 
-def stop_session(run_id: str) -> None:
-    """停止并移除某 run 的渲染会话（resume 完成渲染后清理）。"""
-    session = _sessions.pop(run_id, None)
-    if session is not None:
-        session.stop()
+def stop_session(run_id: str, chapter_id: str | None = None) -> None:
+    """停止并移除渲染会话。
+
+    - chapter_id 为 None 时，停止该 run 当前活跃的会话
+    - chapter_id 已指定时，仅停止对应章节的会话
+    """
+    if chapter_id is None:
+        active_key = _active.get(run_id)
+        if active_key:
+            session = _sessions.pop(active_key, None)
+            if session is not None:
+                session.stop()
+            _active.pop(run_id, None)
+    else:
+        key = (run_id, chapter_id)
+        session = _sessions.pop(key, None)
+        if session is not None:
+            session.stop()
+        active_key = _active.get(run_id)
+        if active_key == key:
+            _active.pop(run_id, None)
 
 
 def select_candidate(novel_dir: str, chapter_id: str, shot_id: int, candidate: str) -> None:

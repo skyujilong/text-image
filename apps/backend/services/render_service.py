@@ -67,13 +67,10 @@ async def get_render_chapters(run_id: str) -> list[dict]:
     return chapters
 
 
-async def start_chapter_render(run_id: str, chapter_id: str) -> dict:
+async def start_chapter_render(run_id: str, chapter_id: str, force_switch: bool = False) -> dict:
     """启动某章节图片渲染：写 render_state + 启动 RenderSession。
 
-    1. 从 checkpoint state 读取 render_batch + characters_profile
-    2. 调用 render_dispatch 选取章节信息（或直接按 chapter_id 查找）
-    3. 调用 render_generate_images 写初始 render_state，返回 specs
-    4. 通过 render_session.start_session 启动 GPU worker
+    force_switch: 如果其他章节正在渲染，是否强制切换。
     """
     import services.render_session as render_session
 
@@ -92,6 +89,18 @@ async def start_chapter_render(run_id: str, chapter_id: str) -> dict:
     if not storyboard:
         raise ValueError(f"chapter {chapter_id} has empty storyboard")
 
+    # 冲突检测：其他章节正在渲染时，需要 force_switch=True
+    active_chapter = render_session.get_active_chapter(run_id)
+    if active_chapter is not None and active_chapter != chapter_id:
+        if not force_switch:
+            return {
+                "conflict": True,
+                "active_chapter": active_chapter,
+                "requested_chapter": chapter_id,
+                "message": f"章节 {active_chapter} 正在渲染，设置 force_switch=true 可强制切换",
+            }
+        # 强制切换：旧会话会被 start_session 内部自动停止
+
     specs = render_generate_images(novel_dir, chapter_id, storyboard, characters_profile)
 
     render_session.start_session(
@@ -106,6 +115,8 @@ async def start_chapter_render(run_id: str, chapter_id: str) -> dict:
         "chapter_id": chapter_id,
         "specs_count": len(specs),
         "session_started": True,
+        "ok": True,
+        "started": True,
     }
 
 

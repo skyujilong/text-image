@@ -134,17 +134,23 @@ export function useRunStream(runId: string | null) {
       if (type === 'render_image') {
         // 单张渲染结果增量更新看板（逐张冒出）。事件携带绝对路径，需转 URL。
         // 直接 merge 进 store 已有 shot，累积候选（reroll 追加，旧候选保留）。
+        const chapterId = event.chapter_id as string
         const shotId = event.shot_id as number
+        if (!chapterId) {
+          console.warn('[SSE] render_image 事件缺少 chapter_id，忽略', event)
+          return
+        }
         const status = event.status as RenderShot['status']
         const { renderBoard, upsertRenderShot } = useRunStore.getState()
-        const prev = renderBoard[shotId]
+        const chapterBoard = renderBoard[chapterId] ?? {}
+        const prev = chapterBoard[shotId]
         const candidate = event.candidate as string | undefined
         const selected = event.selected as string | undefined
         const candidates = prev ? [...prev.candidates] : []
         if (candidate && !candidates.some((c) => c.path === candidate)) {
           candidates.push({ path: candidate, url: fileUrl(candidate) })
         }
-        upsertRenderShot({
+        upsertRenderShot(chapterId, {
           storyboard_id: shotId,
           workflow: prev?.workflow ?? 'qwen_t2i',
           prompt: (event.prompt as string | undefined) ?? prev?.prompt ?? '',
