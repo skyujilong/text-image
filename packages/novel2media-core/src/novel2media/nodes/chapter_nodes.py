@@ -22,8 +22,9 @@ log = get_logger("chapter_nodes")
 
 _PENDING_STATUSES = {"pending", "processing"}
 
-# 分镜第二步「画面生成」分批参数：换图点过多时按批并行调 LLM，避免单次输出过长被截断。
-_SCENE_PROMPT_BATCH_SIZE = 12  # 每批最多多少个换图点
+# 分镜第二步「画面生成」分批参数：换图点过多时按批并行调 LLM。
+# max_tokens 已调至 16384，大幅放宽批大小以减少调用次数（每次调用都有大量 prompt 固定开销）
+_SCENE_PROMPT_BATCH_SIZE = 40  # 每批最多多少个换图点（40 个换图点输出约 4k~6k tokens）
 _SCENE_PROMPT_MAX_WORKERS = 2  # 并发上限（控制 ARK 限流压力，不宜过大）
 
 

@@ -11,7 +11,7 @@ from novel2media_logging import get_logger
 log = get_logger("llm")
 
 
-def get_llm(temperature: float = 0.8, *, json_mode: bool = False) -> ChatOpenAI:
+def get_llm(temperature: float = 0.8, *, json_mode: bool = False, max_tokens: int = 16384) -> ChatOpenAI:
     """从环境变量创建 ChatOpenAI 实例（兼容 OpenAI 接口的 ARK 端点）。
 
     ChatOpenAI 内建 tenacity 重试（max_retries=2），已覆盖瞬态网络错误和限流。
@@ -23,6 +23,8 @@ def get_llm(temperature: float = 0.8, *, json_mode: bool = False) -> ChatOpenAI:
     - 协议硬要求：开启后 prompt 必须含 "json" 字样，否则 ARK 拒绝请求。调用方
       （adapt_script/角色解析等 JSON 类 prompt）均已在正文声明，满足。
     - 不保证字段结构正确，也兜不住 finish_reason=length 截断——那是拆短输出的职责。
+
+    max_tokens 默认为 16384，避免长内容被截断（角色设定、脚本生成分镜等长输出场景）。
     """
     api_key = os.environ.get("ARK_API_KEY")
     if not api_key:
@@ -33,6 +35,7 @@ def get_llm(temperature: float = 0.8, *, json_mode: bool = False) -> ChatOpenAI:
     return ChatOpenAI(
         model=os.environ.get("ARK_MODEL", "doubao-seed-2.0-lite"),
         temperature=temperature,
+        max_tokens=max_tokens,
         api_key=SecretStr(api_key),
         base_url=os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
         model_kwargs=model_kwargs,
@@ -46,6 +49,7 @@ def invoke_llm(
     temperature: float = 0.8,
     label: str | None = None,
     json_mode: bool = False,
+    max_tokens: int = 16384,
 ):
     """统一封装的 LLM 调用，附带性能 + Token + 提示词长度日志。
 
@@ -57,6 +61,7 @@ def invoke_llm(
     - label：可选的子任务标签（如 "adapt_script"/"detect_new_characters"），区分同一节点
       内的多次调用。
     - json_mode：透传给 get_llm，需要解析 JSON 输出的调用应置 True（见 get_llm 说明）。
+    - max_tokens：输出 token 上限，默认 16384，避免长内容被截断。
     - 返回 AIMessage（与 get_llm().invoke 一致），调用方按原方式解析 content 即可。
 
     Token 数据优先取 AIMessage.usage_metadata（langchain 统一字段，ARK OpenAI 兼容端点会
@@ -69,7 +74,7 @@ def invoke_llm(
     prompt_tokens_est = max(prompt_chars // 3, len(prompt))  # 粗估下限兜底
 
     started = time.perf_counter()
-    resp = get_llm(temperature=temperature, json_mode=json_mode).invoke(prompt)
+    resp = get_llm(temperature=temperature, json_mode=json_mode, max_tokens=max_tokens).invoke(prompt)
     elapsed = time.perf_counter() - started
 
     usage = getattr(resp, "usage_metadata", None) or {}
