@@ -232,13 +232,25 @@ async def _get_render_context(run_id: str) -> tuple[str, str]:
     return novel_dir, payload["chapter_id"]
 
 
-@router.get("/runs/{run_id}/render/state")
-async def get_render_state(run_id: str):
-    """渲染看板：每个换图点的提示词 + 候选图 URL + 选定终图 + 状态。
+@router.get("/runs/{run_id}/render/chapter/{chapter_id}/state")
+async def get_render_state_by_chapter(run_id: str, chapter_id: str):
+    """渲染工作台专用：获取指定章节的渲染状态。
 
-    顺带惰性重建渲染会话——后端重启后用户打开渲染页即自动把 worker 拉起来续跑 pending
-    shot（GPU 不空转），不必手动 retry 整个节点。
+    会话不存在时，直接读 render_state 文件（已渲染完但会话已销毁的场景）。
     """
+    session = await _ensure_render_session(run_id, chapter_id)
+    if session is not None:
+        return _build_board(session.novel_dir, session.chapter_id)
+    # 会话不存在：直接读文件（已渲染完但会话已销毁的场景）
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return _build_board(meta.novel_dir, chapter_id)
+
+
+@router.get("/runs/{run_id}/render/state")
+async def get_render_state_legacy(run_id: str):
+    """旧接口（兼容 interrupt 流程）：返回当前活跃会话的渲染状态。"""
     session = await _ensure_render_session(run_id)
     if session is not None:
         return _build_board(session.novel_dir, session.chapter_id)
@@ -312,10 +324,16 @@ async def get_render_chapters(run_id: str):
 
 
 @router.post("/runs/{run_id}/render/chapter/{ch_id}/start")
-async def start_chapter_render(run_id: str, ch_id: str):
-    """启动某章节图片渲染：写 render_state + 启动 RenderSession。"""
+async def start_chapter_render(run_id: str, ch_id: str, force_switch: bool = False):
+    """启动某章节图片渲染：写 render_state + 启动 RenderSession。
+
+    force_switch: 如果其他章节正在渲染，是否强制切换。
+    """
     try:
-        result = await render_service.start_chapter_render(run_id, ch_id)
+        result = await render_service.start_chapter_render(run_id, ch_id, force_switch)
+        if result.get("conflict"):
+            # 冲突时返回 409，让前端弹窗确认
+            raise HTTPException(status_code=409, detail=result.get("message"))
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

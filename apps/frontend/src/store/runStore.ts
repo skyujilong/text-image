@@ -44,10 +44,10 @@ interface RunStore {
   // null 表示无委派，回退到按活跃节点抢分切换。
   delegatedScope: 'main' | 'plan' | null
 
-  // 图片渲染看板：storyboard_id → shot。由 GET /render/state 全量初始化，
+  // 图片渲染看板：chapter_id → storyboard_id → shot。由 GET /render/state 全量初始化，
   // SSE render_image 事件增量更新单个 shot（逐张冒出）。区别于 activeInteraction
   // 一次性 payload——看板随渲染持续变化，需独立持久于 store。
-  renderBoard: Record<number, RenderShot>
+  renderBoard: Record<string, Record<number, RenderShot>>
 
   setRuns: (runs: RunMeta[]) => void
   upsertRun: (run: RunMeta) => void
@@ -69,13 +69,16 @@ interface RunStore {
   setRunError: (msg: string | null) => void
   setInspectingNode: (path: string | null) => void
   incrementStreamGeneration: () => void
-  // 全量替换渲染看板（GET /render/state 拉取后初始化）
-  setRenderBoard: (shots: RenderShot[]) => void
-  // 按 shot 合并看板（挂载拉取用，避免覆盖竞态期间 SSE 已写入的增量）
-  mergeRenderBoard: (shots: RenderShot[]) => void
-  // 增量更新单个 shot（SSE render_image 事件 / select 后局部刷新）
-  upsertRenderShot: (shot: RenderShot) => void
-  clearRenderBoard: () => void
+  // 全量替换渲染看板（GET /render/state 拉取后初始化）。
+  // chapterId 不传时使用 '__active__'（旧 interrupt 流程兼容）
+  setRenderBoard: (shotsOrChapterId: string | RenderShot[], shots?: RenderShot[]) => void
+  // 按 shot 合并看板（挂载拉取用，避免覆盖竞态期间 SSE 已写入的增量）。
+  // chapterId 不传时使用 '__active__'（旧 interrupt 流程兼容）
+  mergeRenderBoard: (shotsOrChapterId: string | RenderShot[], shots?: RenderShot[]) => void
+  // 增量更新单个 shot（SSE render_image 事件 / select 后局部刷新）。
+  // chapterId 不传时使用 '__active__'（旧 interrupt 流程兼容）
+  upsertRenderShot: (shotOrChapterId: string | RenderShot, shot?: RenderShot) => void
+  clearRenderBoard: (chapterId?: string) => void
   // 渲染工作台章节列表
   renderChapters: RenderChapter[]
   setRenderChapters: (chapters: RenderChapter[]) => void
@@ -171,29 +174,57 @@ export const useRunStore = create<RunStore>((set) => ({
   incrementStreamGeneration: () =>
     set((s) => ({ streamGeneration: s.streamGeneration + 1 })),
 
-  setRenderBoard: (shots) =>
-    set({ renderBoard: Object.fromEntries(shots.map((s) => [s.storyboard_id, s])) }),
+  // 全量替换渲染看板（GET /render/state 拉取后初始化）
+  setRenderBoard: (chapterId: string, shots: RenderShot[]) =>
+    set((s) => ({
+      renderBoard: {
+        ...s.renderBoard,
+        [chapterId]: Object.fromEntries(shots.map((s) => [s.storyboard_id, s])),
+      },
+    })),
 
-  mergeRenderBoard: (shots) =>
+  // 按 shot 合并看板（挂载拉取用，避免覆盖竞态期间 SSE 已写入的增量）
+  mergeRenderBoard: (chapterId: string, shots: RenderShot[]) =>
     set((s) => {
-      // 按 storyboard_id 合并，不整体替换——挂载全量拉取与 SSE 增量可能竞态：
-      // 拉取发出后、resolve 前若 SSE 先 upsert 了新候选，旧快照整体替换会把它回退。
-      // 对同一 shot 保留候选更多的那份（窗口期 SSE 那份候选数更多 / 状态更靠后）；
-      // SSE 抢先创建、服务端快照尚无的 shot 也保留。
-      const merged = { ...s.renderBoard }
+      const chapterBoard = s.renderBoard[chapterId] ?? {}
+      const merged = { ...chapterBoard }
       for (const shot of shots) {
         const prev = merged[shot.storyboard_id]
         if (!prev || shot.candidates.length >= prev.candidates.length) {
           merged[shot.storyboard_id] = shot
         }
       }
-      return { renderBoard: merged }
+      return {
+        renderBoard: {
+          ...s.renderBoard,
+          [chapterId]: merged,
+        },
+      }
     }),
 
-  upsertRenderShot: (shot) =>
-    set((s) => ({ renderBoard: { ...s.renderBoard, [shot.storyboard_id]: shot } })),
+  // 增量更新单个 shot（SSE render_image 事件 / select 后局部刷新）
+  upsertRenderShot: (chapterId: string, shot: RenderShot) =>
+    set((s) => ({
+      renderBoard: {
+        ...s.renderBoard,
+        [chapterId]: {
+          ...s.renderBoard[chapterId],
+          [shot.storyboard_id]: shot,
+        },
+      },
+    })),
 
-  clearRenderBoard: () => set({ renderBoard: {} }),
+  clearRenderBoard: (chapterId) =>
+    set((s) => {
+      if (chapterId) {
+        // 清空指定章节
+        const next = { ...s.renderBoard }
+        delete next[chapterId]
+        return { renderBoard: next }
+      }
+      // 清空全部
+      return { renderBoard: {} }
+    }),
 
   renderChapters: [],
   setRenderChapters: (chapters) => set({ renderChapters: chapters }),

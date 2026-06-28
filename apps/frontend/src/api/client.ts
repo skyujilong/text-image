@@ -218,9 +218,9 @@ export const api = {
     request<RunCurrentState>(`/runs/${runId}/current-state`),
 
   // ─── 图片渲染（抽卡）─────────────────────────────────────────
-  // 渲染看板：每个换图点的提示词 + 候选图 URL + 选定终图 + 状态
-  getRenderState: (runId: string) =>
-    request<RenderBoard>(`/runs/${runId}/render/state`),
+  // 渲染看板：获取指定章节的渲染状态
+  getRenderState: (runId: string, chapterId: string) =>
+    request<RenderBoard>(`/runs/${runId}/render/chapter/${chapterId}/state`),
 
   // 改词重抽单张：prompt 为空则沿用旧提示词；新候选追加，旧候选保留
   rerollShot: (runId: string, shotId: number, chapterId: string, prompt?: string) =>
@@ -245,9 +245,9 @@ export const api = {
   getRenderPreview: (runId: string, chapterId: string) =>
     request<RenderBoard>(`/runs/${runId}/render/chapter/${chapterId}/preview`),
 
-  // 启动某章节渲染
-  startChapterRender: (runId: string, chapterId: string) =>
-    request<{ ok: boolean }>(`/runs/${runId}/render/chapter/${chapterId}/start`, {
+  // 启动某章节渲染。force=true 时强制中断其他章节的渲染并切换
+  startChapterRender: (runId: string, chapterId: string, force?: boolean) =>
+    request<{ ok: boolean }>(`/runs/${runId}/render/chapter/${chapterId}/start?force_switch=${force ? 'true' : 'false'}`, {
       method: 'POST',
     }),
 

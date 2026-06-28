@@ -34,6 +34,9 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<number | null>(null)
 
+  // 当前章节的渲染看板
+  const chapterBoard = renderBoard[chapterId] ?? {}
+
   // 筛选出有 scene_change 的镜头（换图点）
   const changeShotIds = useMemo(() => {
     return storyboard
@@ -48,7 +51,7 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
 
     api.getRenderPreview(runId, chapterId)
       .then((board) => {
-        mergeRenderBoard(board.shots)
+        mergeRenderBoard(chapterId, board.shots)
         // 只要有候选图或处于渲染中的 shot，标记为已启动
         // 保证刷新页面/切回来后，能继续定时拉取状态
         const hasCandidates = board.shots.some((s) => s.candidates.length > 0)
@@ -69,8 +72,8 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
     if (!runId || !renderStarted[chapterId]) return
 
     const refreshBoard = () => {
-      api.getRenderState(runId)
-        .then((board) => mergeRenderBoard(board.shots))
+      api.getRenderState(runId, chapterId)
+        .then((board) => mergeRenderBoard(chapterId, board.shots))
         .catch((e) => console.warn('[render-board] 拉取渲染状态失败', e))
     }
 
@@ -86,12 +89,12 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
   }, [runId, chapterId, renderStarted[chapterId]])
 
   const completedCount = changeShotIds.filter((sid) => {
-    const shot = renderBoard[sid]
+    const shot = chapterBoard[sid]
     return shot && shot.status === 'done' && shot.selected
   }).length
 
   const renderingId = changeShotIds.find((sid) => {
-    const shot = renderBoard[sid]
+    const shot = chapterBoard[sid]
     return shot && shot.status === 'rendering'
   })
 
@@ -99,16 +102,26 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
   const isStarted = renderStarted[chapterId] || false
   const [batchRerolling, setBatchRerolling] = useState(false)
 
-  const handleStartRender = async () => {
+  const handleStartRender = async (force = false) => {
     if (!runId || !chapterId) return
     setStartingRender(true)
     setError(null)
     try {
-      await api.startChapterRender(runId, chapterId)
+      await api.startChapterRender(runId, chapterId, force)
       setRenderStarted(chapterId, true)
-    } catch (e) {
-      console.error('启动渲染失败', e)
-      setError(e instanceof Error ? e.message : String(e))
+    } catch (e: unknown) {
+      // 409 冲突：其他章节正在渲染，弹窗确认
+      const err = e as { status?: number; message?: string }
+      if (err.status === 409 && !force) {
+        const msg = err.message ?? '检测到其他章节正在渲染'
+        const shouldSwitch = confirm(`${msg}\n\n是否中断并切换到当前章节？`)
+        if (shouldSwitch) {
+          await handleStartRender(true)  // 强制切换
+        }
+      } else {
+        console.error('启动渲染失败', e)
+        setError(e instanceof Error ? e.message : String(e))
+      }
     } finally {
       setStartingRender(false)
     }
@@ -119,9 +132,9 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
     setBatchRerolling(true)
     try {
       for (const sid of changeShotIds) {
-        const shot = renderBoard[sid]
+        const shot = chapterBoard[sid]
         if (shot && shot.status !== 'rendering') {
-          upsertRenderShot({ ...shot, status: 'rendering' })
+          upsertRenderShot(chapterId, { ...shot, status: 'rendering' })
           await api.rerollShot(runId, sid, chapterId)
         }
       }
@@ -289,7 +302,7 @@ function ShotCard({
       setRerolling(true)
       if (shot) {
         // 乐观更新：立即更新状态和提示词
-        upsertRenderShot({ ...shot, status: 'rendering', prompt })
+        upsertRenderShot(chapterId, { ...shot, status: 'rendering', prompt })
       }
       await api.rerollShot(runId, shotId, chapterId, edited ? prompt : undefined)
       setEdited(false)
@@ -304,7 +317,7 @@ function ShotCard({
     try {
       await api.selectCandidate(runId, shotId, chapterId, candidatePath)
       if (shot) {
-        upsertRenderShot({
+        upsertRenderShot(chapterId, {
           ...shot,
           selected: candidatePath,
           selected_url: fileUrl(candidatePath),
