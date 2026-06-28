@@ -217,7 +217,7 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
         <div className="grid grid-cols-2 xl:grid-cols-3 gap-4">
           {storyboard.map((sb, i) => {
             const sid = sb.storyboard_id ?? i
-            const shot = sb.scene_change ? renderBoard[sid as number] : undefined
+            const shot = sb.scene_change ? chapterBoard[sid as number] : undefined
             const isExpanded = expandedId === sid
 
             if (!sb.scene_change) {
