@@ -120,16 +120,25 @@ export default function RenderWorkbenchPage() {
                 <div className="flex-1 overflow-hidden">
                   {activeTab === 'images' && runId && (
                     <ImageRenderBoard
+                      key={selectedChapter.chapter_id}
                       runId={runId}
                       chapterId={selectedChapter.chapter_id}
                       storyboard={(selectedChapter.storyboard as Array<Record<string, unknown>>) ?? []}
                     />
                   )}
                   {activeTab === 'audio' && runId && (
-                    <AudioSynthesisPanel runId={runId} chapterId={selectedChapter.chapter_id} />
+                    <AudioSynthesisPanel
+                      key={selectedChapter.chapter_id}
+                      runId={runId}
+                      chapterId={selectedChapter.chapter_id}
+                    />
                   )}
                   {activeTab === 'timeline' && runId && (
-                    <TimelinePreview runId={runId} chapterId={selectedChapter.chapter_id} />
+                    <TimelinePreview
+                      key={selectedChapter.chapter_id}
+                      runId={runId}
+                      chapterId={selectedChapter.chapter_id}
+                    />
                   )}
                 </div>
               </>
