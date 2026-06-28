@@ -49,9 +49,11 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
     api.getRenderPreview(runId, chapterId)
       .then((board) => {
         mergeRenderBoard(board.shots)
-        // 如果章节已在渲染状态（后端返回有候选图），自动标记为已启动
+        // 只要有候选图或处于渲染中的 shot，标记为已启动
+        // 保证刷新页面/切回来后，能继续定时拉取状态
         const hasCandidates = board.shots.some((s) => s.candidates.length > 0)
-        if (hasCandidates) {
+        const isRendering = board.shots.some((s) => s.status === 'rendering')
+        if (hasCandidates || isRendering) {
           setRenderStarted(chapterId, true)
         }
       })
@@ -62,12 +64,24 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
   }, [runId, chapterId, mergeRenderBoard, setRenderStarted])
 
   // 渲染已启动时，才调用 getRenderState（会触发渲染会话）
+  // 同时也用于：SSE 断连重连后，补拉断连期间生成的图片
   useEffect(() => {
     if (!runId || !renderStarted[chapterId]) return
 
-    api.getRenderState(runId)
-      .then((board) => mergeRenderBoard(board.shots))
-      .catch((e) => console.warn('[render-board] 拉取渲染状态失败', e))
+    const refreshBoard = () => {
+      api.getRenderState(runId)
+        .then((board) => mergeRenderBoard(board.shots))
+        .catch((e) => console.warn('[render-board] 拉取渲染状态失败', e))
+    }
+
+    // 立即拉取一次
+    refreshBoard()
+
+    // SSE 重连时（通过 streamGeneration 检测），补拉一次
+    // 切走页面再切回来期间可能丢失 render_image 事件
+    const interval = setInterval(refreshBoard, 10000)
+
+    return () => clearInterval(interval)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, chapterId, renderStarted[chapterId]])
 
@@ -141,7 +155,7 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
         {isStarted && renderingId != null && (
           <span className="text-xs text-blue-600 flex items-center gap-1">
             <Loader2 className="size-3 animate-spin" />
-            正在渲染：镜头 #{renderingId}
+            正在渲染：镜头 #{renderingId}（后台持续运行，切走不中断）
           </span>
         )}
 
