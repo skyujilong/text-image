@@ -46,7 +46,8 @@ export default function AudioSynthesisPanel({ runId, chapterId }: Props) {
       .then((res) => {
         setAudioStatus(res.status)
         if (res.status === 'done' && res.audio_path) {
-          setAudioUrl(fileUrl(res.audio_path))
+          // 加时间戳破浏览器缓存，确保重新合成后播放最新音频
+          setAudioUrl(`${fileUrl(res.audio_path)}?t=${Date.now()}`)
         }
       })
       .catch(() => {})
@@ -69,7 +70,8 @@ export default function AudioSynthesisPanel({ runId, chapterId }: Props) {
           const res = await api.getAudioStatus(runId, chapterId)
           setAudioStatus(res.status)
           if (res.status === 'done' && res.audio_path) {
-            setAudioUrl(fileUrl(res.audio_path))
+            // 加时间戳破浏览器缓存，确保重新合成后播放最新音频
+            setAudioUrl(`${fileUrl(res.audio_path)}?t=${Date.now()}`)
             if (pollRef.current) clearInterval(pollRef.current)
           } else if (res.status === 'error') {
             if (pollRef.current) clearInterval(pollRef.current)
