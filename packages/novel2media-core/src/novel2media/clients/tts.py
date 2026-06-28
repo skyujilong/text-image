@@ -94,6 +94,17 @@ class TTSClient:
         payload = {"text": text, "template_name": "tts", **params}
         for attempt in range(1, self._max_retries + 1):
             try:
+                log.info(
+                    "dots.tts 提交请求详情",
+                    attempt=attempt,
+                    base_url=self._base,
+                    voice_name=payload.get("voice_name"),
+                    language=payload.get("language"),
+                    guidance_scale=payload.get("guidance_scale"),
+                    speaker_scale=payload.get("speaker_scale"),
+                    prompt_audio_path=payload.get("prompt_audio_path"),
+                    text_preview=text[:100] + "..." if len(text) > 100 else text,
+                )
                 resp = httpx.post(
                     f"{self._base}/api/jobs",
                     json=payload,

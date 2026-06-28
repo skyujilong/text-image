@@ -153,7 +153,20 @@ class RenderSession:
 
         改词时把新 prompt 回写 render_state——否则节点重入（retry/restart）会用回分镜稿的旧
         scene_prompt 算内容指纹，既丢失用户改词、又会误判「内容已变」触发不必要的重出。
+
+        优先级：reroll 是用户主动操作，插队到队首执行，不跟批量渲染排队。同一 shot_id 若已
+        在队列中，不重复入队（避免用户连点多次浪费 GPU）。
         """
+        # 去重：同一 shot_id 已在队列中则不重复入队
+        queued_ids = {j["storyboard_id"] for j in self._queue}
+        if shot_id in queued_ids:
+            log.warning(
+                "render_session reroll 跳过：shot 已在队列",
+                run_id=self.run_id,
+                shot_id=shot_id,
+            )
+            return
+
         data = render_state.load(self.novel_dir, self.chapter_id) or {}
         shot = data.get("shots", {}).get(str(shot_id))
         if shot is None:
@@ -169,8 +182,13 @@ class RenderSession:
             "prompt": effective_prompt,
             "ref_images": shot.get("ref_images", []),
         }
-        self._queue.append(spec)
-        log.info("render_session enqueue_reroll", run_id=self.run_id, shot_id=shot_id)
+        self._queue.insert(0, spec)  # 重新抽卡插队到队首，用户主动操作优先执行
+        log.info(
+            "render_session enqueue_reroll",
+            run_id=self.run_id,
+            shot_id=shot_id,
+            queue_len=len(self._queue),
+        )
         self._ensure_worker()
 
     def start(self) -> None:
@@ -188,6 +206,13 @@ class RenderSession:
 
     def _ensure_worker(self) -> None:
         if self._worker_task is None or self._worker_task.done():
+            log.info(
+                "render_session 启动 worker",
+                run_id=self.run_id,
+                queue_len=len(self._queue),
+                worker_task_status="done" if self._worker_task and self._worker_task.done() else "new",
+                stopped_flag=self._stopped,
+            )
             self._worker_task = asyncio.create_task(self._run_worker())
 
     async def _run_worker(self) -> None:

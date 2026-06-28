@@ -9,7 +9,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from novel2media_logging import get_logger
+
 import services.graph_runner as runner
+
+log = get_logger("render_service")
 from novel2media import render_state
 from novel2media.nodes.chapter_nodes import (
     export_to_jianying,
@@ -107,6 +111,13 @@ async def start_chapter_render(run_id: str, chapter_id: str) -> dict:
 
 async def synthesize_audio(run_id: str, chapter_id: str, audio_config: dict | None = None) -> dict:
     """提交 TTS 音频合成：调用纯函数合成整章音频并落盘。"""
+    log.info(
+        "render_service 收到音频合成请求",
+        run_id=run_id,
+        chapter=chapter_id,
+        audio_config=audio_config,
+        has_voice_name=audio_config.get("voice_name") if audio_config else None,
+    )
     novel_dir = await _get_novel_dir(run_id)
     state = await _get_shared_state(run_id)
     render_batch: list[dict] = state.get("render_batch", [])
@@ -121,7 +132,12 @@ async def synthesize_audio(run_id: str, chapter_id: str, audio_config: dict | No
     if not script:
         raise ValueError(f"chapter {chapter_id} has empty script")
 
-    result = render_synthesize_audio(novel_dir, chapter_id, script, audio_config)
+    # 同步合成函数放到线程池执行，避免阻塞 FastAPI 事件循环
+    # TTS 合成可能需要几十秒，直接在 async 函数里调用会卡死整个服务器
+    import asyncio
+    result = await asyncio.to_thread(
+        render_synthesize_audio, novel_dir, chapter_id, script, audio_config
+    )
 
     # 更新章节状态为 audio_done，并保存产物路径
     chapters_status[chapter_id] = "audio_done"

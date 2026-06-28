@@ -7,18 +7,22 @@ import services.render_session as render_session
 import services.render_service as render_service
 from fastapi import APIRouter, HTTPException
 from novel2media import render_planning, render_state
+from novel2media_logging import get_logger
 from pydantic import BaseModel
 
+log = get_logger("render_api")
 router = APIRouter()
 
 
 class RerollRequest(BaseModel):
     shot_id: int
+    chapter_id: str | None = None  # 可选，优先用前端传的，不依赖 active_interaction
     prompt: str | None = None  # 为空则沿用该 shot 旧提示词
 
 
 class SelectRequest(BaseModel):
     shot_id: int
+    chapter_id: str | None = None  # 可选，优先用前端传的
     candidate: str  # 必须是该 shot 已有候选之一（绝对路径）
 
 
@@ -78,7 +82,7 @@ async def _resolve_render_payload(run_id: str) -> tuple[str, dict]:
     return meta.novel_dir, payload
 
 
-async def _ensure_render_session(run_id: str):
+async def _ensure_render_session(run_id: str, chapter_id: str | None = None):
     """取渲染会话；不存在则从持久层惰性重建（后端重启 / 内存会话丢失后的恢复路径）。
 
     会话是纯内存对象，仅在 graph_runner 解析到新 image_render interrupt 时创建。若后端在
@@ -87,27 +91,132 @@ async def _ensure_render_session(run_id: str):
     + run_meta 重建会话（start_session 内部 seed_pending 会跳过已 done、复位孤立 rendering，
     重建幂等不重跑），用户一打开渲染页或重抽即自动续跑喂 GPU。
 
+    Args:
+        run_id: run ID
+        chapter_id: 可选，优先用前端传的章节 ID（推荐，因为 active_interaction 可能已清空）
+                    如果不传，则尝试从 active_interaction / render_batch 自动推断
+
     返回 None 表示 run 当前不在渲染阶段（调用方据此决定是否 409）。
     """
     session = render_session.get_session(run_id)
     if session is not None:
-        return session
+        if chapter_id is None or session.chapter_id == chapter_id:
+            return session
+        log.info(
+            "_ensure_render_session: 切换章节重建会话",
+            run_id=run_id,
+            old_chapter=session.chapter_id,
+            new_chapter=chapter_id,
+        )
+
     meta = await runner.get_run(run_id)
     if meta is None or not meta.novel_dir:
+        log.warning("_ensure_render_session: meta 不存在或 novel_dir 为空", run_id=run_id)
         return None
     state = await runner.get_current_run_state(run_id)
-    interaction = state.get("active_interaction") or {}
-    payload = interaction.get("payload") or {}
-    if payload.get("type") != "image_render" or not payload.get("chapter_id"):
+
+    # 策略 0：优先用前端传过来的 chapter_id（最准，因为用户明确选了某章节）
+    storyboard = None
+    specs = None
+    if chapter_id:
+        render_batch: list[dict] = state.get("render_batch", [])
+        for item in render_batch:
+            if item.get("chapter_id") == chapter_id:
+                storyboard = item.get("storyboard", [])
+                characters_profile: dict = state.get("characters_profile", {})
+                specs = render_planning.build_shot_specs(
+                    storyboard, characters_profile, meta.novel_dir
+                )
+                log.info(
+                    "_ensure_render_session: 从参数 chapter_id 恢复渲染会话",
+                    run_id=run_id,
+                    chapter_id=chapter_id,
+                    storyboard_len=len(storyboard) if storyboard else 0,
+                )
+                break
+        if not storyboard:
+            # render_batch 中找不到，但 render_state 文件可能已存在（后端重启等情况）
+            # 尝试直接从 render_state 读取 specs 信息（reroll 只需要 render_state）
+            data = render_state.load(meta.novel_dir, chapter_id)
+            if data is not None and data.get("shots"):
+                # 从 render_state 重建 specs：只需要 storyboard_id 和 prompt
+                specs = []
+                for sid, shot in data["shots"].items():
+                    specs.append({
+                        "storyboard_id": int(sid),
+                        "prompt": shot.get("prompt", ""),
+                        "workflow": shot.get("workflow", "qwen_t2i"),
+                        "ref_images": shot.get("ref_images", []),
+                    })
+                log.info(
+                    "_ensure_render_session: 从 render_state 文件恢复渲染会话",
+                    run_id=run_id,
+                    chapter_id=chapter_id,
+                    shots_count=len(specs),
+                )
+            else:
+                log.warning(
+                    "_ensure_render_session: 参数 chapter_id 不在 render_batch 中且无 render_state",
+                    run_id=run_id,
+                    chapter_id=chapter_id,
+                )
+                return None
+    else:
+        # 策略 1：从 active_interaction 取（原来的逻辑，渲染阶段进行中）
+        interaction = state.get("active_interaction") or {}
+        payload = interaction.get("payload") or {}
+        chapter_id = payload.get("chapter_id")
+        if payload.get("type") == "image_render" and chapter_id:
+            storyboard = payload.get("storyboard", [])
+            log.info(
+                "_ensure_render_session: 从 active_interaction 恢复渲染会话",
+                run_id=run_id,
+                chapter_id=chapter_id,
+            )
+        else:
+            # 策略 2：active_interaction 没了（可能渲染完了 resume 过），从 render_batch 找第一个
+            render_batch: list[dict] = state.get("render_batch", [])
+            chapters_status: dict[str, str] = state.get("chapters_status", {})
+            log.info(
+                "_ensure_render_session: 尝试从 render_batch 恢复",
+                run_id=run_id,
+                render_batch_size=len(render_batch),
+                chapters_status_keys=list(chapters_status.keys()),
+            )
+            for item in render_batch:
+                ch_id = item.get("chapter_id")
+                status = chapters_status.get(ch_id, "")
+                if status in ("rendering", "images_done", "audio_done", "rendered"):
+                    chapter_id = ch_id
+                    storyboard = item.get("storyboard", [])
+                    log.info(
+                        "_ensure_render_session: 从 chapters_status 恢复渲染会话",
+                        run_id=run_id,
+                        chapter_id=chapter_id,
+                        status=status,
+                        storyboard_len=len(storyboard) if storyboard else 0,
+                    )
+                    break
+
+    if not chapter_id or (not storyboard and not specs):
+        log.warning(
+            "_ensure_render_session: 无法恢复会话，返回 None",
+            run_id=run_id,
+            chapter_id=chapter_id,
+            has_storyboard=bool(storyboard),
+            has_specs=bool(specs),
+        )
         return None
+
     # specs 随 checkpoint 持久化；缺失（异常态）则从分镜重新解析，保证 seed 不空
-    specs = payload.get("specs") or render_planning.build_shot_specs(
-        payload.get("storyboard", []),
-        state.get("characters_profile", {}) if isinstance(state, dict) else {},
-        meta.novel_dir,
-    )
+    if specs is None:
+        specs = render_planning.build_shot_specs(
+            storyboard,
+            state.get("characters_profile", {}) if isinstance(state, dict) else {},
+            meta.novel_dir,
+        )
     return render_session.start_session(
-        run_id, meta.novel_dir, payload["chapter_id"], specs, runner.push_event
+        run_id, meta.novel_dir, chapter_id, specs, runner.push_event
     )
 
 
@@ -143,8 +252,9 @@ async def reroll_shot(run_id: str, req: RerollRequest):
     """改词重抽单张：用（可选新）提示词 + 新随机 seed 追加候选，旧候选保留。
 
     会话不存在时先惰性重建（后端重启后也能重抽），重建不出则 409。
+    优先用 req.chapter_id 恢复会话（前端知道当前选的是哪个章节）。
     """
-    session = await _ensure_render_session(run_id)
+    session = await _ensure_render_session(run_id, req.chapter_id)
     if session is None:
         raise HTTPException(status_code=409, detail="渲染会话不存在（run 未在渲染阶段）")
     try:
@@ -156,8 +266,24 @@ async def reroll_shot(run_id: str, req: RerollRequest):
 
 @router.post("/runs/{run_id}/render/select")
 async def select_candidate(run_id: str, req: SelectRequest):
-    """把某候选设为该 shot 的选定终图。"""
-    novel_dir, chapter_id = await _get_render_context(run_id)
+    """把某候选设为该 shot 的选定终图。
+
+    优先用 req.chapter_id（前端知道当前选的是哪个章节），不依赖 active_interaction。
+    """
+    # 先尝试用会话里的章节（如果有的话）
+    session = await _ensure_render_session(run_id, req.chapter_id)
+    if session is not None:
+        novel_dir, chapter_id = session.novel_dir, session.chapter_id
+    else:
+        # 会话也创建不了的话，直接从 meta 获取 novel_dir，假设 chapter_id 是传过来的
+        meta = await runner.get_run(run_id)
+        if meta is None or not meta.novel_dir:
+            raise HTTPException(status_code=404, detail="run not found")
+        novel_dir = meta.novel_dir
+        chapter_id = req.chapter_id
+        if not chapter_id:
+            raise HTTPException(status_code=409, detail="渲染会话不存在，请传入 chapter_id")
+
     try:
         render_session.select_candidate(novel_dir, chapter_id, req.shot_id, req.candidate)
     except ValueError as e:
@@ -169,7 +295,10 @@ async def select_candidate(run_id: str, req: SelectRequest):
 
 
 class AudioRequest(BaseModel):
-    audio_config: dict | None = None
+    language: str | None = None
+    guidance_scale: float | None = None
+    speaker_scale: float | None = None
+    voice_name: str | None = None
 
 
 @router.get("/runs/{run_id}/render/chapters")
@@ -196,7 +325,7 @@ async def start_chapter_render(run_id: str, ch_id: str):
 async def synthesize_audio(run_id: str, ch_id: str, req: AudioRequest):
     """提交 TTS 音频合成。"""
     try:
-        result = await render_service.synthesize_audio(run_id, ch_id, req.audio_config)
+        result = await render_service.synthesize_audio(run_id, ch_id, req.model_dump())
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

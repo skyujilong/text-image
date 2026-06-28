@@ -644,6 +644,16 @@ def render_synthesize_audio(
         **(audio_config or {}),
     }
 
+    log.info(
+        "render_synthesize_audio: 提交 TTS 合成",
+        chapter=chapter_id,
+        voice_name=params.get("voice_name"),
+        language=params.get("language"),
+        guidance_scale=params.get("guidance_scale"),
+        speaker_scale=params.get("speaker_scale"),
+        text_len=len(text),
+        tts_url=cfg.tts_url,
+    )
     wav_bytes = client.synthesize(text, params)
     out_dir = novel_dir_path / chapter_id
     out_dir.mkdir(parents=True, exist_ok=True)

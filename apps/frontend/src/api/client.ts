@@ -223,17 +223,17 @@ export const api = {
     request<RenderBoard>(`/runs/${runId}/render/state`),
 
   // 改词重抽单张：prompt 为空则沿用旧提示词；新候选追加，旧候选保留
-  rerollShot: (runId: string, shotId: number, prompt?: string) =>
+  rerollShot: (runId: string, shotId: number, chapterId: string, prompt?: string) =>
     request<{ ok: boolean }>(`/runs/${runId}/render/reroll`, {
       method: 'POST',
-      body: JSON.stringify({ shot_id: shotId, prompt: prompt ?? null }),
+      body: JSON.stringify({ shot_id: shotId, chapter_id: chapterId, prompt: prompt ?? null }),
     }),
 
   // 选定某候选为该 shot 的终图
-  selectCandidate: (runId: string, shotId: number, candidate: string) =>
+  selectCandidate: (runId: string, shotId: number, chapterId: string, candidate: string) =>
     request<{ ok: boolean }>(`/runs/${runId}/render/select`, {
       method: 'POST',
-      body: JSON.stringify({ shot_id: shotId, candidate }),
+      body: JSON.stringify({ shot_id: shotId, chapter_id: chapterId, candidate }),
     }),
 
   // ─── 渲染工作台 ─────────────────────────────────────────────

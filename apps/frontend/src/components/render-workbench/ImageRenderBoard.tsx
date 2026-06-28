@@ -122,7 +122,7 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
         const shot = renderBoard[sid]
         if (shot && shot.status !== 'rendering') {
           upsertRenderShot({ ...shot, status: 'rendering' })
-          await api.rerollShot(runId, sid)
+          await api.rerollShot(runId, sid, chapterId)
         }
       }
     } catch (e) {
@@ -230,6 +230,7 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
                 key={i}
                 runId={runId}
                 shotId={sid as number}
+                chapterId={chapterId}
                 shot={shot}
                 storyboardText={sb.text}
                 storyboardSpeaker={sb.speaker}
@@ -250,6 +251,7 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
 function ShotCard({
   runId,
   shotId,
+  chapterId,
   shot,
   storyboardText,
   storyboardSpeaker,
@@ -260,6 +262,7 @@ function ShotCard({
 }: {
   runId: string
   shotId: number
+  chapterId: string
   shot?: RenderShot
   storyboardText?: string
   storyboardSpeaker?: string
@@ -288,7 +291,7 @@ function ShotCard({
         // 乐观更新：立即更新状态和提示词
         upsertRenderShot({ ...shot, status: 'rendering', prompt })
       }
-      await api.rerollShot(runId, shotId, edited ? prompt : undefined)
+      await api.rerollShot(runId, shotId, chapterId, edited ? prompt : undefined)
       setEdited(false)
     } catch (e) {
       console.error('重新抽卡失败', e)
@@ -299,7 +302,7 @@ function ShotCard({
 
   const handleSelect = async (candidatePath: string) => {
     try {
-      await api.selectCandidate(runId, shotId, candidatePath)
+      await api.selectCandidate(runId, shotId, chapterId, candidatePath)
       if (shot) {
         upsertRenderShot({
           ...shot,
