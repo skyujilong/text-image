@@ -3,6 +3,7 @@ from __future__ import annotations
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 from novel2media.nodes.init_nodes import (
+    configure_chapter_grouping,
     load_config,
     parse_characters_llm,
     review_initial_characters,
@@ -76,7 +77,7 @@ def build_main_graph(checkpointer=None):
     主图规划完即 END，不再包含渲染委派。
 
     执行链路：
-        load_config → parse_characters_llm → review_initial_characters
+        load_config → configure_chapter_grouping → parse_characters_llm → review_initial_characters
               ↓
         character_setup_subgraph（三视图配置）
               ↓
@@ -88,6 +89,7 @@ def build_main_graph(checkpointer=None):
 
     # ── init/setup 阶段节点 ──
     builder.add_node("load_config", load_config)
+    builder.add_node("configure_chapter_grouping", configure_chapter_grouping)
     builder.add_node("parse_characters_llm", parse_characters_llm)
     builder.add_node("review_initial_characters", review_initial_characters)
     builder.add_node("character_setup_subgraph", _setup_compiled)
@@ -98,7 +100,9 @@ def build_main_graph(checkpointer=None):
     builder.set_entry_point("load_config")
 
     # ── init 阶段边 ──
-    builder.add_edge("load_config", "parse_characters_llm")
+    # load_config 扫描章节文件 → configure_chapter_grouping 让用户选粒度并分组 → 解析初始角色
+    builder.add_edge("load_config", "configure_chapter_grouping")
+    builder.add_edge("configure_chapter_grouping", "parse_characters_llm")
     builder.add_conditional_edges(
         "parse_characters_llm",
         _route_after_parse,

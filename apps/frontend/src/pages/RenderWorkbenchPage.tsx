@@ -6,6 +6,7 @@ import { api } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 import { useRunStream } from '@/hooks/useRunStream'
 import { cn } from '@/lib/utils'
+import { groupLabel } from '@/lib/chapterLabel'
 import ChapterList from '@/components/render-workbench/ChapterList'
 import ImageRenderBoard from '@/components/render-workbench/ImageRenderBoard'
 import AudioSynthesisPanel from '@/components/render-workbench/AudioSynthesisPanel'
@@ -144,7 +145,7 @@ export default function RenderWorkbenchPage() {
               </>
             ) : ['pending', 'processing'].includes(selectedChapter.status) ? (
               <div className="p-6 flex flex-col items-start gap-4">
-                <h2 className="text-lg font-semibold">{selectedChapter.chapter_id}</h2>
+                <h2 className="text-lg font-semibold">{groupLabel(selectedChapter.chapter_id)}</h2>
                 <div className="flex flex-col gap-2">
                   <p className="text-sm text-muted-foreground">
                     该章节尚未完成规划（脚本和分镜还未生成）
@@ -160,7 +161,7 @@ export default function RenderWorkbenchPage() {
               </div>
             ) : (
               <div className="p-6 flex flex-col items-start gap-4">
-                <h2 className="text-lg font-semibold">{selectedChapter.chapter_id}</h2>
+                <h2 className="text-lg font-semibold">{groupLabel(selectedChapter.chapter_id)}</h2>
                 <p className="text-sm text-muted-foreground">
                   该章节暂无分镜数据，无法渲染
                 </p>

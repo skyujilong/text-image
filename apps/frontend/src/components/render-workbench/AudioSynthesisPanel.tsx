@@ -7,6 +7,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { api, fileUrl, type VoicePreset } from '@/api/client'
+import { groupLabel } from '@/lib/chapterLabel'
 
 const DEFAULT_VOICE = '__default__'
 
@@ -99,7 +100,7 @@ export default function AudioSynthesisPanel({ runId, chapterId }: Props) {
     <div className="flex flex-col h-full p-4 gap-4 overflow-y-auto">
       <div className="flex items-center gap-2">
         <AudioLines className="size-4" />
-        <span className="text-sm font-medium">音频合成 · {chapterId}</span>
+        <span className="text-sm font-medium">音频合成 · {groupLabel(chapterId)}</span>
       </div>
 
       <div className="space-y-2 rounded border border-border p-3">

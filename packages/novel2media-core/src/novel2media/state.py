@@ -89,6 +89,10 @@ class SharedGraphState(TypedDict):
     # 渲染批次稿件缓存（plan 写入，render 读取）
     render_batch: list[dict]  # [{chapter_id, script, storyboard}]
 
+    # 章节合并分组（init 一次性定死，grouping feature 契约层）
+    chapter_groups: dict[str, list[str]]  # 单元 id → 成员章节文件 stem 列表（init 分组一次确定）
+    chapter_group_pad_width: int  # 单元 id 零填充位宽（init 定死，供中途新增文件成单章组复用）
+
     # 进度游标（orchestrate 权威维护，节点内不修改）
     chapter_order: list[str]  # 全书有序章节 id 列表（init 后确定一次）
     plan_cursor: str | None  # 下一个待规划的 chapter_id（None=规划全部完成）
@@ -112,6 +116,8 @@ class MainGraphState(SharedGraphState):
     core_theme: str  # 核心主题
     core_conflicts: str  # 核心冲突
     overall_outline: str  # 整体大纲
+    chapter_group_size: int  # 用户选择的合并粒度 N（1..5，默认1）
+    chapter_files: list[str]  # load_config 扫描出的有序原始章节文件 stem 列表，供 configure_chapter_grouping 分组消费
 
     # ── init/setup 阶段字段（load_config 初始化，仅 init/setup 节点读写） ──
     setup_queue: list[CharacterProfile]  # 待批量配置三视图的角色列表
@@ -161,6 +167,7 @@ class ChapterSubgraphState(MainGraphState):
     # 当前章节中间状态（load_chapter 时全部重置）
     current_chapter_id: str  # 当前处理的章节 ID
     current_chapter_text_path: str  # 章节原文路径（避免 checkpoint 存整章文本）
+    current_chapter_member_paths: list[str]  # 当前单元成员章节原文绝对路径列表（load_chapter 写入）
     current_script: list[dict]  # 当前章节剧本（对白 + 动作序列）
     current_storyboard: list[dict]  # 当前章节分镜列表
     current_audio_path: str  # 当前章节合成音频文件路径
@@ -185,6 +192,7 @@ class PlanGraphState(MainGraphState):
     # 当前章节中间状态（load_chapter 时全部重置）
     current_chapter_id: str
     current_chapter_text_path: str
+    current_chapter_member_paths: list[str]  # 当前单元成员章节原文绝对路径列表（load_chapter 写入）
     current_script: list[dict]
     current_storyboard: list[dict]
 

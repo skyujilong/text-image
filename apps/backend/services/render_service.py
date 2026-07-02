@@ -15,6 +15,7 @@ import services.graph_runner as runner
 
 log = get_logger("render_service")
 from novel2media import render_state
+from novel2media.chapters import group_label
 from novel2media.nodes.chapter_nodes import (
     export_to_jianying,
     render_build_timeline,
@@ -44,6 +45,9 @@ async def get_render_chapters(run_id: str) -> list[dict]:
     state = await _get_shared_state(run_id)
     chapters_status: dict[str, str] = state.get("chapters_status", {})
     render_batch: list[dict] = state.get("render_batch", [])
+    # ch_id 现在是组 id（如 ch0001-0003），其下不存在 <ch_id>.txt；原文按组成员落在
+    # chapters/<member>.txt。取组首成员拼路径供展示；组信息缺失时置空（前端不对该字段做 I/O）。
+    chapter_groups: dict[str, list[str]] = state.get("chapter_groups", {})
 
     batch_map = {item.get("chapter_id"): item for item in render_batch}
 
@@ -52,7 +56,12 @@ async def get_render_chapters(run_id: str) -> list[dict]:
         item = batch_map.get(ch_id, {})
         storyboard = item.get("storyboard", [])
         script = item.get("script", [])
-        ch_text_path = str(Path(novel_dir) / "chapters" / f"{ch_id}.txt")
+        members = chapter_groups.get(ch_id) or []
+        ch_text_path = (
+            str(Path(novel_dir) / "chapters" / f"{members[0]}.txt") if members else ""
+        )
+        # 人读标签「第A-B章」/「第X章」；组信息缺失时置空（前端已有 groupLabel，忽略多余字段）。
+        label = group_label(members) if members else ""
         has_script = bool(script)
         has_storyboard = bool(storyboard)
         chapters.append({
@@ -62,6 +71,7 @@ async def get_render_chapters(run_id: str) -> list[dict]:
             "has_storyboard": has_storyboard,
             "storyboard_count": len(storyboard),
             "chapter_text_path": ch_text_path,
+            "label": label,
             "storyboard": storyboard,
         })
     return chapters

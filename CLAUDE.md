@@ -212,6 +212,7 @@ def node_name(state: GraphState) -> dict:
 | 主图构建 | `packages/novel2media-core/src/novel2media/graph.py` |
 | 状态定义 | `packages/novel2media-core/src/novel2media/state.py` |
 | 子图定义 | `packages/novel2media-core/src/novel2media/subgraphs/*` |
+| 章节合并分组（`configure_chapter_grouping` 节点、组 id 约定） | `packages/novel2media-core/src/novel2media/chapters.py`（详见 `docs/chapter-grouping.md`） |
 | Workflow 模板 | `packages/novel2media-core/src/novel2media/workflows.py` |
 | 统一日志配置 | `packages/novel2media-logging/src/novel2media_logging/__init__.py` |
 | API 路由聚合 | `apps/backend/api/v1/router.py` |

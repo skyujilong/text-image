@@ -15,6 +15,7 @@ export const NODE_LABELS: Record<string, string> = {
   chapter_loop_subgraph: '章节处理阶段',
   // init 子图
   load_config: '加载配置',
+  configure_chapter_grouping: '章节合并设置',
   parse_characters_llm: 'LLM 解析角色',
   review_initial_characters: '👤 审阅初始角色',
   // character_setup 子图

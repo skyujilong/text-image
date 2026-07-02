@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from novel2media.nodes.init_nodes import (
+    configure_chapter_grouping,
     load_config,
     parse_characters_llm,
     review_initial_characters,
@@ -35,7 +36,7 @@ def _mock_interrupt(monkeypatch, return_value):
 
 
 def test_load_config_initializes_state_from_params(tmp_path):
-    """配置字段从 API params 传入（不读 config.json），章节预填 chapters_status。"""
+    """配置字段从 API params 传入（不读 config.json）；chapters_status 置空，章节文件存 chapter_files。"""
     novel_dir = _make_novel(tmp_path, chapters=("chapter_01.txt", "chapter_02.txt"))
     state = {
         "novel_dir": str(novel_dir),
@@ -51,7 +52,10 @@ def test_load_config_initializes_state_from_params(tmp_path):
     assert result["genre"] == "玄幻"
     # character_profiles 原文透传，供 parse_characters_llm 解析
     assert result["character_profiles"] == "林澈：黑发少年"
-    assert result["chapters_status"] == {"chapter_01": "pending", "chapter_02": "pending"}
+    # chapters_status 置空占位（分组后由 configure_chapter_grouping 按组 id 预填）
+    assert result["chapters_status"] == {}
+    # 有序原始章节文件 stem 列表供分组消费
+    assert result["chapter_files"] == ["chapter_01", "chapter_02"]
     assert result["chapters_artifacts"] == {}
     assert result["ignored_characters"] == []
     assert result["characters_profile"] == {}
@@ -77,7 +81,7 @@ def test_load_config_empty_chapters_dir_raises(tmp_path):
 
 
 def test_load_config_orders_chapters_by_number(tmp_path):
-    """章节按 chapter_xxx 数字序登记。"""
+    """章节按 chapter_xxx 数字序登记到有序 chapter_files。"""
     novel_dir = _make_novel(
         tmp_path,
         chapters=(
@@ -87,8 +91,52 @@ def test_load_config_orders_chapters_by_number(tmp_path):
         ),
     )
     result = load_config({"novel_dir": str(novel_dir)})
-    keys = list(result["chapters_status"].keys())
-    assert keys == ["chapter_01_开端", "chapter_02_初入", "chapter_10_终章"]
+    assert result["chapter_files"] == ["chapter_01_开端", "chapter_02_初入", "chapter_10_终章"]
+
+
+# --- configure_chapter_grouping ---
+
+
+_SEVEN_STEMS = [f"chapter_{i:02d}" for i in range(1, 8)]  # 7 章
+
+
+def test_configure_chapter_grouping_groups_by_size(monkeypatch):
+    """resume group_size=3、7 章 → 3 个组 key，成员总数==7，chapter_group_size 记录。"""
+    monkeypatch.setattr(
+        "novel2media.nodes.init_nodes.interrupt", lambda payload: {"group_size": 3}
+    )
+    result = configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
+
+    assert result["chapter_group_size"] == 3
+    # 7 章按 3 一组 → 3 组（3+3+1）
+    assert len(result["chapters_status"]) == 3
+    assert len(result["chapter_groups"]) == 3
+    assert set(result["chapters_status"].keys()) == set(result["chapter_groups"].keys())
+    # 每组 key 状态均为 pending
+    assert all(st == "pending" for st in result["chapters_status"].values())
+    # 成员总数守恒 == 7
+    members_total = sum(len(m) for m in result["chapter_groups"].values())
+    assert members_total == 7
+    # pad_width 一次性定死并返回（<1万章 → 4）
+    assert result["chapter_group_pad_width"] == 4
+
+
+def test_configure_chapter_grouping_default_single_chapter(monkeypatch):
+    """resume 缺 group_size / 非 dict → 默认 1（单章一组）。"""
+    monkeypatch.setattr("novel2media.nodes.init_nodes.interrupt", lambda payload: {})
+    result = configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
+    assert result["chapter_group_size"] == 1
+    assert len(result["chapter_groups"]) == 7
+
+
+@pytest.mark.parametrize("bad", [0, 6, "x", -1, True])
+def test_configure_chapter_grouping_illegal_size_raises(monkeypatch, bad):
+    """非法 group_size（0 / 6 / 非整数 / bool）→ 显式抛 ValueError。"""
+    monkeypatch.setattr(
+        "novel2media.nodes.init_nodes.interrupt", lambda payload: {"group_size": bad}
+    )
+    with pytest.raises(ValueError, match="group_size"):
+        configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
 
 
 # --- parse_characters_llm ---

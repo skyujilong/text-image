@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { api, fileUrl, type RenderShot } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 import { cn } from '@/lib/utils'
+import { groupLabel } from '@/lib/chapterLabel'
 
 interface StoryboardShot {
   storyboard_id?: number
@@ -158,7 +159,7 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
     <div className="flex flex-col h-full">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0">
-        <span className="text-sm font-medium">图片渲染 · {chapterId}</span>
+        <span className="text-sm font-medium">图片渲染 · {groupLabel(chapterId)}</span>
         <span className="text-xs text-muted-foreground">
           {isStarted
             ? `已完成 ${completedCount}/${changeShotIds.length}`

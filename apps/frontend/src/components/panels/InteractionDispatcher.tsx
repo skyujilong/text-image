@@ -3,6 +3,7 @@ import GenericReviewPanel from './GenericReviewPanel'
 import InitialCharactersReviewPanel from './InitialCharactersReviewPanel'
 import TriViewUploadPanel from './TriViewUploadPanel'
 import ChapterAdvancePanel from './ChapterAdvancePanel'
+import ChapterGroupingPanel from './ChapterGroupingPanel'
 import FinalDecisionPanel from './FinalDecisionPanel'
 
 interface Props {
@@ -21,6 +22,7 @@ const PAYLOAD_TYPE_TO_NODE: Record<string, string> = {
   script_review: 'review_script',
   storyboard_review: 'review_storyboard',
   chapter_advance: 'chapter_advance_decision',
+  chapter_grouping: 'configure_chapter_grouping',
   final_decision: 'final_decision',
 }
 
@@ -104,6 +106,15 @@ function InteractionBody({ runId, interaction }: { runId: string; interaction: A
           runId={runId}
           chapterId={p.chapter_id as string | undefined}
           plannedCount={(p.planned_count as number) ?? 0}
+        />
+      )
+    case 'configure_chapter_grouping':
+      return (
+        <ChapterGroupingPanel
+          runId={runId}
+          chapterCount={p.chapter_count as number | undefined}
+          defaultGroupSize={p.default_group_size as number | undefined}
+          maxGroupSize={p.max_group_size as number | undefined}
         />
       )
     case 'final_decision':

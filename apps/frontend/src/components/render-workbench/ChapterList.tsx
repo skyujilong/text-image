@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { groupLabel } from '@/lib/chapterLabel'
 import type { RenderChapter } from '@/api/client'
 
 const STATUS_META: Record<string, { label: string; dot: string; badge: string }> = {
@@ -46,7 +47,7 @@ export default function ChapterList({ chapters, selectedId, onSelect }: Props) {
           >
             <span className={cn('size-2 rounded-full shrink-0', meta.dot)} />
             <div className="flex-1 min-w-0">
-              <div className="text-sm truncate">{ch.chapter_id}</div>
+              <div className="text-sm truncate">{groupLabel(ch.chapter_id)}</div>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={cn('text-[10px] px-1 rounded', meta.badge)}>{meta.label}</span>
                 {ch.has_storyboard && (

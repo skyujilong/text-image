@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from langgraph.types import interrupt
-from novel2media.chapters import chapter_sort_key
+from novel2media.chapters import (
+    build_chapter_groups,
+    chapter_pad_width,
+    chapter_sort_key,
+)
 from novel2media.llm import invoke_llm
 from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.init_prompts import build_parse_initial_characters_prompt
@@ -29,9 +33,11 @@ def load_config(state: dict) -> dict:
     修改会被覆盖；config.json 仅由 novels 端点读取供前端表单回填）。
 
     章节文件由用户预先按 `chapters/chapter_xxx_ssss.txt`（xxx=章序数字）整理好，
-    此处扫描并按数字序预填 chapters_status 全 pending。无章节目录/无文件时
-    抛错暴露——否则后续 load_chapter glob 不到章节会静默返回 END，整个 run
-    什么都不干，问题难以定位。
+    此处扫描并按数字序存入有序 chapter_files（stem 列表），供下游
+    configure_chapter_grouping 节点按用户选择的粒度分组。chapters_status 在此
+    置空占位（分组后由 configure_chapter_grouping 按组 id 预填 pending），避免
+    以「每文件一 key」污染后续按组处理。无章节目录/无文件时抛错暴露——否则
+    后续 load_chapter glob 不到章节会静默返回 END，整个 run 什么都不干，问题难以定位。
 
     character_profiles（前端 textarea 原文）透传，供 parse_characters_llm 解析。
     setup_queue 不在此预填真实角色（由 review_initial_characters pass 后写入），
@@ -54,9 +60,9 @@ def load_config(state: dict) -> dict:
     ch_files = sorted(chapters_dir.glob("*.txt"), key=lambda p: chapter_sort_key(p.stem))
     if not ch_files:
         raise FileNotFoundError(f"load_config: 章节目录无 .txt 文件: {chapters_dir}")
-    chapters_status = {f.stem: "pending" for f in ch_files}
+    chapter_files = [f.stem for f in ch_files]
 
-    log.info("load_config 完成", title=novel_title, chapters=len(chapters_status))
+    log.info("load_config 完成", title=novel_title, chapters=len(chapter_files))
 
     return {
         "novel_title": novel_title,
@@ -73,7 +79,10 @@ def load_config(state: dict) -> dict:
         "character_profiles": state.get("character_profiles", ""),
         "characters_profile": {},
         "ignored_characters": [],
-        "chapters_status": chapters_status,
+        # chapters_status 置空占位；configure_chapter_grouping 按组 id 预填 pending
+        "chapters_status": {},
+        # 有序原始章节文件 stem 列表，供 configure_chapter_grouping 分组消费
+        "chapter_files": chapter_files,
         "chapters_artifacts": {},
         # setup/control 字段初始化为默认值（防旧 state/fork 残留串扰路由）
         "setup_queue": [],
@@ -93,6 +102,55 @@ def load_config(state: dict) -> dict:
         "audio_config": {},
         # 渲染批次稿件缓存（规划阶段积累、渲染阶段读取、批次结束清空）
         "render_batch": [],
+    }
+
+
+def configure_chapter_grouping(state: dict) -> dict:
+    """interrupt：让用户选择合并粒度 N（1..5，默认1），据此把章节文件切成组。
+
+    R1 原则：interrupt() 之后不做写盘副作用。本节点只读 state（chapter_files）
+    + 计算分组并写回 state 字段。
+
+    - 从 load_config 存入的有序 chapter_files 读原始章节文件 stem 列表。
+    - interrupt payload 告知前端章节总数 + 默认/最大粒度，供 UI 预览组数。
+    - resume 兼容：raw 为 dict 取 raw["group_size"]；为 int 直接用；缺失/其它当默认 1。
+    - 校验 group_size 为 1..5 的整数，否则显式抛 ValueError（与其它节点风格一致）。
+    - 一次性定死 pad_width（供中途新增文件成单章组复用）+ 计算分组。
+    - chapters_status 按组 id 预填 pending（组 = 新原子单元，扮演原 chapter_id）。
+    """
+    files: list[str] = list(state.get("chapter_files", []))
+    raw = interrupt(
+        {
+            "type": "chapter_grouping",
+            "chapter_count": len(files),
+            "default_group_size": 1,
+            "max_group_size": 5,
+        }
+    )
+
+    # 兼容 resume：对象 {group_size:N} / 纯 int / 缺失当默认 1
+    if isinstance(raw, dict):
+        group_size = raw.get("group_size", 1)
+    elif isinstance(raw, int) and not isinstance(raw, bool):
+        group_size = raw
+    else:
+        group_size = 1
+
+    # 显式校验：必须是 1..5 的整数（bool 是 int 子类，须排除）
+    if not isinstance(group_size, int) or isinstance(group_size, bool) or not 1 <= group_size <= 5:
+        raise ValueError(
+            f"configure_chapter_grouping: 非法 group_size（应为 1..5 的整数）: {group_size!r}"
+        )
+
+    pad_width = chapter_pad_width(files)
+    groups = build_chapter_groups(files, group_size, pad_width)
+
+    log.info("configure_chapter_grouping: 分组完成", group_size=group_size, groups=len(groups))
+    return {
+        "chapter_group_size": group_size,
+        "chapter_group_pad_width": pad_width,
+        "chapter_groups": groups,
+        "chapters_status": {gid: "pending" for gid in groups},
     }
 
 

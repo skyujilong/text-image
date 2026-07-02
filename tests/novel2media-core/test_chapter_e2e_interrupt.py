@@ -89,14 +89,16 @@ async def test_chapter_subgraph_stops_at_review_script(tmp_path, monkeypatch):
     assert "__interrupt__" in result
     payload = result["__interrupt__"][0].value
     assert payload["type"] == "script_review"
-    assert payload["chapter_id"] == "chapter_01"
+    # 单元 id 现为分组 id（章节合并分组特性）：单章 chapter_01 → 组 id ch0001
+    assert payload["chapter_id"] == "ch0001"
     assert len(payload["script"]) == 1
     # 剧本审阅 payload 不应含 storyboard/new_characters（只审本步产物）
     assert "storyboard" not in payload
     assert "new_characters" not in payload
 
     # 章节状态在 interrupt 前仍为 processing（commit_chapter 才标 planned）
-    assert result["chapters_status"]["chapter_01"] == "processing"
+    # chapters_status 的 key 现为分组 id（章节合并分组特性）：单章 → ch0001
+    assert result["chapters_status"]["ch0001"] == "processing"
 
 
 @pytest.mark.asyncio
@@ -137,7 +139,8 @@ async def test_chapter_subgraph_new_char_setup_before_storyboard_then_planned(tm
     result = await graph.ainvoke(Command(resume="pass"), config=config)
 
     # 4) review_storyboard pass → commit_chapter 标 planned → 停在 chapter_advance_decision
-    assert result["chapters_status"]["chapter_01"] == "planned"
+    # chapters_status 的 key 现为分组 id（章节合并分组特性）：单章 → ch0001
+    assert result["chapters_status"]["ch0001"] == "planned"
     # 新角色已落 characters_profile，且带 visual_trait + tri_view（分镜前就备好）
     assert result["characters_profile"]["主角"]["visual_trait"] == "young man with black hair"
     assert result["characters_profile"]["主角"]["tri_view"] == "characters/主角.png"

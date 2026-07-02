@@ -5,7 +5,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from langgraph.types import interrupt
-from novel2media.chapters import chapter_sort_key
+from novel2media.chapters import (
+    chapter_pad_width,
+    chapter_sort_key,
+    group_id_for,
+    read_group_text,
+)
 from novel2media.llm import invoke_llm
 from novel2media.nodes.init_nodes import _REQUIRED_CHAR_FIELDS
 from novel2media.prompts._parse import parse_json_array
@@ -28,49 +33,103 @@ _SCENE_PROMPT_BATCH_SIZE = 40  # 每批最多多少个换图点（40 个换图�
 _SCENE_PROMPT_MAX_WORKERS = 2  # 并发上限（控制 ARK 限流压力，不宜过大）
 
 
-def load_chapter(state: dict) -> dict:
-    """加载下一章并重置章节级中间态。
+def _discover_new_single_chapter_groups(
+    chapters_dir: Path,
+    chapter_groups: dict[str, list[str]],
+    chapters_status: dict[str, str],
+    pad_width: int,
+) -> None:
+    """就地把中途新增的章节文件各自作为单章组追加进 chapter_groups / chapters_status。
 
-    章节选取优先级（R13）：先取 `processing`（恢复断点/续跑），无则取第一个
-    `pending` 置 `processing`。无 pending/processing 章节时返回空 current_chapter_id，
-    由条件边路由到 END。
+    分组在 init 一次性定死；此处兜底用户在运行中新放入 chapters/ 的 .txt 文件：
+    每个尚未归入任一组的 stem 复用 init 定死的 pad_width 组成单章组 `ch<n>` 并置 pending。
+    若新文件章号跨位宽进位（id 位数 > pad_width）导致与既有排序不一致 → log.warning 暴露，
+    不静默乱序。
+    """
+    grouped = {stem for members in chapter_groups.values() for stem in members}
+    new_stems = sorted(
+        (p.stem for p in chapters_dir.glob("*.txt") if p.stem not in grouped),
+        key=chapter_sort_key,
+    )
+    for stem in new_stems:
+        gid = group_id_for([stem], pad_width)
+        # 位宽进位检测：gid 形如 `ch<零填充章号>`，去掉 `ch` 前缀后位数应 == pad_width。
+        # 若章号位数超过 init 定死的 pad_width，字典序会与章号序脱节 → 暴露不静默。
+        if len(gid) - 2 > pad_width:
+            log.warning(
+                "load_chapter: 新增章节章号跨位宽进位，单元 id 排序可能与章号序不一致",
+                stem=stem,
+                group_id=gid,
+                pad_width=pad_width,
+            )
+        # id 碰撞（章号重复等）：对齐 build_chapter_groups 的暴露意图，warning 并 skip
+        # 该新文件（不覆盖既有组），继续处理其余新文件。
+        if gid in chapter_groups:
+            log.warning(
+                "load_chapter: 新增章节单元 id 与既有组冲突，跳过不覆盖",
+                group_id=gid,
+                stem=stem,
+                existing_members=chapter_groups[gid],
+            )
+            continue
+        chapter_groups[gid] = [stem]
+        chapters_status[gid] = "pending"
+        log.info("load_chapter: 发现新增章节，追加为单章组", group_id=gid, stem=stem)
+
+
+def load_chapter(state: dict) -> dict:
+    """加载下一单元（组）并重置章节级中间态。
+
+    单元选取优先级（R13）：`chapters_status` 的 key 是组 id。先取 `processing`
+    （恢复断点/续跑），无则取第一个 `pending` 置 `processing`。无 pending/processing
+    单元时返回空 current_chapter_id，由条件边路由到 END。
+
+    中途新增文件成单章组：init 分组一次定死后，运行中新放入 chapters/ 的 .txt 文件
+    各自成单章组（复用 init 定死的 pad_width）追加进 chapter_groups 并置 pending。
 
     控制字段重置（R3）：fork/resume 残留的 _review_decision/_chapter_advance 等
-    路由字段会串扰下一章或新分支路由，此处统一置默认值。
+    路由字段会串扰下一单元或新分支路由，此处统一置默认值。
     """
     novel_dir = Path(state["novel_dir"])
     chapters_dir = novel_dir / "chapters"
     chapters_status: dict[str, str] = dict(state.get("chapters_status", {}))
+    chapter_groups: dict[str, list[str]] = dict(state.get("chapter_groups", {}))
+    # 位宽优先取 init 定死的 state 值（活的 plan_graph 流程 configure_chapter_grouping 必设）。
+    # 缺失/为 0 时（废弃 chapter.py 子图或旧 checkpoint 未带该字段）自给自足：从实际章节文件
+    # （chapters_dir 下 .txt stem + 已入组成员）推导，保证 load_chapter 不依赖外部分组配置。
+    pad_width = state.get("chapter_group_pad_width")
+    if not pad_width:
+        grouped_stems = [stem for members in chapter_groups.values() for stem in members]
+        disk_stems = [p.stem for p in chapters_dir.glob("*.txt")]
+        pad_width = chapter_pad_width(disk_stems + grouped_stems)
 
-    # 动态发现新章节文件（按 chapter_xxx 数字序，兜底用户中途新增章节）
-    known = set(chapters_status.keys())
-    for ch_file in sorted(chapters_dir.glob("*.txt"), key=lambda p: chapter_sort_key(p.stem)):
-        ch_id = ch_file.stem
-        if ch_id not in known:
-            chapters_status[ch_id] = "pending"
+    # 中途新增文件成单章组（兜底用户运行中新增章节），随本节点 return 合并回 state
+    _discover_new_single_chapter_groups(chapters_dir, chapter_groups, chapters_status, pad_width)
 
-    # R13：优先恢复 processing（断点续跑），无则取第一个 pending
+    # R13：优先恢复 processing（断点续跑），无则取第一个 pending（对组 id 生效）
     processing = sorted(
-        [ch_id for ch_id, st in chapters_status.items() if st == "processing"],
+        [gid for gid, st in chapters_status.items() if st == "processing"],
         key=chapter_sort_key,
     )
     pending = sorted(
-        [ch_id for ch_id, st in chapters_status.items() if st == "pending"],
+        [gid for gid, st in chapters_status.items() if st == "pending"],
         key=chapter_sort_key,
     )
     if processing:
         ch_id = processing[0]
-        log.info("load_chapter: 恢复 processing 章节（断点续跑）", chapter=ch_id)
+        log.info("load_chapter: 恢复 processing 单元（断点续跑）", chapter=ch_id)
     elif pending:
         ch_id = pending[0]
         chapters_status[ch_id] = "processing"
-        log.info("load_chapter: 开始处理章节", chapter=ch_id)
+        log.info("load_chapter: 开始处理单元", chapter=ch_id)
     else:
-        log.info("load_chapter: 无 pending 章节，流程结束")
+        log.info("load_chapter: 无 pending 单元，流程结束")
         return {
             "chapters_status": chapters_status,
+            "chapter_groups": chapter_groups,
             "current_chapter_id": "",
             "current_chapter_text_path": "",
+            "current_chapter_member_paths": [],
             "current_script": [],
             "current_storyboard": [],
             "current_audio_path": "",
@@ -93,14 +152,21 @@ def load_chapter(state: dict) -> dict:
             "_export_now": False,
         }
 
-    # 章节原文是不可变源文件，仅存路径；不再把整章文本放进 state（避免每条
-    # checkpoint 复制一份）。需要原文时按路径读取。
-    ch_text_path = str(chapters_dir / f"{ch_id}.txt")
+    # 解析选中单元的成员章节原文路径。章节原文是不可变源文件，仅存路径；不再把整组
+    # 文本放进 state（避免每条 checkpoint 复制一份）。需要原文时按路径读取。
+    members = chapter_groups.get(ch_id)
+    if not members:
+        # 选中单元无成员属异常（不应发生），显式抛错暴露
+        raise ValueError(f"load_chapter: 单元 {ch_id} 在 chapter_groups 中无成员章节")
+    member_paths = [str(chapters_dir / f"{stem}.txt") for stem in members]
 
     return {
         "chapters_status": chapters_status,
+        "chapter_groups": chapter_groups,
         "current_chapter_id": ch_id,
-        "current_chapter_text_path": ch_text_path,
+        # current_chapter_text_path 保留组首成员，向后兼容/展示；整组读取走 member_paths
+        "current_chapter_text_path": member_paths[0],
+        "current_chapter_member_paths": member_paths,
         "current_script": [],
         "current_storyboard": [],
         "current_audio_path": "",
@@ -110,7 +176,7 @@ def load_chapter(state: dict) -> dict:
         "current_timeline_path": "",
         "script_review_attempts": 0,
         "storyboard_review_attempts": 0,
-        # R3：清空章节级控制字段，防止上一章/上一分支残留驱动本章路由
+        # R3：清空章节级控制字段，防止上一单元/上一分支残留驱动本单元路由
         "_script_review_decision": "",
         "_script_review_feedback": "",
         "_storyboard_review_decision": "",
@@ -142,7 +208,10 @@ def adapt_script(state: dict) -> dict:
     避免串到下一章重写。
     """
     ch_id = state["current_chapter_id"]
-    chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
+    # 整组拼接原文喂 LLM（兜底：member 缺失时退回单文件，兼容旧 checkpoint）
+    chapter_text = read_group_text(
+        state.get("current_chapter_member_paths") or [state["current_chapter_text_path"]]
+    )
     characters_profile = state.get("characters_profile", {})
     feedback = state.get("_script_review_feedback", "") or ""
 
@@ -207,7 +276,10 @@ def generate_storyboard(state: dict) -> dict:
     """
     ch_id = state["current_chapter_id"]
     script = state.get("current_script", [])
-    chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
+    # 整组拼接原文喂 LLM（兜底：member 缺失时退回单文件，兼容旧 checkpoint）
+    chapter_text = read_group_text(
+        state.get("current_chapter_member_paths") or [state["current_chapter_text_path"]]
+    )
     characters_profile = state.get("characters_profile", {})
     feedback = state.get("_storyboard_review_feedback", "") or ""
 
@@ -326,7 +398,10 @@ def detect_new_characters_llm(state: dict) -> dict:
     重跑时整体覆盖，不会重复累积/残留旧批新角色。
     """
     ch_id = state["current_chapter_id"]
-    chapter_text = Path(state["current_chapter_text_path"]).read_text(encoding="utf-8")
+    # 整组拼接原文喂 LLM（兜底：member 缺失时退回单文件，兼容旧 checkpoint）
+    chapter_text = read_group_text(
+        state.get("current_chapter_member_paths") or [state["current_chapter_text_path"]]
+    )
     existing_names = set(state.get("characters_profile", {}).keys())
 
     prompt = build_detect_new_characters_prompt(chapter_text, existing_names)
@@ -540,13 +615,14 @@ def render_dispatch(render_batch: list[dict], chapters_status: dict[str, str], n
         raise ValueError(
             f"render_dispatch: planned 章节 {ch_id} 在 render_batch 中无稿件"
         )
-    ch_text_path = str(Path(novel_dir) / "chapters" / f"{ch_id}.txt")
+    # ch_id 现在是组 id，chapters/{ch_id}.txt 不存在（不再假设单文件）。渲染阶段只用
+    # script/storyboard，用不到原文，故置空（避免下游误按单文件路径读取）。
     storyboard = item.get("storyboard", [])
     script = item.get("script", [])
-    log.info("render_dispatch: 选取渲染章节", chapter=ch_id, shots=len(storyboard))
+    log.info("render_dispatch: 选取渲染单元", chapter=ch_id, shots=len(storyboard))
     return {
         "current_chapter_id": ch_id,
-        "current_chapter_text_path": ch_text_path,
+        "current_chapter_text_path": "",
         "current_script": script,
         "current_storyboard": storyboard,
     }

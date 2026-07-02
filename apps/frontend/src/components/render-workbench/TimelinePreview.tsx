@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Clock, Download, Loader2, FileVideo } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/api/client'
+import { groupLabel } from '@/lib/chapterLabel'
 
 interface TimelineEntry {
   storyboard_id: number
@@ -73,7 +74,7 @@ export default function TimelinePreview({ runId, chapterId }: Props) {
     <div className="flex flex-col h-full p-4 gap-4 overflow-y-auto">
       <div className="flex items-center gap-2">
         <Clock className="size-4" />
-        <span className="text-sm font-medium">时间轴 · {chapterId}</span>
+        <span className="text-sm font-medium">时间轴 · {groupLabel(chapterId)}</span>
       </div>
 
       <div className="flex items-center gap-2">

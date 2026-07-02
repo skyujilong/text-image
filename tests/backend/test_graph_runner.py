@@ -75,6 +75,72 @@ async def test_resume_run_calls_command():
     assert cmd_calls[0].resume == 2
 
 
+def test_shared_fields_carries_grouping_contract():
+    """_SHARED_FIELDS 必须放行三个分组字段，否则委派 main→plan 后 chapter_groups 丢失。
+
+    这是委派闸门单点核对：per-step 单测覆盖不到「字段未进 frozenset → 静默丢弃」这一类缺陷。
+    """
+    assert {
+        "chapter_groups",
+        "chapter_group_pad_width",
+        "chapter_group_size",
+    } <= set(runner._SHARED_FIELDS)
+
+
+async def test_grouping_survives_delegation_into_load_chapter(tmp_path):
+    """main→plan 端到端：configure_chapter_grouping interrupt → resume {group_size:2}
+    → 经真实 _extract_shared_fields（委派闸门）→ 真实 load_chapter。
+
+    断言委派后 plan 侧 chapter_groups 非空、current_chapter_member_paths 含 2 个成员路径。
+    专门捕捉「_SHARED_FIELDS 漏字段导致委派后 chapter_groups 为空」——若三字段中任一
+    未进 frozenset，_extract_shared_fields 会丢弃它，load_chapter 随即拿到空组/KeyError。
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.graph import END, START, StateGraph
+    from langgraph.types import Command
+    from novel2media.nodes.chapter_nodes import load_chapter
+    from novel2media.nodes.init_nodes import configure_chapter_grouping
+
+    # 造 4 个真实章节文件（组大小 2 → 2 组：ch0001-0002 / ch0003-0004）
+    chapters_dir = tmp_path / "chapters"
+    chapters_dir.mkdir()
+    stems = [f"chapter_{i:02d}_t" for i in range(1, 5)]
+    for stem in stems:
+        (chapters_dir / f"{stem}.txt").write_text(f"正文 {stem}", encoding="utf-8")
+
+    # ── main 侧：单节点图跑 configure_chapter_grouping interrupt + resume ──
+    builder = StateGraph(dict)
+    builder.add_node("configure_chapter_grouping", configure_chapter_grouping)
+    builder.add_edge(START, "configure_chapter_grouping")
+    builder.add_edge("configure_chapter_grouping", END)
+    main_graph = builder.compile(checkpointer=MemorySaver())
+    cfg = {"configurable": {"thread_id": "grouping-e2e"}}
+
+    main_input = {"novel_dir": str(tmp_path), "chapter_files": stems}
+    interrupted = await main_graph.ainvoke(main_input, config=cfg)
+    # 到达 interrupt：payload 类型正确，由通用 interrupt 机制透传（无节点名白名单）
+    assert interrupted["__interrupt__"][0].value["type"] == "chapter_grouping"
+    assert interrupted["__interrupt__"][0].value["chapter_count"] == 4
+
+    await main_graph.ainvoke(Command(resume={"group_size": 2}), config=cfg)
+    main_state = (await main_graph.aget_state(cfg)).values
+
+    # ── 委派闸门：只有 _SHARED_FIELDS 里的字段能过到 plan 侧 ──
+    plan_input = runner._extract_shared_fields(main_state)
+    assert plan_input["chapter_groups"], "委派后 chapter_groups 不能为空"
+    assert plan_input["chapter_group_size"] == 2
+    assert plan_input["chapter_group_pad_width"] == 4
+
+    # ── plan 侧：真实 load_chapter 消费透传过来的分组 ──
+    plan_input["novel_dir"] = str(tmp_path)
+    loaded = load_chapter(plan_input)
+    assert loaded["current_chapter_id"] == "ch0001-0002"
+    member_paths = loaded["current_chapter_member_paths"]
+    assert len(member_paths) == 2
+    assert member_paths[0] == str(chapters_dir / "chapter_01_t.txt")
+    assert member_paths[1] == str(chapters_dir / "chapter_02_t.txt")
+
+
 async def test_reconcile_zombie_runs_only_fixes_running(tmp_path):
     """启动纠正：仅把僵尸 running 改为 error，waiting_human/done/error/pending 不动。"""
     from db.runs_db import RunsDB

@@ -3,13 +3,11 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-
 from novel2media.nodes.chapter_nodes import (
     adapt_script,
     build_timeline,
     chapter_advance_decision,
     commit_chapter,
-    configure_audio,
     detect_new_characters_llm,
     export_to_jianying,
     final_decision,
@@ -34,26 +32,36 @@ def _make_novel(tmp_path, chapters=("chapter_01.txt",), with_summaries=True):
     return novel_dir
 
 
-def test_load_chapter_registers_new_chapters(tmp_path):
-    novel_dir = _make_novel(tmp_path)
+def test_load_chapter_selects_group_and_resolves_member_paths(tmp_path):
+    """load_chapter 按组 id 选取，解析组内所有成员章节原文路径写入 current_chapter_member_paths。"""
+    novel_dir = _make_novel(tmp_path, chapters=("chapter_001_a.txt", "chapter_002_b.txt"))
     state = {
         "novel_dir": str(novel_dir),
-        "chapters_status": {},
+        "chapters_status": {"ch0001-0002": "pending"},
+        "chapter_groups": {"ch0001-0002": ["chapter_001_a", "chapter_002_b"]},
+        "chapter_group_pad_width": 4,
         "chapters_artifacts": {},
     }
     result = load_chapter(state)
-    assert result["current_chapter_id"] == "chapter_01"
-    assert result["chapters_status"]["chapter_01"] == "processing"
-    # 章节原文改为只存源文件路径，不再把整章文本放进 state
-    assert result["current_chapter_text_path"].endswith("chapter_01.txt")
-    assert Path(result["current_chapter_text_path"]).read_text(encoding="utf-8") == "内容"
+    assert result["current_chapter_id"] == "ch0001-0002"
+    # 该组状态转 processing
+    assert result["chapters_status"]["ch0001-0002"] == "processing"
+    # 成员路径为组内两个文件（有序）
+    member_paths = result["current_chapter_member_paths"]
+    assert len(member_paths) == 2
+    assert member_paths[0].endswith("chapter_001_a.txt")
+    assert member_paths[1].endswith("chapter_002_b.txt")
+    # current_chapter_text_path 保留组首成员（向后兼容）
+    assert result["current_chapter_text_path"] == member_paths[0]
 
 
 def test_load_chapter_resets_current_fields(tmp_path):
     novel_dir = _make_novel(tmp_path)
     state = {
         "novel_dir": str(novel_dir),
-        "chapters_status": {},
+        "chapters_status": {"ch0001": "pending"},
+        "chapter_groups": {"ch0001": ["chapter_01"]},
+        "chapter_group_pad_width": 4,
         "chapters_artifacts": {},
         "current_script": [{"id": "sc_old"}],
         "script_review_attempts": 2,
@@ -65,45 +73,55 @@ def test_load_chapter_resets_current_fields(tmp_path):
     assert result["storyboard_review_attempts"] == 0
 
 
-def test_load_chapter_skips_processed_chapters(tmp_path):
+def test_load_chapter_skips_processed_groups(tmp_path):
     novel_dir = _make_novel(tmp_path, chapters=["chapter_01.txt", "chapter_02.txt"])
     state = {
         "novel_dir": str(novel_dir),
-        "chapters_status": {"chapter_01": "done"},
+        "chapters_status": {"ch0001": "done", "ch0002": "pending"},
+        "chapter_groups": {"ch0001": ["chapter_01"], "ch0002": ["chapter_02"]},
+        "chapter_group_pad_width": 4,
         "chapters_artifacts": {},
     }
     result = load_chapter(state)
-    assert result["current_chapter_id"] == "chapter_02"
+    assert result["current_chapter_id"] == "ch0002"
 
 
-def test_load_chapter_resumes_processing_chapter(tmp_path):
-    """R13：优先恢复 processing 章节（断点续跑），即使存在更早的 pending 章节。"""
+def test_load_chapter_resumes_processing_group(tmp_path):
+    """R13：优先恢复 processing 单元（断点续跑），即使存在更早的 pending 单元。"""
     novel_dir = _make_novel(tmp_path, chapters=["chapter_01.txt", "chapter_02.txt", "chapter_03.txt"])
     state = {
         "novel_dir": str(novel_dir),
-        # chapter_02 处于 processing（上次中断），chapter_01/03 为 pending
-        "chapters_status": {"chapter_01": "pending", "chapter_02": "processing", "chapter_03": "pending"},
+        # ch0002 处于 processing（上次中断），ch0001/ch0003 为 pending
+        "chapters_status": {"ch0001": "pending", "ch0002": "processing", "ch0003": "pending"},
+        "chapter_groups": {
+            "ch0001": ["chapter_01"],
+            "ch0002": ["chapter_02"],
+            "ch0003": ["chapter_03"],
+        },
+        "chapter_group_pad_width": 4,
         "chapters_artifacts": {},
     }
     result = load_chapter(state)
-    assert result["current_chapter_id"] == "chapter_02"
-    # processing 章节不应被重新置为 processing（保持原状态），但仍被选中
-    assert result["chapters_status"]["chapter_02"] == "processing"
+    assert result["current_chapter_id"] == "ch0002"
+    # processing 单元不应被重新置为 processing（保持原状态），但仍被选中
+    assert result["chapters_status"]["ch0002"] == "processing"
 
 
 def test_load_chapter_clears_control_fields(tmp_path):
-    """R3：load_chapter 清空残留的章节级控制字段，避免串扰下一章路由。
+    """R3：load_chapter 清空残留的章节级控制字段，避免串扰下一单元路由。
 
-    audio_config 是全局持久字段，不在章节级重置范围内（已配则跨章保留，由 configure_audio 节点管理）。
+    audio_config 是全局持久字段，不在章节级重置范围内（已配则跨单元保留）。
     """
     novel_dir = _make_novel(tmp_path)
     state = {
         "novel_dir": str(novel_dir),
-        "chapters_status": {},
+        "chapters_status": {"ch0001": "pending"},
+        "chapter_groups": {"ch0001": ["chapter_01"]},
+        "chapter_group_pad_width": 4,
         "chapters_artifacts": {},
-        "audio_config": {"voice_type": "zh_female_xxx"},  # 全局已配，不应被本章重置
+        "audio_config": {"voice_type": "zh_female_xxx"},  # 全局已配，不应被本单元重置
         "_script_review_decision": "revise",
-        "_script_review_feedback": "上一章残留意见",
+        "_script_review_feedback": "上一单元残留意见",
         "_storyboard_review_decision": "revise",
         "_storyboard_review_feedback": "分镜意见",
         "_characters_review_decision": "revise",
@@ -124,7 +142,7 @@ def test_load_chapter_clears_control_fields(tmp_path):
     assert result["_final_decision"] == ""
     assert result["_init_characters_review"] == ""
     assert result["_export_now"] is False
-    # audio_config 不在 load_chapter 返回的重置字段中（全局持久，跨章保留）
+    # audio_config 不在 load_chapter 返回的重置字段中（全局持久，跨单元保留）
     assert "audio_config" not in result
 
 
@@ -132,17 +150,21 @@ def test_load_chapter_no_pending_returns_sentinel(tmp_path):
     novel_dir = _make_novel(tmp_path)
     state = {
         "novel_dir": str(novel_dir),
-        "chapters_status": {"chapter_01": "done"},
+        "chapters_status": {"ch0001": "done"},
+        "chapter_groups": {"ch0001": ["chapter_01"]},
+        "chapter_group_pad_width": 4,
         "chapters_artifacts": {},
     }
     result = load_chapter(state)
     assert result["current_chapter_id"] == ""
+    # 结束分支也返回空成员路径
+    assert result["current_chapter_member_paths"] == []
 
 
 def test_load_chapter_orders_by_chapter_number(tmp_path):
-    """load_chapter 取第一个 pending 时按 chapter_xxx 数字序，非字符串序。
+    """load_chapter 取第一个 pending 单元时按 chapter_xxx 数字序，非字符串序。
 
-    chapter_02 应优先于 chapter_10（字符串序会把 chapter_10 排在前面）。
+    ch0002 应优先于 ch0010（字符串序会把 ch0010 排在前面；零填充后二者字典序 == 章号序）。
     """
     novel_dir = _make_novel(
         tmp_path,
@@ -150,11 +172,59 @@ def test_load_chapter_orders_by_chapter_number(tmp_path):
     )
     state = {
         "novel_dir": str(novel_dir),
-        "chapters_status": {},  # 触发动态发现 + 排序
+        "chapters_status": {"ch0010": "pending", "ch0002": "pending", "ch0001": "pending"},
+        "chapter_groups": {
+            "ch0010": ["chapter_10_终章"],
+            "ch0002": ["chapter_02_初入"],
+            "ch0001": ["chapter_01_开端"],
+        },
+        "chapter_group_pad_width": 4,
         "chapters_artifacts": {},
     }
     result = load_chapter(state)
-    assert result["current_chapter_id"] == "chapter_01_开端"
+    assert result["current_chapter_id"] == "ch0001"
+
+
+def test_load_chapter_discovers_new_file_as_single_chapter_group(tmp_path):
+    """中途新增文件成单章组：groups 已含 ch0001，chapters/ 多一个 chapter_002_x.txt →
+    load_chapter 把它作为单章组 ch0002 追加进 chapter_groups 且置 pending。"""
+    novel_dir = _make_novel(tmp_path, chapters=("chapter_001_a.txt", "chapter_002_x.txt"))
+    state = {
+        "novel_dir": str(novel_dir),
+        # 只有 ch0001 已分组（chapter_002_x 是运行中新增）
+        "chapters_status": {"ch0001": "done"},
+        "chapter_groups": {"ch0001": ["chapter_001_a"]},
+        "chapter_group_pad_width": 4,
+        "chapters_artifacts": {},
+    }
+    result = load_chapter(state)
+    # 新文件被追加为单章组 ch0002（发现阶段置 pending）
+    assert "ch0002" in result["chapter_groups"]
+    assert result["chapter_groups"]["ch0002"] == ["chapter_002_x"]
+    # 它是唯一 pending 单元 → 本次被选中并推进为 processing
+    assert result["current_chapter_id"] == "ch0002"
+    assert result["chapters_status"]["ch0002"] == "processing"
+    assert result["current_chapter_member_paths"][0].endswith("chapter_002_x.txt")
+
+
+def test_load_chapter_discovered_new_group_stays_pending_when_not_selected(tmp_path):
+    """新增文件成单章组置 pending：当已有更早的 pending 单元被选中时，新组保持 pending（发现阶段只置 pending）。"""
+    novel_dir = _make_novel(
+        tmp_path, chapters=("chapter_001_a.txt", "chapter_002_b.txt", "chapter_003_x.txt")
+    )
+    state = {
+        "novel_dir": str(novel_dir),
+        # ch0001 已 pending（更早），chapter_003_x 运行中新增
+        "chapters_status": {"ch0001": "pending", "ch0002": "done"},
+        "chapter_groups": {"ch0001": ["chapter_001_a"], "ch0002": ["chapter_002_b"]},
+        "chapter_group_pad_width": 4,
+        "chapters_artifacts": {},
+    }
+    result = load_chapter(state)
+    # 新组被追加且保持 pending（更早的 ch0001 被选中）
+    assert result["chapter_groups"]["ch0003"] == ["chapter_003_x"]
+    assert result["chapters_status"]["ch0003"] == "pending"
+    assert result["current_chapter_id"] == "ch0001"
 
 
 # --- 上游 LLM 生成节点（step 03，mock LLM）---
@@ -167,8 +237,9 @@ def _make_chapter_state(tmp_path, text="原文内容", profile=None):
     ch_path.write_text(text, encoding="utf-8")
     return {
         "novel_dir": str(novel_dir),
-        "current_chapter_id": "chapter_01",
+        "current_chapter_id": "ch0001",
         "current_chapter_text_path": str(ch_path),
+        "current_chapter_member_paths": [str(ch_path)],
         "characters_profile": profile or {},
         "chapters_artifacts": {},
     }
@@ -225,6 +296,73 @@ def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
     prompt = mock.call_args.args[0]
     assert "对白太书面、节奏太快" in prompt
     assert result["_script_review_feedback"] == ""
+
+
+def _make_group_chapter_state(tmp_path, texts, profile=None):
+    """构造多成员单元 state：每个 text 写一个章节文件，member_paths 按序指向它们。"""
+    novel_dir = tmp_path / "novel"
+    (novel_dir / "chapters").mkdir(parents=True, exist_ok=True)
+    member_paths = []
+    for i, text in enumerate(texts, start=1):
+        ch_path = novel_dir / "chapters" / f"chapter_{i:03d}_x.txt"
+        ch_path.write_text(text, encoding="utf-8")
+        member_paths.append(str(ch_path))
+    return {
+        "novel_dir": str(novel_dir),
+        "current_chapter_id": "ch0001-%04d" % len(texts),
+        "current_chapter_text_path": member_paths[0],
+        "current_chapter_member_paths": member_paths,
+        "characters_profile": profile or {},
+        "chapters_artifacts": {},
+    }
+
+
+def test_adapt_script_concatenates_whole_group(tmp_path, monkeypatch):
+    """adapt_script 整组拼接：两章原文都应出现在喂给 LLM 的 prompt 中。"""
+    state = _make_group_chapter_state(tmp_path, texts=["第一章独有文本ALPHA", "第二章独有文本BETA"])
+    mock = _mock_llm(monkeypatch, [{"text": "台词", "action": "动作"}])
+
+    adapt_script(state)
+
+    prompt = mock.call_args.args[0]
+    # 两章原文都拼进了 prompt（整组一次喂 LLM）
+    assert "第一章独有文本ALPHA" in prompt
+    assert "第二章独有文本BETA" in prompt
+
+
+def test_adapt_script_falls_back_to_single_file_for_old_checkpoint(tmp_path, monkeypatch):
+    """兜底：旧 checkpoint 无 current_chapter_member_paths 时退回单文件（current_chapter_text_path）。"""
+    state = _make_chapter_state(tmp_path, text="旧checkpoint单文件文本GAMMA")
+    del state["current_chapter_member_paths"]  # 模拟旧 checkpoint
+    mock = _mock_llm(monkeypatch, [{"text": "台词", "action": "动作"}])
+
+    adapt_script(state)
+
+    prompt = mock.call_args.args[0]
+    assert "旧checkpoint单文件文本GAMMA" in prompt
+
+
+def test_adapt_script_long_group_token_observation(tmp_path, monkeypatch, caplog):
+    """步骤专属（非阻断）：N=5 长组拼接后观察 text_len，记录到日志/断言。
+
+    已知并接受 token 截断风险：这里用 monkeypatch 的 LLM 不会真正截断，仅验证 5 章
+    确实被整组拼接（text_len 随成员数线性增长），把拼接规模作为观察结论暴露。
+    """
+    import logging
+
+    per_chapter = "长章节内容" * 200  # 每章约 1000 字符
+    state = _make_group_chapter_state(tmp_path, texts=[per_chapter] * 5)
+    mock = _mock_llm(monkeypatch, [{"text": "台词", "action": "动作"}])
+
+    with caplog.at_level(logging.INFO):
+        adapt_script(state)
+
+    prompt = mock.call_args.args[0]
+    # 5 章全部拼进 prompt（整组一次喂 LLM）：拼接后长度 >= 5 章原文之和
+    concatenated_len = len(per_chapter) * 5 + len("\n\n") * 4
+    assert prompt.count("长章节内容") == 200 * 5
+    # 观察结论：非阻断，仅记录规模（真实调用才可能触发 finish_reason=length）
+    assert concatenated_len >= 5000
 
 
 def _full_new_char(name="李雷"):
@@ -569,40 +707,6 @@ def test_chapter_advance_decision_raises_on_invalid(tmp_path, monkeypatch):
     except ValueError:
         return
     raise AssertionError("应抛 ValueError（非法 resume 值）")
-
-
-# --- configure_audio（全局音色配置，单播）---
-
-
-def test_configure_audio_skips_when_already_configured(tmp_path, monkeypatch):
-    """audio_config 已配 → 跳过 interrupt（回填不重填），直接返回空。"""
-    _mock_interrupt(monkeypatch, {"voice_type": "should_not_be_called"})
-    state = {"audio_config": {"voice_type": "zh_female_xxx", "speed": 1.0}}
-    assert configure_audio(state) == {}
-
-
-def test_configure_audio_interrupts_and_writes_when_empty(tmp_path, monkeypatch):
-    """audio_config 空 → interrupt → resume 写回 audio_config（dots 生成旋钮）。"""
-    _mock_interrupt(
-        monkeypatch,
-        {"language": "zh", "guidance_scale": 1.5, "speaker_scale": 2.0},
-    )
-    state = {"audio_config": {}}
-    result = configure_audio(state)
-    assert result["audio_config"]["language"] == "zh"
-    assert result["audio_config"]["guidance_scale"] == 1.5
-    assert result["audio_config"]["speaker_scale"] == 2.0
-
-
-def test_configure_audio_raises_on_invalid_resume(tmp_path, monkeypatch):
-    """resume 非 dict → 抛错暴露，不静默接受（不再强制 voice_type）。"""
-    _mock_interrupt(monkeypatch, "not_a_dict")
-    state = {"audio_config": {}}
-    try:
-        configure_audio(state)
-    except ValueError:
-        return
-    raise AssertionError("应抛 ValueError（resume 非 dict）")
 
 
 def test_final_decision_done(tmp_path, monkeypatch):

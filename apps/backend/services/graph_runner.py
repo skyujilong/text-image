@@ -78,6 +78,8 @@ _SHARED_FIELDS = frozenset({
     "characters_profile", "ignored_characters", "audio_config",
     "chapters_status", "chapters_artifacts", "render_batch",
     "chapter_order", "plan_cursor", "render_cursor",
+    # 章节合并分组契约：委派 main→plan 及经 get_run_state_values 到前端的唯一闸门
+    "chapter_groups", "chapter_group_pad_width", "chapter_group_size",
     "_chapter_advance",  # MainGraphState 路由字段，plan_graph 内部写入
 })
 

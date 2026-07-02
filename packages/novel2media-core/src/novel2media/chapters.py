@@ -7,8 +7,20 @@ ssss 为章节标题/标识）。排序按 xxx 数字序，避免字符串序导
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+from novel2media_logging import get_logger
+
+log = get_logger(__name__)
 
 _CHAPTER_NUM_RE = re.compile(r"chapter_(\d+)", re.IGNORECASE)
+
+# 合并粒度合法区间：单章(1) ~ 最多五章(5)一组。
+_MIN_GROUP_SIZE = 1
+_MAX_GROUP_SIZE = 5
+
+# 单元 id 零填充最小位宽（<1万章时固定 4 位）。
+_MIN_PAD_WIDTH = 4
 
 
 def chapter_sort_key(ch_id: str) -> tuple[int, str]:
@@ -19,3 +31,102 @@ def chapter_sort_key(ch_id: str) -> tuple[int, str]:
     """
     m = _CHAPTER_NUM_RE.search(ch_id)
     return (int(m.group(1)) if m else 0, ch_id)
+
+
+def chapter_number(stem: str) -> int:
+    """从章节文件名 stem 解析章号（`chapter_sort_key` 的数字部分）。
+
+    无法解析出数字时返回 0（与 `chapter_sort_key` 一致）。
+    """
+    return chapter_sort_key(stem)[0]
+
+
+def chapter_pad_width(file_stems: list[str]) -> int:
+    """单元 id 零填充位宽：`W = max(4, 最大章号的十进制位数)`。
+
+    空列表返回 4。破千章 → 4 位；破万章 → 5 位。字典序据此 == 章号序。
+    """
+    if not file_stems:
+        return _MIN_PAD_WIDTH
+    max_num = max(chapter_number(stem) for stem in file_stems)
+    return max(_MIN_PAD_WIDTH, len(str(max_num)))
+
+
+def group_id_for(members: list[str], pad_width: int) -> str:
+    """合成单元 id：members 已按章序排列。
+
+    单成员 → `ch<n>`；多成员 → `ch<首>-<止>`，章号按 pad_width 零填充。
+    """
+    if not members:
+        raise ValueError("group_id_for: members 不能为空")
+    first = chapter_number(members[0])
+    last = chapter_number(members[-1])
+    if len(members) == 1:
+        return f"ch{first:0{pad_width}d}"
+    return f"ch{first:0{pad_width}d}-{last:0{pad_width}d}"
+
+
+def build_chapter_groups(
+    file_stems: list[str],
+    group_size: int,
+    pad_width: int | None = None,
+) -> dict[str, list[str]]:
+    """把有序章节文件切成「连续 group_size 章一组」的单元。
+
+    - 先按 `chapter_sort_key` 排序 file_stems。
+    - group_size 防御性 clamp 到 1..5。
+    - pad_width 为 None 时用 `chapter_pad_width` 计算。
+    - 连续 group_size 个为一组，末组不足自成一组。
+    - 解析不出数字的 stem（章号 0）用「排序后位置序号(1-based)」代替其章号
+      参与 id 计算，并 log.warning 暴露（不符合 chapter_xxx_* 约定）。
+    - 返回有序 dict：`group_id -> [成员 stem, ...]`（组按章序）。
+    - 若两组算出相同 id（异常，如章号重复）抛 ValueError 暴露。
+    """
+    size = max(_MIN_GROUP_SIZE, min(_MAX_GROUP_SIZE, group_size))
+    ordered = sorted(file_stems, key=chapter_sort_key)
+    if pad_width is None:
+        pad_width = chapter_pad_width(ordered)
+
+    # 解析不出数字的 stem 用「排序后 1-based 位置序号」当章号，避免 id 撞 ch0000。
+    numbered: list[str] = []
+    for idx, stem in enumerate(ordered, start=1):
+        if chapter_number(stem) == 0:
+            log.warning(
+                "chapter stem 无法解析章号，退回排序位置序号",
+                stem=stem,
+                fallback_number=idx,
+            )
+            numbered.append(f"chapter_{idx:0{pad_width}d}_{stem}")
+        else:
+            numbered.append(stem)
+
+    groups: dict[str, list[str]] = {}
+    for start in range(0, len(numbered), size):
+        id_members = numbered[start : start + size]
+        real_members = ordered[start : start + size]
+        group_id = group_id_for(id_members, pad_width)
+        if group_id in groups:
+            raise ValueError(f"分组 id 冲突（章号可能重复）: {group_id}")
+        groups[group_id] = real_members
+    return groups
+
+
+def group_label(members: list[str]) -> str:
+    """单元人读标签：单章 `第{n}章`；多章 `第{first}-{last}章`。"""
+    if not members:
+        raise ValueError("group_label: members 不能为空")
+    first = chapter_number(members[0])
+    last = chapter_number(members[-1])
+    if len(members) == 1:
+        return f"第{first}章"
+    return f"第{first}-{last}章"
+
+
+def read_group_text(paths: list[str]) -> str:
+    """按顺序读取每个绝对路径 `.txt`（utf-8），用 `\\n\\n` 拼接返回。
+
+    空列表抛 ValueError（不应发生）。
+    """
+    if not paths:
+        raise ValueError("read_group_text: paths 不能为空")
+    return "\n\n".join(Path(p).read_text(encoding="utf-8") for p in paths)
