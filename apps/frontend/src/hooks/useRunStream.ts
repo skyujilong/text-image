@@ -23,7 +23,17 @@ export function useRunStream(runId: string | null) {
             payload: state.active_interaction.payload,
           })
         } else {
-          setActiveInteraction(null)
+          // 早中断竞态：本条 /current-state 快照可能取自 interrupt 落库前（active_interaction 为空），
+          // 而 SSE 此刻已把实时 interrupt 弹窗设好。无条件清空会把更新的实时态覆盖成 null（弹窗闪没）。
+          // 故仅清「不属于本 run 的残留弹窗」（切 run 后遗留）——这正是本兜底原本的职责；
+          // 属于本 run 的弹窗交给权威的 SSE 流管理，快照不越权覆盖。
+          // thread_id 归属：main scope === run_id；子图 scope === `${run_id}::plan`。
+          const cur = useRunStore.getState().activeInteraction
+          const belongsToThisRun =
+            cur != null && (cur.thread_id === id || cur.thread_id.startsWith(`${id}::`))
+          if (!belongsToThisRun) {
+            setActiveInteraction(null)
+          }
         }
         console.log('[restore] run_id=%s status=%s restored %d node statuses', id, state.status, Object.keys(state.node_statuses).length)
       })
