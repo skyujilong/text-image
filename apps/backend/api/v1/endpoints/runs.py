@@ -114,6 +114,32 @@ async def stream_run(run_id: str):
     q = runner.get_or_create_sse_queue(run_id)
 
     async def event_generator() -> AsyncIterator[str]:
+        # 建流即重放当前 pending interrupt。SSE 无重放：若 interrupt 在客户端建流的
+        # 窗口内触发（如 configure_chapter_grouping 紧接 run 启动、无 LLM 前置即中断），
+        # 那一条 interrupt 事件会落空——首次 current-state 恰好取到 running（interrupt
+        # 尚未落库），此后又无重连触发 restore，右侧交互区便永久卡在空态。
+        # 这里在建流时主动补发一次当前待处理 interrupt（复用 get_current_run_state，
+        # 覆盖主图与委派子图），与前端「重连即 restore」互补，令首次建连同样不丢 interrupt。
+        # 已 resume（status 非 waiting_human）时 active_interaction 为 None，不补发；
+        # 前端 setActiveInteraction 幂等，与随后可能到达的实时 interrupt 事件重复无副作用。
+        try:
+            snapshot = await runner.get_current_run_state(run_id)
+            pending = snapshot.get("active_interaction")
+            if pending:
+                replay = {
+                    "type": "interrupt",
+                    "scope": pending["scope"],
+                    "thread_id": pending["thread_id"],
+                    "node_path": pending["path"],
+                    "status": "waiting_human",
+                    "node": pending["node"],
+                    "payload": pending["payload"],
+                }
+                yield f"data: {json.dumps(replay)}\n\n"
+        except Exception:
+            # 重放是尽力而为的兜底，解析失败不得影响正常事件流
+            pass
+
         while True:
             try:
                 event = await asyncio.wait_for(q.get(), timeout=30.0)
