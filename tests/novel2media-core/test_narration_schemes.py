@@ -28,14 +28,24 @@ def test_render_template_leaves_unprovided_tokens():
     assert render_template("%%A%% %%B%%", {"A": "x"}) == "x %%B%%"
 
 
-def test_three_builtin_schemes_registered():
-    assert list(NARRATION_SCHEMES.keys()) == ["horror_suspense", "romance_sweet", "general"]
+def test_builtin_schemes_registered():
+    assert list(NARRATION_SCHEMES.keys()) == [
+        "horror_suspense",
+        "horror_viral",
+        "romance_sweet",
+        "general",
+    ]
     assert DEFAULT_SCHEME_KEY == "horror_suspense"
 
 
 def test_list_scheme_presets_shape():
     presets = list_scheme_presets()
-    assert [p["key"] for p in presets] == ["horror_suspense", "romance_sweet", "general"]
+    assert [p["key"] for p in presets] == [
+        "horror_suspense",
+        "horror_viral",
+        "romance_sweet",
+        "general",
+    ]
     for p in presets:
         assert set(p) == {
             "key",

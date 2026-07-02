@@ -155,6 +155,7 @@ def test_configure_chapter_grouping_payload_exposes_schemes(monkeypatch):
     assert captured["default_scheme"] == "horror_suspense"
     assert [s["key"] for s in captured["schemes"]] == [
         "horror_suspense",
+        "horror_viral",
         "romance_sweet",
         "general",
     ]
