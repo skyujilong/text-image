@@ -139,6 +139,91 @@ def test_configure_chapter_grouping_illegal_size_raises(monkeypatch, bad):
         configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
 
 
+# --- configure_chapter_grouping: 解说方案 ---
+
+
+def test_configure_chapter_grouping_payload_exposes_schemes(monkeypatch):
+    """interrupt payload 含 schemes（内置方案）+ default_scheme，供前端选择/预填。"""
+    captured: dict = {}
+
+    def _capture(payload):
+        captured.update(payload)
+        return {"group_size": 1}
+
+    monkeypatch.setattr("novel2media.nodes.init_nodes.interrupt", _capture)
+    configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
+    assert captured["default_scheme"] == "horror_suspense"
+    assert [s["key"] for s in captured["schemes"]] == [
+        "horror_suspense",
+        "romance_sweet",
+        "general",
+    ]
+
+
+def test_configure_chapter_grouping_default_narration_scheme(monkeypatch):
+    """resume 不带 narration_scheme → 默认恐怖悬疑 + 其预设模板（含必需占位符）。"""
+    monkeypatch.setattr(
+        "novel2media.nodes.init_nodes.interrupt", lambda payload: {"group_size": 1}
+    )
+    result = configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
+    assert result["narration_scheme"] == "horror_suspense"
+    assert "%%CHAPTER_TEXT%%" in result["narration_templates"]["adapt_script"]
+    assert "%%SCRIPT_LINES%%" in result["narration_templates"]["scene_change"]
+
+
+def test_configure_chapter_grouping_selects_scheme_preset(monkeypatch):
+    """resume 带 narration_scheme 但不带模板 → 用该方案预设模板。"""
+    monkeypatch.setattr(
+        "novel2media.nodes.init_nodes.interrupt",
+        lambda payload: {"group_size": 1, "narration_scheme": "romance_sweet"},
+    )
+    result = configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
+    assert result["narration_scheme"] == "romance_sweet"
+    assert "甜" in result["narration_templates"]["adapt_script"]
+
+
+def test_configure_chapter_grouping_unknown_scheme_falls_back(monkeypatch):
+    """未知 narration_scheme → 回退默认恐怖悬疑（不抛错）。"""
+    monkeypatch.setattr(
+        "novel2media.nodes.init_nodes.interrupt",
+        lambda payload: {"group_size": 1, "narration_scheme": "not_a_scheme"},
+    )
+    result = configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
+    assert result["narration_scheme"] == "horror_suspense"
+
+
+def test_configure_chapter_grouping_custom_templates_stored(monkeypatch):
+    """resume 带自定义模板（含必需占位符）→ 原样存入 narration_templates。"""
+    custom = {
+        "adapt_script": "自定义口播 %%CHAPTER_TEXT%%",
+        "scene_change": "自定义换图 %%SCRIPT_LINES%%",
+    }
+    monkeypatch.setattr(
+        "novel2media.nodes.init_nodes.interrupt",
+        lambda payload: {
+            "group_size": 1,
+            "narration_scheme": "general",
+            "narration_templates": custom,
+        },
+    )
+    result = configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
+    assert result["narration_scheme"] == "general"
+    assert result["narration_templates"] == custom
+
+
+def test_configure_chapter_grouping_invalid_templates_raise(monkeypatch):
+    """自定义模板缺必需占位符 → 显式抛 ValueError（NarrationTemplateError）。"""
+    monkeypatch.setattr(
+        "novel2media.nodes.init_nodes.interrupt",
+        lambda payload: {
+            "group_size": 1,
+            "narration_templates": {"adapt_script": "缺占位", "scene_change": "也缺"},
+        },
+    )
+    with pytest.raises(ValueError, match="占位符"):
+        configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
+
+
 # --- parse_characters_llm ---
 
 

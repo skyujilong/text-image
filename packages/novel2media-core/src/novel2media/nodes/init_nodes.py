@@ -11,6 +11,13 @@ from novel2media.chapters import (
 from novel2media.llm import invoke_llm
 from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.init_prompts import build_parse_initial_characters_prompt
+from novel2media.prompts.narration_schemes import (
+    DEFAULT_SCHEME_KEY,
+    default_templates,
+    get_scheme,
+    list_scheme_presets,
+    validate_templates,
+)
 from novel2media_logging import get_logger
 
 log = get_logger("init_nodes")
@@ -79,6 +86,10 @@ def load_config(state: dict) -> dict:
         "character_profiles": state.get("character_profiles", ""),
         "characters_profile": {},
         "ignored_characters": [],
+        # 解说方案默认恐怖悬疑（= 现状）；configure_chapter_grouping 按用户选择/自定义覆盖。
+        # 这里预置默认，保证即便 grouping resume 未带该字段，下游也有可用模板（旧 checkpoint 兼容）。
+        "narration_scheme": DEFAULT_SCHEME_KEY,
+        "narration_templates": default_templates(DEFAULT_SCHEME_KEY),
         # chapters_status 置空占位；configure_chapter_grouping 按组 id 预填 pending
         "chapters_status": {},
         # 有序原始章节文件 stem 列表，供 configure_chapter_grouping 分组消费
@@ -117,6 +128,11 @@ def configure_chapter_grouping(state: dict) -> dict:
     - 校验 group_size 为 1..5 的整数，否则显式抛 ValueError（与其它节点风格一致）。
     - 一次性定死 pad_width（供中途新增文件成单章组复用）+ 计算分组。
     - chapters_status 按组 id 预填 pending（组 = 新原子单元，扮演原 chapter_id）。
+
+    同一交互还让用户选「解说方案」（题材类型）并可自定义其 prompt 模板（仅本次 run）：
+    - payload 额外下发 schemes（内置方案含默认模板正文）+ default_scheme，供前端选择/预填/编辑。
+    - resume 额外读 narration_scheme（方案 key）+ narration_templates（用户改后的模板对；
+      缺失则回退所选方案的内置模板）。模板经 validate_templates 校验（缺必需占位符即抛错）。
     """
     files: list[str] = list(state.get("chapter_files", []))
     raw = interrupt(
@@ -125,10 +141,12 @@ def configure_chapter_grouping(state: dict) -> dict:
             "chapter_count": len(files),
             "default_group_size": 1,
             "max_group_size": 5,
+            "schemes": list_scheme_presets(),
+            "default_scheme": DEFAULT_SCHEME_KEY,
         }
     )
 
-    # 兼容 resume：对象 {group_size:N} / 纯 int / 缺失当默认 1
+    # 兼容 resume：对象 {group_size:N, narration_scheme, narration_templates} / 纯 int / 缺失当默认 1
     if isinstance(raw, dict):
         group_size = raw.get("group_size", 1)
     elif isinstance(raw, int) and not isinstance(raw, bool):
@@ -142,15 +160,31 @@ def configure_chapter_grouping(state: dict) -> dict:
             f"configure_chapter_grouping: 非法 group_size（应为 1..5 的整数）: {group_size!r}"
         )
 
+    # 解说方案：resolve 未知 key 回退默认；模板缺失回退所选方案预设，提供则校验必需占位符。
+    raw_dict = raw if isinstance(raw, dict) else {}
+    scheme = get_scheme(raw_dict.get("narration_scheme"))
+    raw_templates = raw_dict.get("narration_templates")
+    if raw_templates is None:
+        narration_templates = default_templates(scheme.key)
+    else:
+        narration_templates = validate_templates(raw_templates)
+
     pad_width = chapter_pad_width(files)
     groups = build_chapter_groups(files, group_size, pad_width)
 
-    log.info("configure_chapter_grouping: 分组完成", group_size=group_size, groups=len(groups))
+    log.info(
+        "configure_chapter_grouping: 分组完成",
+        group_size=group_size,
+        groups=len(groups),
+        narration_scheme=scheme.key,
+    )
     return {
         "chapter_group_size": group_size,
         "chapter_group_pad_width": pad_width,
         "chapter_groups": groups,
         "chapters_status": {gid: "pending" for gid in groups},
+        "narration_scheme": scheme.key,
+        "narration_templates": narration_templates,
     }
 
 

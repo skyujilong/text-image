@@ -1,6 +1,15 @@
 from fastapi import APIRouter
 
-from .endpoints import files, graph, interact, novels, render, runs, voices
+from .endpoints import (
+    files,
+    graph,
+    interact,
+    narration_presets,
+    novels,
+    render,
+    runs,
+    voices,
+)
 
 api_router = APIRouter()
 api_router.include_router(runs.router, tags=["runs"])
@@ -10,3 +19,4 @@ api_router.include_router(graph.router, tags=["graph"])
 api_router.include_router(interact.router, tags=["interact"])
 api_router.include_router(render.router, tags=["render"])
 api_router.include_router(voices.router, tags=["voices"])
+api_router.include_router(narration_presets.router, tags=["narration-presets"])

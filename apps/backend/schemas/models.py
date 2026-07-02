@@ -58,6 +58,24 @@ class RunMeta(BaseModel):
     fork_source_checkpoint_id: str | None = None
 
 
+class NarrationPreset(BaseModel):
+    """用户自定义解说方案预设（跨 run 持久化，data/narration_presets.json）。"""
+
+    id: str
+    name: str
+    base_scheme: str = "general"  # 从哪个内置方案改的（resume 时作 narration_scheme）
+    adapt_script_template: str
+    scene_change_template: str
+    created_at: str
+
+
+class CreateNarrationPresetRequest(BaseModel):
+    name: str
+    base_scheme: str = "general"
+    adapt_script_template: str
+    scene_change_template: str
+
+
 class SSEEvent(BaseModel):
     type: Literal["node_status", "interrupt", "run_complete", "run_error"]
     scope: str | None = None        # "main" | "plan" | "render"

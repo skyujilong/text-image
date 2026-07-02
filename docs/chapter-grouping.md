@@ -28,9 +28,11 @@ load_config → configure_chapter_grouping → parse_characters_llm
 
 | 方向 | 形状 | 位置 |
 |------|------|------|
-| interrupt payload（后端→前端） | `{type:"chapter_grouping", chapter_count, default_group_size, max_group_size}` | `nodes/init_nodes.py` `configure_chapter_grouping` |
-| resume 值（前端→后端） | `{group_size: N}`（后端校验 1..5 的整数，`bool` 排除，非法抛 `ValueError`） | `ChapterGroupingPanel.tsx` → `configure_chapter_grouping` |
+| interrupt payload（后端→前端） | `{type:"chapter_grouping", chapter_count, default_group_size, max_group_size, schemes, default_scheme}` | `nodes/init_nodes.py` `configure_chapter_grouping` |
+| resume 值（前端→后端） | `{group_size: N, narration_scheme, narration_templates}`（`group_size` 校验 1..5 整数 `bool` 排除；`narration_*` 见 [`narration-scheme.md`](./narration-scheme.md)） | `ChapterGroupingPanel.tsx` → `configure_chapter_grouping` |
 | payload type 映射 | `PAYLOAD_TYPE_TO_NODE['chapter_grouping'] = 'configure_chapter_grouping'` | `InteractionDispatcher.tsx` |
+
+> 同一交互还承载「解说方案（narration scheme）」选择 + run 内 prompt 模板自定义，详见 [`narration-scheme.md`](./narration-scheme.md)。
 
 ## 单元 id / 目录名格式
 
@@ -50,7 +52,7 @@ load_config → configure_chapter_grouping → parse_characters_llm
 
 活的剧本化流程是**委派子图**（`graph_runner.run_plan_stage` 在子 thread 驱动 `subgraphs/plan_graph.py`）。main→plan 只传递 `graph_runner._SHARED_FIELDS`（`frozenset`）里列的字段（经 `_extract_shared_fields`）；`get_run_state_values` 给前端 / render_service 的也过同一 frozenset。
 
-**`SharedGraphState` 类型声明不负责传播** —— 分组三字段 `chapter_groups` / `chapter_group_pad_width` / `chapter_group_size` **必须加入 `_SHARED_FIELDS`**，否则 `plan_graph.load_chapter` 收到空 `chapter_groups`、grouping 静默失效，前端也读不到组信息。
+**`SharedGraphState` 类型声明不负责传播** —— 分组三字段 `chapter_groups` / `chapter_group_pad_width` / `chapter_group_size`，以及解说方案两字段 `narration_scheme` / `narration_templates` **必须加入 `_SHARED_FIELDS`**，否则 `plan_graph.load_chapter` 收到空值：grouping 静默失效、`adapt_script` / `generate_storyboard` 拿不到 run 内模板（回退默认预设）、前端也读不到。
 
 > 注意：CLAUDE.md 里把该符号叫 "SNAPSHOT_FIELDS" 是**错误**的历史叫法，真实符号是 `apps/backend/services/graph_runner.py` 的 `_SHARED_FIELDS`。
 

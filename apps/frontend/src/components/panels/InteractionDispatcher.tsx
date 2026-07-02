@@ -3,7 +3,7 @@ import GenericReviewPanel from './GenericReviewPanel'
 import InitialCharactersReviewPanel from './InitialCharactersReviewPanel'
 import TriViewUploadPanel from './TriViewUploadPanel'
 import ChapterAdvancePanel from './ChapterAdvancePanel'
-import ChapterGroupingPanel from './ChapterGroupingPanel'
+import ChapterGroupingPanel, { type NarrationSchemePreset } from './ChapterGroupingPanel'
 import FinalDecisionPanel from './FinalDecisionPanel'
 
 interface Props {
@@ -115,6 +115,8 @@ function InteractionBody({ runId, interaction }: { runId: string; interaction: A
           chapterCount={p.chapter_count as number | undefined}
           defaultGroupSize={p.default_group_size as number | undefined}
           maxGroupSize={p.max_group_size as number | undefined}
+          schemes={p.schemes as NarrationSchemePreset[] | undefined}
+          defaultScheme={p.default_scheme as string | undefined}
         />
       )
     case 'final_decision':

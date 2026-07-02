@@ -76,14 +76,17 @@ async def test_resume_run_calls_command():
 
 
 def test_shared_fields_carries_grouping_contract():
-    """_SHARED_FIELDS 必须放行三个分组字段，否则委派 main→plan 后 chapter_groups 丢失。
+    """_SHARED_FIELDS 必须放行分组 + 解说方案字段，否则委派 main→plan 后静默丢失。
 
     这是委派闸门单点核对：per-step 单测覆盖不到「字段未进 frozenset → 静默丢弃」这一类缺陷。
+    分组字段丢失 → chapter_groups 空；解说方案字段丢失 → plan 子图拿不到 run 内模板（回退默认预设）。
     """
     assert {
         "chapter_groups",
         "chapter_group_pad_width",
         "chapter_group_size",
+        "narration_scheme",
+        "narration_templates",
     } <= set(runner._SHARED_FIELDS)
 
 

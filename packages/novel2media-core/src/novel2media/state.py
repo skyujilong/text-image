@@ -118,6 +118,12 @@ class MainGraphState(SharedGraphState):
     overall_outline: str  # 整体大纲
     chapter_group_size: int  # 用户选择的合并粒度 N（1..5，默认1）
     chapter_files: list[str]  # load_config 扫描出的有序原始章节文件 stem 列表，供 configure_chapter_grouping 分组消费
+    # 解说方案（narration scheme）：用户在 configure_chapter_grouping 选一个题材类型 + 可对该类型
+    # 就地自定义 prompt 模板（仅本次 run）。narration_scheme 是所选内置方案 key（供显示/兜底），
+    # narration_templates 是最终生效的模板对 {adapt_script, scene_change}（预设或用户改后）。
+    # 详见 novel2media.prompts.narration_schemes。两者必须进 _SHARED_FIELDS 才能委派到 plan 子图。
+    narration_scheme: str
+    narration_templates: dict[str, str]
 
     # ── init/setup 阶段字段（load_config 初始化，仅 init/setup 节点读写） ──
     setup_queue: list[CharacterProfile]  # 待批量配置三视图的角色列表

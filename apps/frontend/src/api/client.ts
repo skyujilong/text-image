@@ -156,6 +156,23 @@ export function fileUrl(absPath: string): string {
   return `${BASE}/files/${encoded}`
 }
 
+/** 用户自定义解说方案预设（后端 data/narration_presets.json）。 */
+export interface NarrationPreset {
+  id: string
+  name: string
+  base_scheme: string
+  adapt_script_template: string
+  scene_change_template: string
+  created_at: string
+}
+
+export interface CreateNarrationPresetBody {
+  name: string
+  base_scheme: string
+  adapt_script_template: string
+  scene_change_template: string
+}
+
 export const api = {
   startRun: (params: StartRunParams) =>
     request<{ run_id: string }>('/runs', { method: 'POST', body: JSON.stringify(params) }),
@@ -312,4 +329,16 @@ export const api = {
     }
     return res.json() as Promise<VoicePreset>
   },
+
+  // ─── 解说方案用户预设（跨 run 持久化，见 docs/narration-scheme.md）───────
+  listNarrationPresets: () => request<NarrationPreset[]>('/narration-presets'),
+
+  createNarrationPreset: (body: CreateNarrationPresetBody) =>
+    request<NarrationPreset>('/narration-presets', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  deleteNarrationPreset: (id: string) =>
+    request<{ ok: boolean }>(`/narration-presets/${id}`, { method: 'DELETE' }),
 }
