@@ -14,7 +14,10 @@ log = get_logger("llm")
 def get_llm(temperature: float = 0.8, *, json_mode: bool = False, max_tokens: int = 16384) -> ChatOpenAI:
     """从环境变量创建 ChatOpenAI 实例（兼容 OpenAI 接口的 ARK 端点）。
 
-    ChatOpenAI 内建 tenacity 重试（max_retries=2），已覆盖瞬态网络错误和限流。
+    重试：显式设 max_retries（缺省 2，ARK_MAX_RETRIES 可覆盖），透传给底层 openai SDK
+    客户端。openai SDK 内建重试覆盖 APIConnectionError（含 APITimeoutError，是其子类）、
+    408/409/429/5xx，故超时/瞬态网络错误/限流都会重试；显式设避免依赖 SDK 隐式默认值。
+    注意时间账：worst case ≈ timeout × (1 + max_retries)。
 
     json_mode=True 时开启 OpenAI json_object 响应格式：服务端在解码层保证输出为
     合法 JSON，消除「漏引号/漏逗号」等语法崩（adapt_script 等长 JSON 输出实测会偶发）。
@@ -38,6 +41,20 @@ def get_llm(temperature: float = 0.8, *, json_mode: bool = False, max_tokens: in
         max_tokens=max_tokens,
         api_key=SecretStr(api_key),
         base_url=os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
+        # 单次请求超时（秒）。缺省 600s（10 分钟）：兜住 ARK 静默挂起——无超时时
+        # .invoke() 会无限阻塞（实测合并组长输入下 detect 请求发出后永不返回，节点卡死、
+        # 既无「完成」日志也无 interrupt 下发）。超时抛 APITimeoutError → 被下方 max_retries
+        # 重试；重试耗尽仍失败则抛出传出节点，由 graph_runner 转成错误态推前端，而非无限挂。
+        timeout=float(os.environ.get("ARK_TIMEOUT", "600")),
+        # 显式设重试次数（缺省 2），别赌 openai SDK 的隐式默认。透传给底层 openai 客户端，
+        # 由其内建重试覆盖 APITimeoutError/连接错误/429/5xx。worst case ≈ timeout×(1+此值)。
+        max_retries=int(os.environ.get("ARK_MAX_RETRIES", "2")),
+        # 全局关闭 doubao-seed thinking 推理链：本流水线各节点（detect 抽取 / adapt_script
+        # 改编 / review 审核 / 角色解析）都不需要模型长链推理。thinking 默认 auto/开启时会
+        # 先生成大段推理 token——大幅拉长耗时并多耗 output token，长输入下与请求挂起叠加
+        # 表现为「卡死」。thinking 是 ARK doubao 专有字段（非 OpenAI 标准参数），走 extra_body
+        # 透传进请求体（显式传，不塞 model_kwargs，避免 langchain UserWarning）。
+        extra_body={"thinking": {"type": "disabled"}},
         model_kwargs=model_kwargs,
     )
 
