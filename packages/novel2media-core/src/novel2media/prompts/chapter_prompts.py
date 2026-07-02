@@ -21,11 +21,26 @@ from novel2media.prompts.narration_schemes import (
 _SCENE_STYLE_TRIGGER = "Qwen Anime"
 
 
+def _build_worldview_block(worldview: str) -> str:
+    """世界观设定块：给生成类 prompt 注入全局设定（专有名词/称谓/力量体系/时代/服化道/环境），
+    让口播与画面都与设定一致。空则返回空串（不注入，渲染结果与未接入前逐字节一致，向后兼容）。
+    adapt_script / scene_prompt / detect_new_characters 三处复用，措辞统一。
+    """
+    wv = (worldview or "").strip()
+    if not wv:
+        return ""
+    return (
+        "世界观设定（全局背景，据此统一专有名词、称谓、力量体系、时代与服化道/环境，"
+        f"确保口播文案与画面描述都不与设定冲突）：{wv}\n\n"
+    )
+
+
 def build_adapt_script_prompt(
     chapter_text: str,
     characters_profile: dict,
     feedback: str = "",
     template: str | None = None,
+    worldview: str = "",
 ) -> str:
     """构造有声漫剧单播脚本提示词（只出口播脚本，不含新角色检测）。
 
@@ -44,11 +59,13 @@ def build_adapt_script_prompt(
     """
     names = "、".join(characters_profile.keys()) if characters_profile else "（暂无已知角色，按原文推断）"
     feedback_block = f"上一版口播脚本的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
+    worldview_block = _build_worldview_block(worldview)
     tmpl = template or NARRATION_SCHEMES[DEFAULT_SCHEME_KEY].adapt_script_template
     return render_template(
         tmpl,
         {
             "CHARACTER_NAMES": names,
+            "WORLDVIEW_BLOCK": worldview_block,
             "FEEDBACK_BLOCK": feedback_block,
             "CHAPTER_TEXT": chapter_text,
         },
@@ -114,6 +131,7 @@ def build_scene_prompt_for_shots(
     characters_profile: dict,
     feedback: str = "",
     batch_info: tuple[int, int] | None = None,
+    worldview: str = "",
 ) -> str:
     """构造分镜第二步「画面生成」提示词：只为换图点生成 subjects + scene_prompt。
 
@@ -134,6 +152,7 @@ def build_scene_prompt_for_shots(
 
     names = _build_character_roster(characters_profile)
     shots_json = json.dumps(shots, ensure_ascii=False, indent=2)
+    worldview_block = _build_worldview_block(worldview)
     feedback_block = f"上一版分镜的修改意见（请务必据此调整画面）：{feedback}\n" if feedback and feedback.strip() else ""
     batch_block = (
         f"注意：以下换图点是整章换图点的第 {batch_info[0]}/{batch_info[1]} 批片段，"
@@ -148,7 +167,7 @@ def build_scene_prompt_for_shots(
 下面是已选定的若干「换图点」，每个换图点需要生成一张静态漫画画面。为每个换图点生成 subjects（画面主体角色）与 scene_prompt（画面描述）。
 参考原始章节原文补充画面细节（景物、神态、动作细节），让画面更准。
 
-已知角色（括号内为该角色的英文外观特征 visual_trait，含性别与身高体型；subjects 中列中文名，scene_prompt 中提到该角色时用其外观特征的**中文译述**、不写姓名）：{names}
+{worldview_block}已知角色（括号内为该角色的英文外观特征 visual_trait，含性别与身高体型；subjects 中列中文名，scene_prompt 中提到该角色时用其外观特征的**中文译述**、不写姓名）：{names}
 
 {feedback_block}{batch_block}要求：
 1. 为输入的每个换图点生成一条结果，anchor_id 必须原样写回（用于对回），不得修改、不得遗漏、不得新增。
@@ -198,7 +217,9 @@ def build_scene_prompt_for_shots(
 """
 
 
-def build_detect_new_characters_prompt(chapter_text: str, existing_names: set[str]) -> str:
+def build_detect_new_characters_prompt(
+    chapter_text: str, existing_names: set[str], worldview: str = ""
+) -> str:
     """构造新角色检测提示词（独立节点 detect_new_characters_llm，放分镜之前）。
 
     单独成节点而非并入 adapt_script：合并后单次输出过长会撞 output token 上限被截断
@@ -215,9 +236,10 @@ def build_detect_new_characters_prompt(chapter_text: str, existing_names: set[st
     赛璐璐风格 + 白色空白背景 + 画质词，tri_view_prompt_cn 为其中文翻译版。
     """
     existing = "、".join(sorted(existing_names)) if existing_names else "（无）"
+    worldview_block = _build_worldview_block(worldview)
     return f"""你是一个小说角色提取器。从下面的章节原文中，提取本章新出现的、有名字的角色。
 
-已有角色（不要重复提取）：{existing}
+{worldview_block}已有角色（不要重复提取）：{existing}
 
 要求：
 1. 只提取有明确名字的角色（旁白、"众人"等泛指不算）。

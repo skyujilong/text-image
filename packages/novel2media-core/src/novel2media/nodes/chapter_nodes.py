@@ -223,6 +223,7 @@ def adapt_script(state: dict) -> dict:
         characters_profile,
         feedback,
         template=narration_templates.get("adapt_script"),
+        worldview=state.get("worldview", ""),
     )
     resp = invoke_llm(prompt, node="adapt_script", label="adapt_script", json_mode=True)
     script = parse_json_array(resp)  # [{"text","action","speaker"}]
@@ -290,6 +291,7 @@ def generate_storyboard(state: dict) -> dict:
     )
     characters_profile = state.get("characters_profile", {})
     feedback = state.get("_storyboard_review_feedback", "") or ""
+    worldview = state.get("worldview", "")
 
     if not script:
         log.info("generate_storyboard: 空脚本，跳过", chapter=ch_id)
@@ -339,7 +341,7 @@ def generate_storyboard(state: dict) -> dict:
         idx, batch = args
         batch_info = (idx + 1, n) if n > 1 else None
         prompt = build_scene_prompt_for_shots(
-            batch, chapter_text, characters_profile, feedback, batch_info=batch_info
+            batch, chapter_text, characters_profile, feedback, batch_info=batch_info, worldview=worldview
         )
         resp = invoke_llm(
             prompt, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]", json_mode=True
@@ -416,7 +418,7 @@ def detect_new_characters_llm(state: dict) -> dict:
     )
     existing_names = set(state.get("characters_profile", {}).keys())
 
-    prompt = build_detect_new_characters_prompt(chapter_text, existing_names)
+    prompt = build_detect_new_characters_prompt(chapter_text, existing_names, worldview=state.get("worldview", ""))
     resp = invoke_llm(prompt, node="detect_new_characters_llm", label="detect_new_characters", json_mode=True)
     detected = parse_json_array(resp)  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn"}]
 
