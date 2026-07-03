@@ -76,16 +76,28 @@ def build_adapt_script_prompt(
 
 
 def _build_character_roster(characters_profile: dict) -> str:
-    """构造"角色名（英文特征）"花名册：供 LLM 在 scene_prompt 中用特征替代姓名。
+    """构造"角色名（外观特征 + 标志服饰）"花名册：供 LLM 在 scene_prompt 中用特征替代姓名 + 锚定服饰。
 
-    visual_trait 缺失（旧 checkpoint 兼容）时只列名字，不阻塞分镜生成。
+    每项格式：`角色名（外观：visual_trait；服饰：outfit）`。
+    - visual_trait（英文体貌特征，不含服饰）：角色入画时的外观译述来源。
+    - outfit（中文标志性默认服饰）：角色入画时默认穿的那套，跨镜辨识 + 一致性锚点。
+    两字段缺失（旧 checkpoint 兼容）时各自省略；都缺则只列名字，不阻塞分镜生成。
     """
     if not characters_profile:
         return "（暂无已知角色）"
     roster = []
     for cname, cprofile in characters_profile.items():
-        vt = (cprofile.get("visual_trait") or "").strip() if isinstance(cprofile, dict) else ""
-        roster.append(f"{cname}（{vt}）" if vt else cname)
+        if not isinstance(cprofile, dict):
+            roster.append(cname)
+            continue
+        vt = (cprofile.get("visual_trait") or "").strip()
+        outfit = (cprofile.get("outfit") or "").strip()
+        parts = []
+        if vt:
+            parts.append(f"外观：{vt}")
+        if outfit:
+            parts.append(f"服饰：{outfit}")
+        roster.append(f"{cname}（{'；'.join(parts)}）" if parts else cname)
     return "、".join(roster)
 
 
@@ -179,7 +191,7 @@ def build_scene_prompt_for_shots(
 下面是已选定的若干「换图点」，每个换图点需要生成一张静态漫画画面。为每个换图点生成 subjects（画面主体角色）与 scene_prompt（画面描述）。
 参考原始章节原文补充画面细节（景物、神态、动作细节），让画面更准。
 
-{worldview_block}已知角色（括号内为该角色的英文外观特征 visual_trait，含性别与身高体型；subjects 中列中文名，scene_prompt 中提到该角色时用其外观特征的**中文译述**、不写姓名）：{names}
+{worldview_block}已知角色（括号内「外观：」为该角色英文体貌特征 visual_trait（含性别与身高体型，不含服饰），「服饰：」为该角色标志性默认服饰 outfit；subjects 中列中文名，scene_prompt 中提到该角色时用其外观特征的**中文译述** + 该服饰、不写姓名）：{names}
 
 {feedback_block}{batch_block}要求：
 1. 为输入的每个换图点生成一条结果，anchor_id 必须原样写回（用于对回），不得修改、不得遗漏、不得新增。
@@ -199,9 +211,10 @@ def build_scene_prompt_for_shots(
    - **AI 绘画友好构图**：优先用 AI 擅长的常见构图（单人/双人特写或中景、三分法、正面/侧面清晰角度、干净背景分离主体、明确单一视觉焦点）。主体与背景轮廓分离明确（可用虚化背景 / 浅景深），避免主体融进背景。
    - 避开 AI 弱项：复杂多人肢体纠缠、三人以上近景主体、罕见生僻物件与服饰、夸张透视导致身体变形、超现实复杂场景、同一画面堆砌过多细节。宁可拆成多个简单镜头，也不要写一个复杂镜头。
    - 提到画面角色时，必须用已知角色花名册中该角色的外观特征（visual_trait）来描述，且**把英文 visual_trait 译述成中文外观短语**写入（如 visual_trait 为 tall lanky young man with golden curly hair and round glasses，则写「高挑清瘦、金色卷发、戴圆框眼镜的青年男性」），严禁在 scene_prompt 中直接写角色姓名、也不要照抄英文；新角色若无 visual_trait，用中文外观描述（如 高挑清瘦的青年男性 / 娇小的少女 + 标志特征）替代。译述女性角色外观时，体型统一走柔美向（身材匀称 / 曲线柔和 / 凹凸有致 / 娇美），即便其 visual_trait 写了 muscular / burly / 健硕 也一律软化处理，避免阳刚词与日系画风冲突导致画面崩坏（确需力量感的女性用「身形挺拔、气场凌厉」等非肌肉向表达）。
+   - **主体名字自带外观/服饰特征时必须还原进描述**：当画面主体的名字本身就含外观或服饰信息（如「白衣诡物」「独眼老者」「红裙女鬼」「银发剑客」「独臂刀客」），无论其是否在花名册中，scene_prompt 描述该主体时必须把名字点明的外观/服饰特征还原写入（「白衣诡物」→ 一身白衣、「独眼老者」→ 独眼、「红裙女鬼」→ 红色长裙），不得只写其它细节却漏掉名字点明的核心辨识特征。未上传参考图的主体（尤其非人类怪物 / 诡物）全靠 scene_prompt 文字锚定外观，漏写名字里的关键特征会导致每镜外观漂移、跨镜不一致。
    - **多角色同框规则**：必须为每个角色单独写清楚其外观、朝向、姿态，不得混写成一句，AI 无法从混写句中分辨主体归属。身高差须显式体现（如「高挑男子明显高过娇小少女」）。有肢体接触时，须精确写出：哪只手/哪个部位、接触对方哪里、各自朝向（侧身/正面/背对），模糊的「扶着」「靠着」让 AI 随机猜测，越具体越稳。画面有前景/主体分层时（如过肩构图），须明确标注哪层虚化、哪层为主体。
-   - **人物入画必带标志性服饰（基线）**：只要角色身体入画（非纯手 / 眼 / 物体局部特写），scene_prompt 须简要点出该角色 1 件标志性服饰（取自其外观档案，如「定制西装」「白孝衣」「藏青T恤」「白大褂」），服饰是跨镜辨识角色、维持一致性的关键锚点；局部特写镜头除外。
-   - **服饰状态是氛围细节，必须写入**：根据原文剧情，角色服饰若有污迹、破损、血迹、汗透、尘土等状态变化，须在 scene_prompt 中明确描述（如「白衬衫左肩有幽蓝血迹」「外套肘部磨破露出内里」「衬衫后背汗透贴身」），这是悬疑/恐怖/高压场景中最直观的氛围信息载体，不写则画面失真、氛围大幅削弱。
+   - **人物入画必带标志性服饰（基线）**：只要角色身体入画（非纯手 / 眼 / 物体局部特写），scene_prompt 须简要点出该角色的标志性服饰，**默认取花名册中该角色的 outfit（「服饰：」后那套，如「藏青立领风衣配黑靴」）原样写入**——outfit 是跨镜辨识角色、与立绘参考图对齐的关键锚点，不要凭空另换一套；花名册无 outfit 的新角色，据原文与其外观合理补一套标志服饰。局部特写镜头除外。
+   - **服饰状态是氛围细节，必须写入**：在 outfit 基线之上叠加剧情状态——根据原文剧情，角色服饰若有污迹、破损、血迹、汗透、尘土等状态变化，须在 scene_prompt 中明确描述（如「白衬衫左肩有幽蓝血迹」「外套肘部磨破露出内里」「衬衫后背汗透贴身」），这是悬疑/恐怖/高压场景中最直观的氛围信息载体，不写则画面失真、氛围大幅削弱。状态变化只是同一套 outfit 的脏污破损，不是换成另一套衣服（原文明确写角色换装时才换）。
    - **性感表现走「高级暴露」且仅限成年角色**：只对角色档案中明确成年（18 岁及以上）的女性角色适用；未成年 / 少年少女 / 儿童一律保守着装、禁止任何性化描写。对成年角色，沿用其立绘 / 档案既定的性感着装（如高透黑纱、蕾丝叠层、修身礼裙）保持跨镜一致，走碧蓝航线式「高级、优雅、含蓄」的暴露——以纱遮、以影藏，重意境不重裸露；严禁露点（乳头 / 生殖器）、透视关键部位、情色动作（既是底线也过不了审）。性感是可选项：恐怖 / 逃命 / 高压等镜头以剧情氛围优先，不为性感牺牲氛围、不硬塞。
    - **不靠动作靠细节丰富画面**（动作是 AI 弱项，主动绕开）：强化微表情（瞳孔收缩 / 眉头紧绷 / 抿唇 / 耳根泛红 / 目光躲闪 等，仅限正脸或侧脸入画的角色，背对镜头者不写表情）、强化局部肢体细节（指节发白 / 掌心冷汗 / 指尖微颤 / 手指攥紧）、强化光影氛围（侧光 / 阴影分割面部 / 冷手机屏光 / 门缝透光 / 强烈明暗对比），用氛围代替动态。
    - **血腥暗化 + 血液一律蓝色化（合规硬要求）**：画面中一切血液——血迹、血珠、血字、伤口渗血、喷溅、血泊——统一写成幽蓝色 / 冷蓝色（如「渗着幽蓝的血」「蓝黑色血迹」「幽蓝血珠」），严禁红色 / 暗红 / 鲜红，这是规避血腥审核的硬要求；同时伤口藏入深影、只留血迹暗示，不画伤口 / 血肉细节，既过审又遮挡 AI 容易画怪的复杂伤口。
@@ -245,32 +258,45 @@ def build_detect_new_characters_prompt(
 
     输出 schema：JSON 数组，每个元素
     {{"name": str, "appearance": str, "character_trait": str, "visual_trait": str,
-      "tri_view_prompt": str, "tri_view_prompt_cn": str}}（无 id）。
-    仅输出本章新出现、且不在 existing_names 中的角色。字段模型与 init 阶段
-    build_parse_initial_characters_prompt 一致：appearance 强调鲜明可辨识特征，
+      "tri_view_prompt": str, "tri_view_prompt_cn": str, "role": "main"|"minor", "outfit": str}}（无 id）。
+    仅输出本章新出现、且不在 existing_names 中的角色。龙套也提取（role="minor"，
+    无名但有稳定指代的用指代作 name）——建档保留特征保证跨镜外观一致，前端三视图
+    面板对 minor 默认勾选跳过（不传参考图，走 appearance 文本兜底）。字段模型与 init
+    阶段 build_parse_initial_characters_prompt 一致：appearance 强调鲜明可辨识特征，
     character_trait/visual_trait 为中英文特征短语，tri_view_prompt 固定日系动漫画风 +
     赛璐璐风格 + 白色空白背景 + 画质词，tri_view_prompt_cn 为其中文翻译版。
     """
     existing = "、".join(sorted(existing_names)) if existing_names else "（无）"
     worldview_block = _build_worldview_block(worldview)
-    return f"""你是一个小说角色提取器。从下面的章节原文中，提取本章新出现的、有名字的角色。
+    return f"""你是一个小说角色提取器。从下面的章节原文中，提取本章新出现的角色（主要角色和龙套都要）。
 
 {worldview_block}已有角色（不要重复提取）：{existing}
 
 要求：
-1. 只提取有明确名字的角色（旁白、"众人"等泛指不算）。
+1. 提取本章新出现的所有具体角色，不论戏份轻重——主要角色和龙套都要提取：
+   - 有明确名字的角色必须提取，哪怕只出现一两句。
+   - 无名但有稳定指代的角色也要提取，用该指代作 name（如"胖子"、"眼镜男"、"刀疤脸"）；同一角色多个指代时选最常用的一个。
+   - 纯泛指群体不提取：如"众人"、"路人"、"路人甲乙"、"人群"、"士兵们"等无个体身份的集体或占位指代；旁白不算角色。
+   - 若已有角色列表中某角色以外号登记（如"胖子"），本章即使揭示其真名，也视为已有角色，不要重复提取。
 2. 每个角色输出 name（角色名）。
 3. appearance（外观描述）：性别、年龄、身高/体型（如高挑清瘦、娇小玲珑、中等身材魁梧等，不同角色身高体型尽量有区分）、发色、发型、是否戴眼镜、瞳色、服饰标志物等；原文未提及则据上下文合理补全。每个角色必须有鲜明、可辨识、与其他角色明显区分的外观特征，不同角色的关键特征（发色/发型/眼镜/身高体型等）尽量不重复，便于后期 ComfyUI 基于特征匹配参考图。年轻女性角色（非明确设定为彪悍 / 健美 / 威猛的）体型默认走柔美向——身材匀称 / 曲线柔和 / 凹凸有致 / 娇美纤秀（对应英文 slender / curvy / graceful / feminine figure），严禁用健壮 / 健硕 / 魁梧 / 肌肉发达（muscular / burly / stocky）等阳刚词，这类词与日系动漫画风冲突、参考图与生图极易崩坏；确需体现力量感的女性用「身形挺拔、气场凌厉」等非肌肉向表达。
 4. character_trait（中文人物特征短语）：把该角色最鲜明的外观特征浓缩成一句中文，须含性别、身高体型与标志性特征，如"高挑清瘦、金色卷发、戴圆框眼镜的少年"。供审核阅读与后期分镜引用。
 5. visual_trait（英文特征短语）：character_trait 的英文版，须包含性别词（man/woman/boy/girl 等）与身高体型词（tall/short/petite/lanky/average height + slim/stocky build 等），如"tall lanky young man with golden curly hair and round glasses"。供分镜 scene_prompt 替换角色名使用，ComfyUI 可直接理解。
 {_TRI_VIEW_PROMPT_RULE}
 7. tri_view_prompt_cn：tri_view_prompt 的中文翻译版，供审核时阅读。
-8. 不要输出 id 字段。
-9. 若本章无新角色，输出空数组 []。
-10. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
+8. role（角色重要度）：取值只能是 "main" 或 "minor"。
+   - "main"：世界观/已有设定中点名的重要角色，或本章戏份重、明显会持续出场的角色。
+   - "minor"：龙套/一次性配角——本章戏份少、以外号或身份指代、看不出会长期出场的角色。
+   - 拿不准时倾向 "minor"（后续戏份加重可由人工调整）。
+9. outfit（标志性默认服饰）：把该角色本章登场时的默认服装浓缩成一句中文短语，含上衣/下装/鞋（如"白色衬衫配白色运动鞋"、"黑色风衣配军靴"）。这是角色跨镜辨识的服饰锚点，分镜阶段角色入画时默认穿这套。
+   - 必须与 tri_view_prompt / appearance 里的服饰完全一致（三视图立绘穿的就是这套），从 appearance 的服饰部分提炼；不要凭空另编一套，否则与立绘参考图冲突。
+   - 只写默认常穿的那套，不写剧情临时状态（污迹/破损/血迹由分镜阶段按原文另加）。
+10. 不要输出 id 字段。
+11. 若本章无新角色，输出空数组 []。
+12. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
 
 输出格式示例：
-[{{"name": "李雷", "appearance": "青年男性，高挑清瘦，金色卷发，戴圆框眼镜，穿白色衬衫，脚踩白色运动鞋", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的青年男性", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, cel shading, cel shaded, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, highly detailed facial features, young male, tall lanky build, golden curly hair, round glasses, white shirt, white sneakers, consistent outfit, hairstyle, footwear and body shape, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，赛璐璐风格，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，青年男性，高挑清瘦身形，金色卷发，圆框眼镜，白色衬衫，白色运动鞋，服饰发型鞋子体型一致，纯白背景，杰作，最高画质，超高细节，高分辨率"}}]
+[{{"name": "李雷", "appearance": "青年男性，高挑清瘦，金色卷发，戴圆框眼镜，穿白色衬衫，脚踩白色运动鞋", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的青年男性", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, cel shading, cel shaded, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, highly detailed facial features, young male, tall lanky build, golden curly hair, round glasses, white shirt, white sneakers, consistent outfit, hairstyle, footwear and body shape, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，赛璐璐风格，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，青年男性，高挑清瘦身形，金色卷发，圆框眼镜，白色衬衫，白色运动鞋，服饰发型鞋子体型一致，纯白背景，杰作，最高画质，超高细节，高分辨率", "role": "minor", "outfit": "白色衬衫配白色运动鞋"}}]
 
 章节原文：
 {chapter_text}

@@ -1,10 +1,35 @@
 """分镜两步法 prompt builder 测试：换图点初筛 + 换图点画面生成。"""
 
 from novel2media.prompts.chapter_prompts import (
+    _build_character_roster,
     build_adapt_script_prompt,
+    build_detect_new_characters_prompt,
     build_scene_change_prompt,
     build_scene_prompt_for_shots,
 )
+
+
+def test_build_character_roster_injects_visual_trait_and_outfit():
+    """花名册注入 外观(visual_trait)+服饰(outfit)；字段缺失（老 checkpoint）时各自省略、不阻塞。"""
+    roster = _build_character_roster(
+        {
+            "全": {"visual_trait": "tall man", "outfit": "黑风衣配军靴"},  # 两字段齐全
+            "无服饰": {"visual_trait": "petite girl"},  # 老档案：只有 visual_trait
+            "无外观": {"outfit": "白大褂"},  # 只有 outfit
+            "空档案": {},  # 都缺 → 只列名字
+        }
+    )
+    assert "全（外观：tall man；服饰：黑风衣配军靴）" in roster
+    assert "无服饰（外观：petite girl）" in roster
+    assert "无外观（服饰：白大褂）" in roster
+    # 都缺时只列名字，不带空括号
+    assert "空档案（" not in roster
+    assert "空档案" in roster
+
+
+def test_build_character_roster_empty_profile():
+    """空档案 → 占位提示，不报错。"""
+    assert _build_character_roster({}) == "（暂无已知角色）"
 
 
 def test_scene_change_prompt_requires_index_array_and_indexed_lines():
@@ -45,19 +70,30 @@ def test_scene_change_prompt_no_feedback_block():
 def test_scene_prompt_for_shots_has_anchor_id_and_rules():
     """第二步画面：含 anchor_id 对回说明 + 画面规则（动作定格、AI 构图、subjects 上限）。"""
     shots = [{"anchor_id": 0, "text": "主角挥手", "coverage": "主角挥手（主角站立挥手）"}]
-    profile = {"主角": {"visual_trait": "tall young man with black hair"}}
+    profile = {"主角": {"visual_trait": "tall young man with black hair", "outfit": "藏青立领风衣配黑靴"}}
     prompt = build_scene_prompt_for_shots(shots, "原文", profile)
     # anchor_id 对回
     assert "anchor_id" in prompt
     # 画面规则关键措辞
     assert "scene_prompt" in prompt
     assert "subjects" in prompt
-    # 花名册含 visual_trait
+    # 花名册含 visual_trait（长相）与 outfit（服饰）
     assert "tall young man with black hair" in prompt
+    assert "藏青立领风衣配黑靴" in prompt
+    # 服饰基线规则指向花名册 outfit
+    assert "outfit" in prompt
     # 第二步不再判定 scene_change
     assert "scene_change" not in prompt
     # 告知下游生图模型是 Qwen-Image，引导 LLM 写自然语言描述
     assert "Qwen-Image" in prompt
+
+
+def test_scene_prompt_for_shots_restores_name_embedded_traits():
+    """主体名字自带外观/服饰特征（如「白衣诡物」）时，规则要求还原进描述——兜底未建档的非人实体。"""
+    prompt = build_scene_prompt_for_shots([{"anchor_id": 0, "text": "x", "coverage": "x"}], "原文", {})
+    assert "白衣诡物" in prompt  # 规则正例
+    assert "还原" in prompt
+    assert "无论其是否在花名册中" in prompt  # 覆盖没建档的实体
 
 
 def test_scene_prompt_for_shots_batch_info():
@@ -109,3 +145,33 @@ def test_scene_change_no_learned_rules_no_token_leak():
     script = [{"text": "a", "action": "", "speaker": "旁白"}]
     prompt = build_scene_change_prompt(script, "原文")
     assert "%%LEARNED_RULES%%" not in prompt
+
+
+def test_detect_new_characters_prompt_extracts_minor_and_alias():
+    """检测 prompt：龙套/无名指代都要提取并标 role；泛指仍排除；输出示例含 role。"""
+    prompt = build_detect_new_characters_prompt("章节原文", existing_names={"主角"})
+    # 不再限定「只提取有名字的角色」，龙套也要提取
+    assert "龙套" in prompt
+    # 无名但有稳定指代 → 用指代作 name
+    assert "稳定指代" in prompt
+    # role 字段规则 + 两个合法枚举值
+    assert "role" in prompt
+    assert '"main"' in prompt and '"minor"' in prompt
+    # outfit 字段规则（标志性默认服饰）+ 与立绘一致约束
+    assert "outfit" in prompt
+    assert "标志性默认服饰" in prompt
+    assert "与 tri_view_prompt / appearance 里的服饰完全一致" in prompt
+    # 纯泛指群体仍在排除清单
+    assert "路人甲乙" in prompt
+    # 输出示例带 role + outfit
+    assert '"role": "minor"' in prompt
+    assert '"outfit":' in prompt
+    # 已有角色列表注入排除名单
+    assert "主角" in prompt
+
+
+def test_detect_new_characters_prompt_rule_numbers_contiguous():
+    """规则编号连续（role=8、outfit=9，尾部规则顺延为 10/11/12，无重号/断号）。"""
+    prompt = build_detect_new_characters_prompt("原文", existing_names=set())
+    for n in range(1, 13):  # 规则 1~12
+        assert f"{n}. " in prompt

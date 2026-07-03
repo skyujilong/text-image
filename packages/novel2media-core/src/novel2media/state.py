@@ -45,6 +45,8 @@ class CharacterProfileRequired(TypedDict):
 class CharacterProfile(CharacterProfileRequired, total=False):
     """角色完整档案。tri_view/voice_params 为 setup 阶段逐步补齐的可选字段。"""
 
+    role: str  # 角色重要度："main"=主要角色 / "minor"=龙套。缺省视同 "main"（老档案/老 checkpoint 兼容）。前端三视图面板据此对 minor 默认勾选「跳过」
+    outfit: str  # 标志性默认服饰（中文短语，= 立绘/tri_view 穿的那套）。分镜花名册注入此字段作跨镜服饰锚点；缺省（老档案兼容）时花名册只列 visual_trait
     tri_view: str  # 三视图本地相对路径。三态语义：非空路径=已上传（渲染走参考图生图）/ 空串=主动跳过（小角色，走 appearance 文本兜底）/ 字段缺省=未处理（异常态，渲染应暴露）
     voice_params: dict  # 音色参数（保留字段；setup 不再写入，留作未来 per-character 扩展）
 

@@ -229,7 +229,7 @@ def test_configure_chapter_grouping_invalid_templates_raise(monkeypatch):
 
 
 def test_parse_characters_llm_parses_main_characters(tmp_path, monkeypatch):
-    """有 character_profiles → LLM 解析为结构化角色（含 tri_view_prompt）。"""
+    """有 character_profiles → LLM 解析为结构化角色（含 tri_view_prompt、role）。"""
     fake = [
         {
             "name": "林澈",
@@ -238,6 +238,7 @@ def test_parse_characters_llm_parses_main_characters(tmp_path, monkeypatch):
             "visual_trait": "young man with black short hair",
             "tri_view_prompt": "character turnaround sheet, front side back, black hair",
             "tri_view_prompt_cn": "三视图，正面侧面背面，黑发少年",
+            "role": "main",
         }
     ]
     mock = _mock_llm(monkeypatch, fake)
@@ -245,9 +246,32 @@ def test_parse_characters_llm_parses_main_characters(tmp_path, monkeypatch):
     result = parse_characters_llm(state)
     assert result["pending_new_characters"] == fake
     assert result["pending_new_characters"][0]["tri_view_prompt"]
+    assert result["pending_new_characters"][0]["role"] == "main"
     # 无 feedback 时 prompt 不含修改意见段；用完清空
     assert "修改意见" not in mock.call_args.args[0]
     assert result["_init_characters_feedback"] == ""
+
+
+def test_parse_characters_llm_normalizes_role(tmp_path, monkeypatch):
+    """role 缺省/非法 → 归一为 main；合法值（含大小写）归一保留。"""
+    base = {
+        "appearance": "黑发",
+        "character_trait": "黑发少年",
+        "visual_trait": "young man with black hair",
+        "tri_view_prompt": "p",
+        "tri_view_prompt_cn": "中p",
+    }
+    _mock_llm(
+        monkeypatch,
+        [
+            {"name": "无role", **base},  # LLM 漏输出 role → main
+            {"name": "非法", "role": "extra", **base},  # 非法枚举 → main
+            {"name": "龙套", "role": "Minor", **base},  # 大小写 → minor
+        ],
+    )
+    result = parse_characters_llm({"character_profiles": "x", "worldview": "", "characters_profile": {}})
+    roles = {c["name"]: c["role"] for c in result["pending_new_characters"]}
+    assert roles == {"无role": "main", "非法": "main", "龙套": "minor"}
 
 
 def test_parse_characters_llm_passes_review_feedback_to_prompt(tmp_path, monkeypatch):

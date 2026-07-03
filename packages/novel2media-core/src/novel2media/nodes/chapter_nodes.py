@@ -12,7 +12,7 @@ from novel2media.chapters import (
     read_group_text,
 )
 from novel2media.llm import invoke_llm_json_array
-from novel2media.nodes.init_nodes import _REQUIRED_CHAR_FIELDS
+from novel2media.nodes.init_nodes import _REQUIRED_CHAR_FIELDS, _normalize_char_role
 from novel2media.prompts.chapter_prompts import (
     _SCENE_STYLE_TRIGGER,
     build_adapt_script_prompt,
@@ -415,7 +415,8 @@ def detect_new_characters_llm(state: dict) -> dict:
 
     读章节原文 + 现有 characters_profile 的 name 集（作排除名单）。每个新角色必须含
     六字段（_REQUIRED_CHAR_FIELDS，与 init parse_characters_llm 角色模型一致），缺则抛错；
-    防御性剔除名字已在已知花名册中的角色。
+    role（main/minor）经 _normalize_char_role 归一（缺省/非法落 main，不抛错），
+    前端三视图面板对 minor 默认勾选跳过。防御性剔除名字已在已知花名册中的角色。
 
     setup_queue 无 reducer（覆盖语义）：review_script revise 回环 → adapt_script → 本节点
     重跑时整体覆盖，不会重复累积/残留旧批新角色。
@@ -428,9 +429,9 @@ def detect_new_characters_llm(state: dict) -> dict:
     existing_names = set(state.get("characters_profile", {}).keys())
 
     prompt = build_detect_new_characters_prompt(chapter_text, existing_names, worldview=state.get("worldview", ""))
-    detected = invoke_llm_json_array(prompt, node="detect_new_characters_llm", label="detect_new_characters")  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn"}]
+    detected = invoke_llm_json_array(prompt, node="detect_new_characters_llm", label="detect_new_characters")  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn","role"}]
 
-    # 校验六字段（与 init parse_characters_llm 同一真相），剔除已知角色后写 setup_queue
+    # 校验六字段（与 init parse_characters_llm 同一真相），剔除已知角色 + 归一 role 后写 setup_queue
     validated: list[dict] = []
     for c in detected:
         name = c.get("name")
@@ -441,7 +442,7 @@ def detect_new_characters_llm(state: dict) -> dict:
         for field in _REQUIRED_CHAR_FIELDS:
             if not c.get(field):
                 raise ValueError(f"detect_new_characters_llm: 新角色缺 {field} 字段: {c}")
-        validated.append(c)
+        validated.append(_normalize_char_role(c, "detect_new_characters_llm"))
 
     log.info("detect_new_characters_llm: 完成", chapter=ch_id, new_characters=len(validated))
     return {"setup_queue": validated}

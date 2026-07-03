@@ -365,15 +365,17 @@ def test_adapt_script_long_group_token_observation(tmp_path, monkeypatch, caplog
     assert concatenated_len >= 5000
 
 
-def _full_new_char(name="李雷"):
-    """构造六字段齐全的新角色（供 detect_new_characters_llm 校验通过）。"""
+def _full_new_char(name="李雷", role="minor"):
+    """构造六字段齐全的新角色（供 detect_new_characters_llm 校验通过）。默认 role=minor（龙套为检测典型产出）。"""
     return {
         "name": name,
-        "appearance": "青年男性，黑发",
+        "appearance": "青年男性，黑发，穿黑色夹克配牛仔裤",
         "character_trait": "黑发青年男性",
         "visual_trait": "young man with black hair",
         "tri_view_prompt": "character turnaround sheet, front view",
         "tri_view_prompt_cn": "三视图中文",
+        "role": role,
+        "outfit": "黑色夹克配牛仔裤",
     }
 
 
@@ -386,9 +388,27 @@ def test_detect_new_characters_writes_setup_queue(tmp_path, monkeypatch):
     result = detect_new_characters_llm(state)
 
     assert result["setup_queue"] == [new_char]
+    assert result["setup_queue"][0]["role"] == "minor"  # LLM 显式给出的 role 原样透传
+    assert result["setup_queue"][0]["outfit"] == "黑色夹克配牛仔裤"  # outfit 透传进 setup_queue
     assert "id" not in result["setup_queue"][0]
     # 不再写 pending_new_characters（直接进 setup_queue）
     assert "pending_new_characters" not in result
+
+
+def test_detect_new_characters_normalizes_role(tmp_path, monkeypatch):
+    """role 缺省/非法 → 归一为 main（不炸 run，前端默认不勾跳过）；合法值原样保留。"""
+    state = _make_chapter_state(tmp_path, profile={"主角": {}})
+    no_role = _full_new_char("张三")
+    del no_role["role"]  # LLM 漏输出 role
+    bad_role = _full_new_char("李四", role="extra")  # 非法枚举值
+    good_minor = _full_new_char("王五", role="Minor")  # 大小写 → 归一小写
+    _mock_llm(monkeypatch, [no_role, bad_role, good_minor])
+
+    queue = detect_new_characters_llm(state)["setup_queue"]
+
+    assert queue[0]["role"] == "main"  # 缺省兜底 main
+    assert queue[1]["role"] == "main"  # 非法值兜底 main
+    assert queue[2]["role"] == "minor"  # 合法值（大小写归一）保留
 
 
 def test_detect_new_characters_raises_on_missing_field(tmp_path, monkeypatch):

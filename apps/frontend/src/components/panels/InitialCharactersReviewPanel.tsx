@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
@@ -11,6 +12,8 @@ interface InitialCharacter {
   visual_trait?: string
   tri_view_prompt?: string
   tri_view_prompt_cn?: string
+  role?: string // "main"=主要角色 / "minor"=龙套；判定不对时走打回重解析（feedback 写明改哪个角色）
+  outfit?: string // 标志性默认服饰（= 立绘那套），分镜跨镜服饰锚点
 }
 interface Props {
   runId: string
@@ -54,8 +57,12 @@ export default function InitialCharactersReviewPanel({ runId, characters }: Prop
         )}
         {characters.map((c, i) => (
           <div key={i} className="border border-border rounded p-3 bg-accent/40 text-xs">
-            <div className="font-medium text-sm text-foreground">{c.name ?? '未命名'}</div>
+            <div className="flex items-center gap-2 font-medium text-sm text-foreground">
+              {c.name ?? '未命名'}
+              {c.role === 'minor' && <Badge variant="secondary">龙套</Badge>}
+            </div>
             {c.appearance && <div className="text-muted-foreground mt-1">外观：{c.appearance}</div>}
+            {c.outfit && <div className="text-muted-foreground mt-1">标志服饰：{c.outfit}</div>}
             {c.character_trait && (
               <div className="text-muted-foreground mt-1">人物特征：{c.character_trait}</div>
             )}
@@ -77,7 +84,7 @@ export default function InitialCharactersReviewPanel({ runId, characters }: Prop
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="打回重解析时填写修改意见，如「漏了重要角色、外观描述太简略」，留空则盲重解析"
+            placeholder="打回重解析时填写修改意见，如「漏了重要角色、外观描述太简略、把胖子标为主要角色」，留空则盲重解析"
             className="w-full min-h-[80px] text-xs border border-input rounded p-2 resize-y bg-background"
           />
         </section>

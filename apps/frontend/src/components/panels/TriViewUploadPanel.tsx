@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { api } from '@/api/client'
@@ -11,6 +12,8 @@ interface Character {
   visual_trait?: string
   tri_view_prompt?: string
   tri_view_prompt_cn?: string
+  role?: string // "main"=主要角色 / "minor"=龙套（默认勾选跳过）；老 payload 无此字段视同 main
+  outfit?: string // 标志性默认服饰（= 立绘那套）；上传立绘时据此核对服饰一致
 }
 interface Props {
   runId: string
@@ -36,7 +39,8 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
   const [rows, setRows] = useState<Record<string, RowState>>(() => {
     const init: Record<string, RowState> = {}
     for (const c of characters) {
-      init[c.name ?? '未命名角色'] = { file: null, skipped: false, uploading: false }
+      // 龙套（role=minor）默认勾选跳过——不传参考图、走 appearance 文本兜底，可取消勾选改为上传
+      init[c.name ?? '未命名角色'] = { file: null, skipped: c.role === 'minor', uploading: false }
     }
     return init
   })
@@ -101,7 +105,7 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
 
       <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-4">
         <p className="text-xs text-muted-foreground">
-          为每个角色上传一张三视图（正面/侧面/背面），用于渲染阶段场景图作角色参考；小角色可勾选跳过。
+          为每个角色上传一张三视图（正面/侧面/背面），用于渲染阶段场景图作角色参考；小角色可勾选跳过。龙套角色已默认勾选跳过，可取消勾选改为上传。
         </p>
         {characters.map((c) => {
           const name = c.name ?? '未命名角色'
@@ -109,7 +113,10 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
           return (
             <div key={name} className="flex flex-col gap-2 rounded border border-border p-3">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-foreground">{name}</span>
+                <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  {name}
+                  {c.role === 'minor' && <Badge variant="secondary">龙套</Badge>}
+                </span>
                 <label className="flex items-center gap-1 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
@@ -120,6 +127,7 @@ export default function TriViewUploadPanel({ runId, characters }: Props) {
                 </label>
               </div>
               {c.appearance && <p className="text-xs text-muted-foreground">外观：{c.appearance}</p>}
+              {c.outfit && <p className="text-xs text-muted-foreground">标志服饰：{c.outfit}</p>}
               {c.character_trait && (
                 <p className="text-xs text-muted-foreground">人物特征：{c.character_trait}</p>
               )}

@@ -1,3 +1,5 @@
+import json
+
 from novel2media.nodes.setup_nodes import (
     batch_fix_profiles,
     batch_upload_tri_view,
@@ -102,8 +104,8 @@ def test_batch_fix_profiles_merges_all(tmp_path):
     state = _base_state(
         novel_dir=str(tmp_path),
         setup_queue=[
-            {"name": "主角", "tri_view": "tri_zhujue.png", "appearance": "白发"},
-            {"name": "路人甲", "appearance": ""},
+            {"name": "主角", "tri_view": "tri_zhujue.png", "appearance": "白发", "role": "main"},
+            {"name": "路人甲", "appearance": "", "tri_view": "", "role": "minor"},
         ],
         characters_profile={"旁白": {"appearance": ""}},
     )
@@ -115,10 +117,15 @@ def test_batch_fix_profiles_merges_all(tmp_path):
     assert "旁白" in profile  # 原有保留
     assert profile["主角"]["tri_view"] == "tri_zhujue.png"
     assert "id" not in profile["主角"]
+    # role 透传落盘（龙套 role=minor 不被 batch 节点丢弃）
+    assert profile["主角"]["role"] == "main"
+    assert profile["路人甲"]["role"] == "minor"
     # 处理完毕清空队列
     assert result["setup_queue"] == []
     out_file = tmp_path / "characters" / "characters_profile.json"
     assert out_file.exists()
+    on_disk = json.loads(out_file.read_text(encoding="utf-8"))
+    assert on_disk["路人甲"]["role"] == "minor"
 
 
 def test_batch_fix_profiles_raises_on_missing_name(tmp_path):

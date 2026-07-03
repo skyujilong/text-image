@@ -31,6 +31,24 @@ _REQUIRED_CHAR_FIELDS = (
     "tri_view_prompt_cn",
 )
 
+# role 合法取值（main=主要角色 / minor=龙套，见 state.CharacterProfile.role）
+_VALID_ROLES = ("main", "minor")
+
+
+def _normalize_char_role(char: dict, node: str) -> dict:
+    """归一 LLM 输出的 role：缺省/非法一律落 "main"（宁多看一眼，不静默跳过）。
+
+    role 不进 _REQUIRED_CHAR_FIELDS（缺字段不炸 run）：它只影响前端三视图面板的
+    默认勾选，兜底 main 意味着该角色默认不勾「跳过」——用户在面板多确认一次，
+    而不是被静默当龙套跳过丢参考图。
+    """
+    role = str(char.get("role") or "").strip().lower()
+    if role not in _VALID_ROLES:
+        if char.get("role") is not None:
+            log.warning("非法 role 值，已归一为 main", node=node, name=char.get("name"), role=char.get("role"))
+        return {**char, "role": "main"}
+    return {**char, "role": role}
+
 
 def load_config(state: dict) -> dict:
     """初始化小说配置状态 + 校验/登记章节文件。
@@ -194,11 +212,12 @@ def configure_chapter_grouping(state: dict) -> dict:
 
 
 def parse_characters_llm(state: dict) -> dict:
-    """LLM 解析表单预填角色字符串 → 结构化主要角色（含三视图提示词）。
+    """LLM 解析表单预填角色字符串 → 结构化角色档案（含三视图提示词，主次以 role 区分）。
 
     读 character_profiles（textarea 原文）+ worldview。空 textarea 直接返回空
     pending_new_characters（不调 LLM），由条件边跳过审阅直接 END。
     每个角色必含非空 name/appearance/tri_view_prompt，缺则抛错；重复 name 抛错。
+    role（main/minor）经 _normalize_char_role 归一（缺省/非法落 main，不抛错）。
     不落盘草稿（最终档案由 batch_fix_profiles 落盘）。
 
     revise 回环时读 _init_characters_feedback（review_initial_characters 写入）拼进 prompt，
@@ -222,10 +241,11 @@ def parse_characters_llm(state: dict) -> dict:
         if name in seen:
             raise ValueError(f"parse_characters_llm: 重复角色名: {name}")
         seen.add(name)
+    normalized = [_normalize_char_role(c, "parse_characters_llm") for c in parsed]
 
     # feedback 记录原文（与 prompt_chars 同条，便于核对 revise 意见是否真拼进 prompt）
-    log.info("parse_characters_llm: 完成", count=len(parsed), feedback=feedback)
-    return {"pending_new_characters": parsed, "_init_characters_feedback": ""}
+    log.info("parse_characters_llm: 完成", count=len(normalized), feedback=feedback)
+    return {"pending_new_characters": normalized, "_init_characters_feedback": ""}
 
 
 def review_initial_characters(state: dict) -> dict:

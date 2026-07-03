@@ -1,4 +1,4 @@
-"""init 阶段提示词：解析表单预填角色为结构化主要角色（含三视图提示词）。"""
+"""init 阶段提示词：解析表单预填角色为结构化角色档案（含三视图提示词，主次角色以 role 区分）。"""
 
 from __future__ import annotations
 
@@ -26,8 +26,10 @@ def build_parse_initial_characters_prompt(character_profiles: str, worldview: st
     输入 character_profiles 为前端 textarea 自由文本，worldview 为世界观设定。
     输出 schema：JSON 数组，每个元素
     {{"name": str, "appearance": str, "character_trait": str, "visual_trait": str,
-      "tri_view_prompt": str, "tri_view_prompt_cn": str}}。
-    只提取贯穿全书的主要角色，不输出一次性路人/泛指群体。
+      "tri_view_prompt": str, "tri_view_prompt_cn": str, "role": "main"|"minor", "outfit": str}}。
+    主次角色都提取并以 role 区分（main=主要角色 / minor=龙套）——龙套也建档保留特征，
+    保证后期分镜跨镜外观一致；仅纯泛指群体（"众人"、"村民"）不提取。
+    无名但有稳定指代的角色（"胖子"、"眼镜男"）用指代作 name。
     - appearance：外观描述（性别/年龄/身高体型/发色/发型/眼镜/瞳色/服饰等），强调鲜明可辨识、角色间互不混淆，
       便于后期 ComfyUI 基于特征匹配参考图。
     - character_trait：中文人物特征短语（性别+身高体型+标志特征），供审核阅读与分镜引用。
@@ -38,7 +40,7 @@ def build_parse_initial_characters_prompt(character_profiles: str, worldview: st
     """
     worldview_block = f"世界观设定：{worldview}" if worldview else "（未提供世界观）"
     feedback_block = f"上一版解析的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
-    return f"""你是一个小说角色分析师。从下面的角色设定文本中，提取贯穿全书的主要角色。
+    return f"""你是一个小说角色分析师。从下面的角色设定文本中，提取其中提到的角色（主要角色和龙套都要）。
 
 {worldview_block}
 
@@ -46,17 +48,26 @@ def build_parse_initial_characters_prompt(character_profiles: str, worldview: st
 {character_profiles}
 
 要求：
-1. 只提取有明确名字的主要角色（贯穿全书、戏份重要），不提取一次性路人、泛指群体（如"众人"、"村民"）。
+1. 提取角色设定文本中提到的所有具体角色，不论主次戏份：
+   - 有明确名字的角色都提取，哪怕设定中只有一两句。
+   - 无名但有稳定指代的角色也提取，用该指代作 name（如"胖子"、"眼镜男"、"金发女人"）；同一角色有多个指代时选最常用、最具辨识度的一个。
+   - 纯泛指群体不提取：如"众人"、"村民"、"路人"、"路人甲乙"、"士兵们"等无个体身份的集体或占位指代。
 2. 每个角色输出 name（角色名）。
 3. appearance（外观描述）：性别、年龄、身高/体型（如高挑清瘦、娇小玲珑、中等身材魁梧等，不同角色身高体型尽量有区分）、发色、发型、是否戴眼镜、瞳色、服饰标志物等；文本未明确处据上下文合理补全。每个角色必须有鲜明、可辨识、与其他角色明显区分的外观特征，不同角色的关键特征（发色/发型/眼镜/身高体型等）尽量不重复，便于后期 ComfyUI 基于特征匹配参考图。年轻女性角色（非明确设定为彪悍 / 健美 / 威猛的）体型默认走柔美向——身材匀称 / 曲线柔和 / 凹凸有致 / 娇美纤秀（对应英文 slender / curvy / graceful / feminine figure），严禁用健壮 / 健硕 / 魁梧 / 肌肉发达（muscular / burly / stocky）等阳刚词，这类词与日系动漫画风冲突、参考图与生图极易崩坏；确需体现力量感的女性用「身形挺拔、气场凌厉」等非肌肉向表达。
 4. character_trait（中文人物特征短语）：把该角色最鲜明的外观特征浓缩成一句中文，须含性别、身高体型与标志性特征，如"高挑清瘦、金色卷发、戴圆框眼镜的少年"。供审核阅读与后期分镜引用。
 5. visual_trait（英文特征短语）：character_trait 的英文版，须包含性别词（man/woman/boy/girl 等）与身高体型词（tall/short/petite/lanky/average height + slim/stocky build 等），如"tall lanky young man with golden curly hair and round glasses"。供分镜 scene_prompt 替换角色名使用，ComfyUI 可直接理解。
 {_TRI_VIEW_PROMPT_RULE}
 7. tri_view_prompt_cn：tri_view_prompt 的中文翻译版，供审核时阅读。
-8. 不要输出 id 字段。
-9. 若文本中没有明确的主要角色，输出空数组 []。
-10. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
+8. role（角色重要度）：取值只能是 "main" 或 "minor"。
+   - "main"：贯穿全书的主角团/核心角色，设定文本中重点描写的角色。
+   - "minor"：龙套/次要配角——设定中顺带提到、戏份少、仅在个别场景出现、或仅以外号指代的角色。
+9. outfit（标志性默认服饰）：把该角色的默认服装浓缩成一句中文短语，含上衣/下装/鞋（如"灰白色长衫配黑色布靴"、"藏青立领风衣配黑靴"、"白色连衣裙配红色高跟鞋"）。这是角色跨镜辨识的服饰锚点，分镜阶段角色入画时默认穿这套。
+   - 必须与 tri_view_prompt / appearance 里的服饰完全一致（三视图立绘穿的就是这套），从 appearance 的服饰部分提炼；不要凭空另编一套，否则与立绘参考图冲突。
+   - 只写默认常穿的那套，不写剧情临时状态（污迹/破损/血迹由分镜阶段按原文另加）。
+10. 不要输出 id 字段。
+11. 若文本中没有任何具体角色，输出空数组 []。
+12. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
 
 输出格式示例：
-[{{"name": "林澈", "appearance": "十八岁少年，高挑清瘦，金色卷发，戴圆框眼镜，碧绿色瞳孔，常穿灰白色长衫，脚踩黑色布靴", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的少年", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, cel shading, cel shaded, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, highly detailed facial features, 18-year-old boy, tall lanky build, golden curly hair, round glasses, green eyes, grey-white robe, black cloth boots, long slender legs, consistent outfit, hairstyle, footwear and body shape, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，赛璐璐风格，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，十八岁少年，高挑清瘦身形，金色卷发，圆框眼镜，碧绿瞳孔，灰白长衫，黑色布靴，修长双腿，服饰发型鞋子体型一致，纯白背景，杰作，最高画质，超高细节，高分辨率"}}]
+[{{"name": "林澈", "appearance": "十八岁少年，高挑清瘦，金色卷发，戴圆框眼镜，碧绿色瞳孔，常穿灰白色长衫，脚踩黑色布靴", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的少年", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, cel shading, cel shaded, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, highly detailed facial features, 18-year-old boy, tall lanky build, golden curly hair, round glasses, green eyes, grey-white robe, black cloth boots, long slender legs, consistent outfit, hairstyle, footwear and body shape, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，赛璐璐风格，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，十八岁少年，高挑清瘦身形，金色卷发，圆框眼镜，碧绿瞳孔，灰白长衫，黑色布靴，修长双腿，服饰发型鞋子体型一致，纯白背景，杰作，最高画质，超高细节，高分辨率", "role": "main", "outfit": "灰白色长衫配黑色布靴"}}]
 """
