@@ -106,11 +106,19 @@ def build_scene_change_prompt(
     每条口播在 prompt 中带显式下标行（"下标. 文案"），模型直接挑下标即可，无需自己数位置。
 
     feedback 非空时为上一版分镜的修改意见（可能涉及换图密度），提示 LLM 据此调整。
+
+    每条口播行携带三段信息：`下标. [说话人:X] 口播文案 [画面:动作描述]`。
+    说话人（speaker）供「说话人切换即换图」的正反打规则判定；画面（action）是该条要配的
+    画面描述，供模型判断「画面变没变」——这两项若不喂给模型，换角色/换画面就无从判断。
     """
     n = len(script)
-    # 带显式下标的口播行：模型只需挑出换图点的下标，不必自己数位置（这是 index 方案
-    # 真正减少数错的关键——下标由代码标好，模型不再承担计数任务）。
-    lines_block = "\n".join(f"{i}. {item.get('text', '')}" for i, item in enumerate(script))
+    # 带显式下标 + 说话人 + 画面描述的口播行：模型只需挑出换图点的下标，不必自己数位置
+    # （下标由代码标好，模型不再承担计数任务）；speaker/action 让「换说话人」「换画面」可判。
+    lines_block = "\n".join(
+        f"{i}. [说话人:{(item.get('speaker') or '旁白')}] {item.get('text', '')} "
+        f"[画面:{item.get('action', '')}]"
+        for i, item in enumerate(script)
+    )
     feedback_block = f"上一版分镜的修改意见（请务必据此调整换图密度）：{feedback}\n" if feedback and feedback.strip() else ""
     tmpl = template or NARRATION_SCHEMES[DEFAULT_SCHEME_KEY].scene_change_template
     return render_template(

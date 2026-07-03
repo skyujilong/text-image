@@ -18,9 +18,9 @@ def test_scene_change_prompt_requires_index_array_and_indexed_lines():
     assert "整数" in prompt
     # 显式禁止输出布尔值（与旧契约区分）
     assert "不要输出布尔值" in prompt
-    # 口播带显式下标行（行首 "下标. 文案"），模型直接挑下标
-    assert "0. 第一句" in prompt
-    assert "2. 第三句" in prompt
+    # 口播带显式下标行，且携带说话人 + 画面描述（正反打换图 + 画面变更判定的输入）
+    assert "0. [说话人:旁白] 第一句 [画面:动作1]" in prompt
+    assert "2. [说话人:旁白] 第三句 [画面:动作3]" in prompt
     # 约束下标范围上界为条目数-1（3 条 → 0~2）
     assert "0 ~ 2" in prompt
     # 不应包含 scene_prompt 画面生成相关措辞（第一步不生成画面）

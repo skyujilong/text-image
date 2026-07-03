@@ -103,7 +103,8 @@ def test_builders_render_custom_template():
         "原文",
         template="共%%LINE_COUNT%%条 0~%%MAX_INDEX%% | %%SCRIPT_LINES%%",
     )
-    assert s == "共1条 0~0 | 0. 一"
+    # 行含说话人（缺省回退旁白）+ 画面描述（缺省空），供正反打换图 / 画面变更判定
+    assert s == "共1条 0~0 | 0. [说话人:旁白] 一 [画面:]"
 
 
 def test_builders_default_to_horror_preset():
