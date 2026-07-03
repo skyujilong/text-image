@@ -12,32 +12,57 @@ def reset_runner():
     runner._plan_graph = None
     runner._render_graph = None
     runner._runs_db = None
-    runner._sse_queues.clear()
+    runner._sse_subscribers.clear()
     yield
     runner._main_graph = None
     runner._plan_graph = None
     runner._render_graph = None
     runner._runs_db = None
-    runner._sse_queues.clear()
+    runner._sse_subscribers.clear()
 
 
-async def test_get_sse_queue_creates_and_returns():
-    q = runner.get_or_create_sse_queue("run-1")
-    assert isinstance(q, asyncio.Queue)
-    q2 = runner.get_or_create_sse_queue("run-1")
-    assert q is q2
+async def test_subscribe_sse_gives_each_connection_own_queue():
+    """每个 /stream 连接必须拿到私有队列——共享队列会让多消费者互相偷事件。"""
+    q1 = runner.subscribe_sse("run-1")
+    q2 = runner.subscribe_sse("run-1")
+    assert isinstance(q1, asyncio.Queue)
+    assert q1 is not q2
+    assert runner._sse_subscribers["run-1"] == {q1, q2}
 
 
-async def test_push_event_enqueues():
-    runner.get_or_create_sse_queue("run-x")
-    await runner.push_event("run-x", {"type": "run_complete"})
-    q = runner._sse_queues["run-x"]
-    item = q.get_nowait()
-    assert item["type"] == "run_complete"
+async def test_push_event_fans_out_to_all_subscribers():
+    """防事件被偷的核心回归：同 run 所有订阅者都收到每条事件（双 tab / 重连窗口）。"""
+    q1 = runner.subscribe_sse("run-x")
+    q2 = runner.subscribe_sse("run-x")
+    await runner.push_event("run-x", {"type": "node_status"})
+    assert q1.get_nowait()["type"] == "node_status"
+    assert q2.get_nowait()["type"] == "node_status"
 
 
 async def test_push_event_unknown_run_noop():
     await runner.push_event("ghost-run", {"type": "run_complete"})
+
+
+async def test_unsubscribe_sse_cleans_registry():
+    """最后一个订阅者注销后 registry 清空（治慢性内存增长），后续 push 为 no-op。"""
+    q = runner.subscribe_sse("run-y")
+    runner.unsubscribe_sse("run-y", q)
+    assert "run-y" not in runner._sse_subscribers
+    await runner.push_event("run-y", {"type": "run_complete"})
+    assert q.empty()
+    # 对已清空的 run 重复注销不抛错
+    runner.unsubscribe_sse("run-y", q)
+
+
+async def test_push_event_drops_oldest_when_full(monkeypatch):
+    """队列积满（死/卡连接）时丢最旧事件保内存，不抛 QueueFull、不阻塞生产者。"""
+    monkeypatch.setattr(runner, "_SSE_QUEUE_MAXSIZE", 2)
+    q = runner.subscribe_sse("run-z")
+    await runner.push_event("run-z", {"seq": 1})
+    await runner.push_event("run-z", {"seq": 2})
+    await runner.push_event("run-z", {"seq": 3})
+    assert q.get_nowait()["seq"] == 2
+    assert q.get_nowait()["seq"] == 3
 
 
 async def test_resume_run_calls_command():

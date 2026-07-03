@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { RunMeta, RenderShot, RenderChapter } from '@/api/client'
+import type { RunMeta, RunStatus, RenderShot, RenderChapter } from '@/api/client'
 
 export type NodeStatus = 'pending' | 'running' | 'waiting_human' | 'done' | 'error'
 
@@ -26,6 +26,9 @@ interface RunStore {
   runs: Record<string, RunMeta>
   currentRunId: string | null
   nodeStatuses: Record<string, NodeStatus>
+  // 当前 nodeStatuses 归属的 run_id。切 run 时 useRunStream 调 claimNodeStatuses 换主，
+  // 一次性清空上一 run 的残留状态，避免跨 run 串色（batchSetNodeStatuses 是 merge，单靠它清不掉）。
+  nodeStatusesOwner: string | null
   // 后端 interrupt 的交互数据（node + payload）。仅在 resume 成功 / 切 run 时变化，
   // 由右侧常驻交互区渲染：非空时按 node 切换对应输入 UI，空时显示占位态。
   activeInteraction: ActiveInteraction | null
@@ -51,11 +54,16 @@ interface RunStore {
 
   setRuns: (runs: RunMeta[]) => void
   upsertRun: (run: RunMeta) => void
+  // 仅改 run 级 status（merge，不动 title 等其它字段）；run 不在 store 或状态未变则 no-op。
+  // 供 SSE run_complete/run_error 与 restoreState 回写权威状态用，修复丢事件后侧栏卡「运行中」。
+  patchRunStatus: (runId: string, status: RunStatus) => void
   removeRun: (runId: string) => void
   setCurrentRunId: (id: string | null) => void
   setNodeStatus: (node: string, status: NodeStatus) => void
   batchSetNodeStatuses: (statuses: Record<string, NodeStatus>) => void
   resetNodeStatuses: () => void
+  // 切 run 时换主并清空上一 run 的节点状态/交互；同 run 重挂载（路由切换/StrictMode）不清、无闪烁。
+  claimNodeStatuses: (runId: string) => void
   setActiveInteraction: (interaction: ActiveInteraction | null) => void
   pushDrill: (subgraph: string) => void
   popDrill: () => void
@@ -91,6 +99,7 @@ export const useRunStore = create<RunStore>((set) => ({
   runs: {},
   currentRunId: null,
   nodeStatuses: {},
+  nodeStatusesOwner: null,
   activeInteraction: null,
   drillPath: [],
   autoFollow: true,
@@ -108,6 +117,13 @@ export const useRunStore = create<RunStore>((set) => ({
   upsertRun: (run) =>
     set((s) => ({ runs: { ...s.runs, [run.run_id]: run } })),
 
+  patchRunStatus: (runId, status) =>
+    set((s) => {
+      const run = s.runs[runId]
+      if (!run || run.status === status) return {}
+      return { runs: { ...s.runs, [runId]: { ...run, status } } }
+    }),
+
   // 删除 run：从 runs 移除；若删的是当前 run，回退到空态（清节点状态/交互/下钻），
   // 让 useRunStream(null) 自动关闭 SSE。
   removeRun: (runId) =>
@@ -121,6 +137,7 @@ export const useRunStore = create<RunStore>((set) => ({
         runs: rest,
         currentRunId: null,
         nodeStatuses: {},
+        nodeStatusesOwner: null,
         activeInteraction: null,
         drillPath: [],
         autoFollow: true,
@@ -133,10 +150,20 @@ export const useRunStore = create<RunStore>((set) => ({
   setNodeStatus: (node, status) =>
     set((s) => ({ nodeStatuses: { ...s.nodeStatuses, [node]: status } })),
 
+  // snapshot-wins：快照覆盖同名旧值，才能纠正丢事件残留的脏 running（原 existing-wins
+  // 永远盖不掉旧值 → 卡死状态无法自愈）。仍是 merge：快照之后到达的实时新 key 不会被抹。
+  // 代价：快照比实时旧时节点徽标可能短暂回退，≤ 一个轮询周期即被下一次事件/轮询修正。
   batchSetNodeStatuses: (statuses) =>
-    set((s) => ({ nodeStatuses: { ...statuses, ...s.nodeStatuses } })),
+    set((s) => ({ nodeStatuses: { ...s.nodeStatuses, ...statuses } })),
 
   resetNodeStatuses: () => set({ nodeStatuses: {}, activeInteraction: null, delegatedScope: null }),
+
+  claimNodeStatuses: (runId) =>
+    set((s) =>
+      s.nodeStatusesOwner === runId
+        ? {}
+        : { nodeStatusesOwner: runId, nodeStatuses: {}, activeInteraction: null, delegatedScope: null }
+    ),
 
   setRunError: (msg) => set({ runError: msg }),
 

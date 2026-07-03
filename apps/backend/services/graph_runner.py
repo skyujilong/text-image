@@ -291,19 +291,42 @@ async def shutdown_runner():
     _runs_db = None
 
 
-def get_or_create_sse_queue(run_id: str) -> asyncio.Queue:
-    if run_id not in _sse_queues:
-        _sse_queues[run_id] = asyncio.Queue()
-    return _sse_queues[run_id]
+# SSE pub/sub：每个 /stream 连接一个私有队列，push_event 扇出到该 run 的所有订阅者。
+# 单共享队列 + 多 generator 抢 q.get() 会把事件"偷"给已断开的旧连接（重跑/retry/双 tab
+# 的重连窗口内 interrupt/run_complete 静默丢失）——私有队列从结构上消灭这类竞态。
+# 无订阅者时事件直接丢弃（不缓冲）：断连/建连窗口内的状态追赶统一由
+# GET /runs/{run_id}/current-state 承担（建流 interrupt 补发 + 前端 onopen restore + 安全网轮询）。
+_SSE_QUEUE_MAXSIZE = 500
+
+_sse_subscribers: dict[str, set[asyncio.Queue]] = {}
 
 
-_sse_queues: dict[str, asyncio.Queue] = {}
+def subscribe_sse(run_id: str) -> asyncio.Queue:
+    q: asyncio.Queue = asyncio.Queue(maxsize=_SSE_QUEUE_MAXSIZE)
+    _sse_subscribers.setdefault(run_id, set()).add(q)
+    return q
+
+
+def unsubscribe_sse(run_id: str, q: asyncio.Queue) -> None:
+    subs = _sse_subscribers.get(run_id)
+    if subs is None:
+        return
+    subs.discard(q)
+    if not subs:
+        _sse_subscribers.pop(run_id, None)
 
 
 async def push_event(run_id: str, event: dict) -> None:
-    q = _sse_queues.get(run_id)
-    if q is not None:
-        await q.put(event)
+    # 保持 async 签名：render_session 以 async 回调持有本函数。
+    # 迭代副本：订阅者可能在扇出过程中注销。
+    for q in list(_sse_subscribers.get(run_id, ())):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            # 只有停止读取的死/卡连接才会积满：丢弃其最旧事件保内存，
+            # 该连接若复活由前端 restore/轮询调和。单事件循环内两步无 await，原子。
+            q.get_nowait()
+            q.put_nowait(event)
 
 
 async def _emit_delegate(run_id: str, stage: str, child_thread: str, status: str) -> None:
@@ -519,10 +542,6 @@ async def _drive(graph, thread_id: str, input: Any, run_id: str, *, checkpoint_i
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
 
     cfg = _thread_config(thread_id, checkpoint_id=checkpoint_id)
-    q = get_or_create_sse_queue(run_id)
-    while not q.empty():
-        await q.get()
-
     await _runs_db.update_status(run_id, "running")
 
     try:
@@ -672,7 +691,6 @@ async def start_run(params: dict) -> str:
     base = params.get("novel_title", "run")[:10] + "-" + str(Path(params.get("novel_dir", "")).name)[:8]
     run_id = f"{base}-{uuid.uuid4().hex[:6]}"
     await _runs_db.insert(run_id, params.get("novel_dir", ""), params.get("novel_title", ""), params)
-    get_or_create_sse_queue(run_id)
 
     main_input = {
         "novel_title": params.get("novel_title", ""),
@@ -927,8 +945,6 @@ async def resume_run(run_id: str, scope: str | None = None, thread_id: str | Non
     import services.render_session as render_session
     render_session.stop_session(run_id)
 
-    get_or_create_sse_queue(run_id)
-
     # 提示词自进化 · 环①：resume 前捕获这版生成物 + 人类决策/意见（此刻 status 仍 waiting_human，
     # active_interaction 尚可解析出被审输出）。纯记录副作用，失败不阻断。
     await _record_generation_event(run_id, real_value)
@@ -961,7 +977,6 @@ async def retry_run(run_id: str) -> None:
     """
     if _main_graph is None or _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
-    get_or_create_sse_queue(run_id)
 
     delegation = await _runs_db.get_active_delegation(run_id)
     if delegation is not None:
@@ -1064,9 +1079,6 @@ async def restart_stage_from(run_id: str, scope: str, checkpoint_id: str, node: 
         if not found:
             raise ValueError(f"Checkpoint {checkpoint_id!r} 不是节点 {node!r} 执行前的快照（无法重跑）")
 
-    q = get_or_create_sse_queue(run_id)
-    while not q.empty():
-        await q.get()
     await _runs_db.update_status(run_id, "running")
     if scope == "main":
         asyncio.create_task(_drive(_main_graph, _main_thread(run_id), Command(resume=None), run_id, checkpoint_id=checkpoint_id))
@@ -1144,7 +1156,6 @@ async def fork_from_checkpoint(run_id: str, scope_or_checkpoint_id: str | None, 
     )
 
     # 5. 从目标 checkpoint 继续
-    get_or_create_sse_queue(new_run_id)
     asyncio.create_task(_drive(_main_graph, _main_thread(new_run_id), Command(resume=None), new_run_id, checkpoint_id=real_checkpoint_id))
     return new_run_id
 
@@ -1553,7 +1564,7 @@ async def update_run_title(run_id: str, novel_title: str):
 
 
 async def delete_run(run_id: str) -> None:
-    """删除废弃 run：清理 checkpoint 数据 + 内存 SSE 队列 + runs.db 记录。
+    """删除废弃 run：清理 checkpoint 数据 + 内存 SSE 订阅 + runs.db 记录。
 
     边界：
     - running 状态不可删（后端未保存 asyncio task handle，无法安全取消正在执行的任务）→ 抛 ValueError，端点转 409。
@@ -1583,7 +1594,9 @@ async def delete_run(run_id: str) -> None:
                     await db.execute(f"DELETE FROM {table} WHERE thread_id=?", (thread_id,))
         await db.commit()
 
-    _sse_queues.pop(run_id, None)
+    # 先发哨兵让仍打开的流（如另一 tab）终止而非永久心跳，再摘掉订阅注册。
+    await push_event(run_id, {"type": "run_deleted", "run_id": run_id})
+    _sse_subscribers.pop(run_id, None)
     # Bug 1: 清理委派记录
     await _runs_db.delete_delegations(run_id)
     await _runs_db.delete(run_id)
