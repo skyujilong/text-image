@@ -237,6 +237,23 @@ class RunsDB:
             rows = await cur.fetchall()
         return [r["feedback"] for r in rows]
 
+    async def list_run_revise_feedback(self, run_id: str, stage: str) -> list[str]:
+        """取**本 run** 某审阅事件 stage 全部「打回」修改意见（非空），供 run 内归纳（环②③ run 内版）。
+
+        与 list_revise_feedback 同为只查 feedback 短文本列，但按 run_id 而非 scheme_key 圈定——
+        只归纳本 thread 自己的意见。stage 为审阅事件 stage（adapt_script / storyboard）。
+        """
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        async with self._conn.execute(
+            "SELECT feedback FROM generation_events "
+            "WHERE run_id=? AND stage=? AND decision='revise' AND feedback<>'' "
+            "ORDER BY id",
+            (run_id, stage),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [r["feedback"] for r in rows]
+
     # ── 校正规则台账（learned_rules）· 环③ ───────────────────────────────
 
     async def insert_rules(self, rules: list[dict]) -> None:

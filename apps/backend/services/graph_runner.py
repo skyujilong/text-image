@@ -88,6 +88,9 @@ _SHARED_FIELDS = frozenset({
     "narration_scheme", "narration_templates",
     # 提示词自进化 · 环③：注入 %%LEARNED_RULES%% 的已渲染规则块（按 stage），须委派到 plan 子图
     "learned_rules_text",
+    # 提示词自进化 · 环②③ run 内版：本 run 合并的校正规则结构化台账（按规则 stage），
+    # 与 learned_rules_text 同步委派 main↔plan，保证跨章一致累积
+    "run_learned_rules",
     "_chapter_advance",  # MainGraphState 路由字段，plan_graph 内部写入
 })
 
@@ -730,19 +733,48 @@ async def _record_generation_event(run_id: str, resume_value: Any) -> None:
         log.warning("generation_event_record_failed", run_id=run_id, error=str(e))
 
 
+# 提示词自进化：%%LEARNED_RULES%% 注入块的统一表头（run 内版与全局版共用，避免措辞漂移）。
+_LEARNED_RULES_HEADER = (
+    "【已沉淀的校正清单（历次人工反馈归纳，务必逐条遵守）】\n"
+    "本清单优先级高于上文：若某条规则与上文的要求相冲突，一律以本清单为准。\n"
+)
+
+
+def _learned_rules_block(texts: list[str]) -> str:
+    """把一个 stage 的规则文本列表渲染成注入块（表头 + bullets）。空列表返回空串。"""
+    if not texts:
+        return ""
+    bullets = "\n".join(f"- {t}" for t in texts)
+    return f"{_LEARNED_RULES_HEADER}{bullets}\n\n"
+
+
 def _render_learned_rules_block(rules: list[dict]) -> dict[str, str]:
     """把 active 规则按 stage 渲染成注入块文本 {stage: block}。无该 stage 规则则不含该键。"""
     by_stage: dict[str, list[str]] = {}
     for r in rules:
         by_stage.setdefault(r["stage"], []).append(r["rule_text"])
+    return {stage: _learned_rules_block(texts) for stage, texts in by_stage.items()}
+
+
+def _render_learned_rules_text(
+    global_rules: list[dict], run_local: dict[str, list[str]]
+) -> dict[str, str]:
+    """按 stage 合并「全局 active 规则文本 + 本 run 规则文本」渲染成注入块 {stage: block}。
+
+    两来源并集：先全局种子规则、后 run 内规则，同表头渲染，按序去重（同文本只列一次）。
+    绝不丢全局规则（run 内合并重渲染时全局种子必须保留）；某 stage 两边都空则不含该键。
+    """
+    by_stage: dict[str, list[str]] = {}
+    for r in global_rules:
+        by_stage.setdefault(r["stage"], []).append(r["rule_text"])
+    for stage, texts in run_local.items():
+        by_stage.setdefault(stage, []).extend(texts)
     out: dict[str, str] = {}
     for stage, texts in by_stage.items():
-        bullets = "\n".join(f"- {t}" for t in texts)
-        out[stage] = (
-            "【已沉淀的校正清单（历次人工反馈归纳，务必逐条遵守）】\n"
-            "本清单优先级高于上文：若某条规则与上文的要求相冲突，一律以本清单为准。\n"
-            f"{bullets}\n\n"
-        )
+        seen: set[str] = set()
+        uniq = [t for t in texts if not (t in seen or seen.add(t))]
+        if uniq:
+            out[stage] = _learned_rules_block(uniq)
     return out
 
 
@@ -765,6 +797,54 @@ async def _inject_learned_rules(resume_value: Any) -> None:
             log.info("learned_rules_injected", scheme=scheme_key, count=len(rules))
     except Exception as e:  # noqa: BLE001 — 注入失败退化为不注入，不影响 resume
         log.warning("learned_rules_inject_failed", error=str(e))
+
+
+async def merge_run_learned_rules(run_id: str, rule_stage: str, new_rules: list[str]) -> None:
+    """提示词自进化 · 环②③ run 内版：把人工确认的校正规则并入本 run 的 run_learned_rules[rule_stage]，
+    与全局 active 规则并集重渲染成 learned_rules_text，写回**主图 + 活跃 plan 子 thread** 两处。
+
+    - 主图写：影响下一章委派（_extract_shared_fields(main_state)）。
+    - 活跃 plan 子 thread 写：影响当前章后续节点（revise 重跑 adapt_script / pass 后 generate_storyboard）。
+    以主图 run_learned_rules 为累积真源（每次 merge 两处同写，主图恒最新）。覆盖语义：写全量 dict。
+    rule_stage 为**规则 stage**（adapt_script / scene_change），非审阅事件 stage。
+    """
+    if _main_graph is None or _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+
+    cleaned = [t.strip() for t in new_rules if t and t.strip()]
+    if not cleaned:
+        return
+
+    # 1. 主图 state：解析 scheme + 读累积真源 run_learned_rules
+    main_shared = await get_run_state_values(run_id)
+    scheme_key = main_shared.get("narration_scheme")
+    run_local: dict[str, list[str]] = {
+        k: list(v) for k, v in (main_shared.get("run_learned_rules") or {}).items()
+    }
+    existing = run_local.get(rule_stage, [])
+    for t in cleaned:
+        if t not in existing:
+            existing.append(t)
+    run_local[rule_stage] = existing
+
+    # 2. 全局 active 规则（重渲染保住全局种子；无 scheme 则不取，避免 scheme_key=None 列全表）
+    global_rules = await _runs_db.list_active_rules(scheme_key) if scheme_key else []
+    learned_text = _render_learned_rules_text(global_rules, run_local)
+    updates = {"run_learned_rules": run_local, "learned_rules_text": learned_text}
+
+    # 3. 写主 thread
+    await _main_graph.aupdate_state(_thread_config(_main_thread(run_id)), updates)
+
+    # 4. 若有 active plan 委派：写活跃 plan 子 thread（当前章即时生效）
+    delegation = await _runs_db.get_active_delegation(run_id)
+    delegated_plan = delegation is not None and delegation.get("stage") == "plan"
+    if delegated_plan and _plan_graph is not None:
+        await _plan_graph.aupdate_state(_thread_config(delegation["child_thread_id"]), updates)
+
+    log.info(
+        "run_learned_rules_merged",
+        run_id=run_id, stage=rule_stage, added=len(cleaned), delegated=delegated_plan,
+    )
 
 
 async def resume_run(run_id: str, scope: str | None = None, thread_id: str | None = None, resume_value: Any = None) -> None:  # noqa: ARG001

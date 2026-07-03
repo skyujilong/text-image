@@ -129,6 +129,13 @@ class MainGraphState(SharedGraphState):
     # 按所选 scheme 从 learned_rules 台账载入并注入；builder 渲染进 %%LEARNED_RULES%% 槽。
     # 与 narration_templates 同理须进 _SHARED_FIELDS 才能委派到 plan 子图。缺省 {} 即不注入。
     learned_rules_text: dict[str, str]
+    # 提示词自进化 · 环②③ run 内版：本 run 审阅面板一键归纳出、经人工确认合并的校正规则，
+    # 按**规则 stage**（adapt_script / scene_change）键成 {stage: [rule_text, ...]}。
+    # web 层 merge_run_learned_rules 把它与全局 active 规则做并集，重渲染进上面的 learned_rules_text
+    # （%%LEARNED_RULES%% 槽）；结构化存储以支持可预览/可撤销/可重渲染。
+    # 与 learned_rules_text 同为覆盖语义（无 reducer）——写方须写全量 dict；须进 _SHARED_FIELDS
+    # 才能主图↔plan 子图一致累积。缺省 {} 即无 run 内规则。
+    run_learned_rules: dict[str, list[str]]
 
     # ── init/setup 阶段字段（load_config 初始化，仅 init/setup 节点读写） ──
     setup_queue: list[CharacterProfile]  # 待批量配置三视图的角色列表

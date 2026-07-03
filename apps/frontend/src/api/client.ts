@@ -233,6 +233,18 @@ export interface ProposeResult {
   message: string
 }
 
+/** 审阅面板 payload.type，作为 run 内归纳/合并接口的 stage 入参（服务端映射到规则 stage）。 */
+export type ReviewPanelType = 'script_review' | 'storyboard_review'
+
+/** run 内归纳结果（POST /runs/{run_id}/prompt-evolution/analyze）。proposed 为未落库的候选预览。 */
+export interface RunProposeResult {
+  proposed: { rule: string; source: string }[]
+  feedback_count: number
+  scheme_key: string
+  stage: RuleStage
+  message: string
+}
+
 /** 内置题材方案（GET /prompt-evolution/schemes）。 */
 export interface SchemeOption {
   key: string
@@ -451,4 +463,22 @@ export const api = {
 
   retireRule: (id: number) =>
     request<{ ok: boolean }>(`/prompt-evolution/rules/${id}/retire`, { method: 'POST' }),
+
+  // ─── 提示词自进化 · 环②③ run 内版（本 run 审阅面板内触发）──────────
+  /** 归纳本 run 该阶段历次打回 → 候选规则预览（无副作用，不落库）。 */
+  analyzeRunRules: (runId: string, panelType: ReviewPanelType) =>
+    request<RunProposeResult>(`/runs/${runId}/prompt-evolution/analyze`, {
+      method: 'POST',
+      body: JSON.stringify({ stage: panelType }),
+    }),
+
+  /** 人工确认后合并进本 run 的校正清单；alsoGlobal 时另写一份全局候选。 */
+  mergeRunRules: (runId: string, panelType: ReviewPanelType, rules: string[], alsoGlobal = true) =>
+    request<{ ok: boolean; merged: number; global_candidates: number }>(
+      `/runs/${runId}/prompt-evolution/merge`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ stage: panelType, rules, also_global: alsoGlobal }),
+      },
+    ),
 }

@@ -90,6 +90,94 @@ def test_shared_fields_carries_grouping_contract():
     } <= set(runner._SHARED_FIELDS)
 
 
+def test_shared_fields_carries_run_learned_rules():
+    """环②③ run 内版闸门：run_learned_rules 必须随 learned_rules_text 一起委派 main↔plan，
+    否则跨章累积断裂（下一章 plan 子图拿不到本 run 已合并的规则）。"""
+    assert {"learned_rules_text", "run_learned_rules"} <= set(runner._SHARED_FIELDS)
+
+
+def test_render_learned_rules_text_unions_global_and_local():
+    """_render_learned_rules_text：同 stage 全局种子 + 本 run 规则并集，全局在前，同文本去重。"""
+    out = runner._render_learned_rules_text(
+        [{"stage": "adapt_script", "rule_text": "G1"}],
+        {"adapt_script": ["L1"], "scene_change": ["L2"]},
+    )
+    # adapt_script 块：全局 G1 + 本 run L1，表头在，全局在前
+    header_line = runner._LEARNED_RULES_HEADER.splitlines()[0]
+    assert header_line in out["adapt_script"]
+    assert "- G1" in out["adapt_script"] and "- L1" in out["adapt_script"]
+    assert out["adapt_script"].index("G1") < out["adapt_script"].index("L1")
+    # scene_change 仅本 run L2，不含 adapt_script 的全局规则
+    assert "- L2" in out["scene_change"] and "G1" not in out["scene_change"]
+    # 同文本只列一次（全局与本 run 重合时去重）
+    dup = runner._render_learned_rules_text(
+        [{"stage": "adapt_script", "rule_text": "X"}], {"adapt_script": ["X"]}
+    )
+    assert dup["adapt_script"].count("- X") == 1
+
+
+async def test_merge_run_learned_rules_writes_both_threads(tmp_path):
+    """merge_run_learned_rules 端到端：坐在 plan 审阅 interrupt（active plan 委派）时合并一条规则，
+    须写主图 + 活跃 plan 子 thread 两处；learned_rules_text 由 (全局 active + run 内) 并集重渲染，
+    保住全局种子、不丢无关 stage。"""
+    from typing import TypedDict
+
+    from db.runs_db import RunsDB
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.graph import END, START, StateGraph
+
+    class _MergeState(TypedDict, total=False):
+        narration_scheme: str
+        run_learned_rules: dict
+        learned_rules_text: dict
+
+    def _build():
+        b = StateGraph(_MergeState)
+        b.add_node("noop", lambda _s: {})
+        b.add_edge(START, "noop")
+        b.add_edge("noop", END)
+        return b.compile(checkpointer=MemorySaver())
+
+    main_graph, plan_graph = _build(), _build()
+    run_id = "merge-e2e"
+    main_cfg = runner._thread_config(runner._main_thread(run_id))
+    plan_cfg = runner._thread_config(runner._child_thread(run_id, "plan"))
+
+    # seed 两线程选定题材（run_learned_rules/learned_rules_text 由 merge 写入，无需预置）
+    seed = {"narration_scheme": "horror_suspense"}
+    await main_graph.ainvoke(seed, config=main_cfg)
+    await plan_graph.ainvoke(seed, config=plan_cfg)
+
+    async with RunsDB(str(tmp_path / "runs.db")) as rdb:
+        # 全局 active 种子：adapt_script（合并的目标 stage）+ scene_change（无关 stage，须保住）
+        await rdb.insert_rules([
+            {"scheme_key": "horror_suspense", "stage": "adapt_script",
+             "rule_text": "GLOBAL_AS", "status": "active"},
+            {"scheme_key": "horror_suspense", "stage": "scene_change",
+             "rule_text": "GLOBAL_SC", "status": "active"},
+        ])
+        # 登记 active plan 委派（模拟坐在 script_review interrupt）
+        await rdb.upsert_delegation(run_id, runner._child_thread(run_id, "plan"), "plan")
+
+        runner._main_graph = main_graph
+        runner._plan_graph = plan_graph
+        runner._runs_db = rdb
+
+        await runner.merge_run_learned_rules(run_id, "adapt_script", ["R1", "  ", "R1"])  # 去重+清洗
+
+        main_vals = (await main_graph.aget_state(main_cfg)).values
+        plan_vals = (await plan_graph.aget_state(plan_cfg)).values
+
+    for label, vals in (("main", main_vals), ("plan", plan_vals)):
+        # 两线程都拿到结构化 run 内规则（去重后仅一条 R1）
+        assert vals["run_learned_rules"]["adapt_script"] == ["R1"], label
+        lrt = vals["learned_rules_text"]
+        # 目标 stage：全局种子 + 本 run 并集
+        assert "GLOBAL_AS" in lrt["adapt_script"] and "R1" in lrt["adapt_script"], label
+        # 无关 stage：全局 scene_change 种子未被覆盖丢失（整体重渲染保住）
+        assert "GLOBAL_SC" in lrt["scene_change"], label
+
+
 async def test_grouping_survives_delegation_into_load_chapter(tmp_path):
     """main→plan 端到端：configure_chapter_grouping interrupt → resume {group_size:2}
     → 经真实 _extract_shared_fields（委派闸门）→ 真实 load_chapter。

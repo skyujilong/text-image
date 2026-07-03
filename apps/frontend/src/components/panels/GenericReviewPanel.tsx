@@ -1,6 +1,9 @@
 import { useState } from 'react'
+import { Check, CheckSquare, Loader2, Sparkles, Square, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/api/client'
+import { cn } from '@/lib/utils'
 import { useRunStore } from '@/store/runStore'
 
 /** 细分审阅 payload 的 type，与后端 _make_review_node 传入的 payload_type 对齐。 */
@@ -92,6 +95,8 @@ export default function GenericReviewPanel({
           />
           <p className="text-xs text-muted-foreground mt-1">{meta.reviseHint}</p>
         </section>
+
+        <RunRuleRefineSection runId={runId} type={type} />
       </div>
 
       <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 px-6 pb-6 gap-2">
@@ -151,6 +156,155 @@ function StoryboardSection({ storyboard }: { storyboard: StoryboardShot[] }) {
         ))}
         {storyboard.length === 0 && <p className="text-muted-foreground">无分镜</p>}
       </div>
+    </section>
+  )
+}
+
+/** 归纳预览中的一条候选规则（本地态：可编辑 rule + 是否纳入合并）。 */
+interface ProposedRule {
+  rule: string
+  source: string
+  accepted: boolean
+}
+
+/**
+ * 提示词自进化 · 环②③ run 内版：一键把本 run 该阶段的历次打回意见用 LLM 归纳成校正规则，
+ * 逐条编辑/取舍后合并进本 run 的提示词（%%LEARNED_RULES%% 槽），后续该阶段生成即时遵守；
+ * 可选同时写一份全局候选，供日后在进化台采纳给未来 run。与 pass/revise 解耦，不触发 resume。
+ */
+function RunRuleRefineSection({ runId, type }: { runId: string; type: ReviewType }) {
+  const [analyzing, setAnalyzing] = useState(false)
+  const [proposed, setProposed] = useState<ProposedRule[] | null>(null)
+  const [alsoGlobal, setAlsoGlobal] = useState(true)
+  const [merging, setMerging] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  const acceptedCount = proposed?.filter((p) => p.accepted).length ?? 0
+
+  const updateRule = (i: number, patch: Partial<ProposedRule>) =>
+    setProposed((prev) => (prev ? prev.map((p, j) => (j === i ? { ...p, ...patch } : p)) : prev))
+
+  const handleAnalyze = async () => {
+    setAnalyzing(true)
+    setMsg('')
+    try {
+      const res = await api.analyzeRunRules(runId, type)
+      setProposed(res.proposed.map((p) => ({ ...p, accepted: true })))
+      setMsg(res.message)
+    } catch (e) {
+      console.error('analyze run rules failed', e)
+      setMsg('归纳失败，请重试')
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
+  const handleMerge = async () => {
+    if (!proposed) return
+    const rules = proposed
+      .filter((p) => p.accepted)
+      .map((p) => p.rule.trim())
+      .filter(Boolean)
+    if (rules.length === 0) {
+      setMsg('请至少保留一条规则再合并')
+      return
+    }
+    setMerging(true)
+    try {
+      const res = await api.mergeRunRules(runId, type, rules, alsoGlobal)
+      setProposed(null)
+      setMsg(
+        `已合并 ${res.merged} 条到本 run，后续该阶段生成自动遵守` +
+          (res.global_candidates ? `；另写入 ${res.global_candidates} 条全局候选待采纳` : ''),
+      )
+    } catch (e) {
+      console.error('merge run rules failed', e)
+      setMsg('合并失败，请重试')
+    } finally {
+      setMerging(false)
+    }
+  }
+
+  return (
+    <section className="border-t border-border pt-3">
+      <div className="flex items-center gap-2">
+        <h3 className="text-sm font-semibold text-foreground">提示词自进化（本 run）</h3>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 ml-auto"
+          disabled={analyzing}
+          onClick={handleAnalyze}
+        >
+          {analyzing ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="size-3.5" />
+          )}
+          从本 run 反馈归纳校正规则
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground mt-1">
+        归纳本 run 该阶段历次打回意见为校正规则，确认后并入本 run 提示词，后续生成即时遵守。
+      </p>
+
+      {proposed && proposed.length > 0 && (
+        <div className="mt-3 flex flex-col gap-2">
+          {proposed.map((p, i) => (
+            <div
+              key={i}
+              className={cn('rounded-md border border-border p-2', !p.accepted && 'opacity-50')}
+            >
+              <div className="flex items-start gap-2">
+                <Textarea
+                  value={p.rule}
+                  onChange={(e) => updateRule(i, { rule: e.target.value })}
+                  className="min-h-[52px] flex-1 text-xs"
+                  spellCheck={false}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={cn('size-7 shrink-0', !p.accepted && 'text-destructive')}
+                  title={p.accepted ? '点击排除该规则' : '点击恢复该规则'}
+                  onClick={() => updateRule(i, { accepted: !p.accepted })}
+                >
+                  {p.accepted ? <Check className="size-3.5" /> : <X className="size-3.5" />}
+                </Button>
+              </div>
+              {p.source && <p className="text-xs text-muted-foreground mt-1">源：{p.source}</p>}
+            </div>
+          ))}
+
+          <div className="flex items-center gap-2 pt-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-muted-foreground"
+              onClick={() => setAlsoGlobal((v) => !v)}
+            >
+              {alsoGlobal ? (
+                <CheckSquare className="size-3.5" />
+              ) : (
+                <Square className="size-3.5" />
+              )}
+              同时写入全局候选
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 ml-auto"
+              disabled={merging || acceptedCount === 0}
+              onClick={handleMerge}
+            >
+              {merging && <Loader2 className="size-3.5 animate-spin" />}
+              合并到本 run（{acceptedCount}）
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {msg && <p className="text-xs text-muted-foreground mt-2">{msg}</p>}
     </section>
   )
 }

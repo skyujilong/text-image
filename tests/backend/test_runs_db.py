@@ -88,6 +88,19 @@ async def test_list_revise_feedback_filters(db):
     assert fb == ["换图太密"]
 
 
+async def test_list_run_revise_feedback_scoped(db):
+    # run A：本 stage 两条非空 revise + 空意见(剔) + pass(剔) + 另一 stage(不串)
+    await _ev(db, "runA", stage="adapt_script", decision="revise", feedback="旁白太长")
+    await _ev(db, "runA", stage="adapt_script", decision="revise", feedback="别用书面语")
+    await _ev(db, "runA", stage="adapt_script", decision="revise", feedback="")  # 空剔除
+    await _ev(db, "runA", stage="adapt_script", decision="pass", feedback="不该出现")  # 非 revise 剔除
+    await _ev(db, "runA", stage="storyboard", decision="revise", feedback="换图太密")  # 别的 stage 不串
+    # run B：同 stage 有意见，但不同 run，须排除
+    await _ev(db, "runB", stage="adapt_script", decision="revise", feedback="别的 run 的")
+    fb = await db.list_run_revise_feedback("runA", "adapt_script")
+    assert fb == ["旁白太长", "别用书面语"]  # 仅本 run 本 stage 非空 revise，按 id 序
+
+
 async def test_delete_run_clears_events_but_keeps_rules(db):
     await db.insert("r5", "/n", "N")
     await _ev(db, "r5", stage="adapt_script", decision="revise", feedback="x")
