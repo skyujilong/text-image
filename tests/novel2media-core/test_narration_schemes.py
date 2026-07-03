@@ -34,6 +34,7 @@ def test_builtin_schemes_registered():
         "horror_viral",
         "romance_sweet",
         "general",
+        "plain_narration",
     ]
     assert DEFAULT_SCHEME_KEY == "horror_suspense"
 
@@ -45,6 +46,7 @@ def test_list_scheme_presets_shape():
         "horror_viral",
         "romance_sweet",
         "general",
+        "plain_narration",
     ]
     for p in presets:
         assert set(p) == {
@@ -114,3 +116,18 @@ def test_builders_default_to_horror_preset():
         "XX", {"林辰": {}}, template=NARRATION_SCHEMES["horror_suspense"].adapt_script_template
     )
     assert "声临其境" in default_a
+
+
+def test_plain_narration_keeps_hooks_but_lightens_body():
+    """纯小说解说方案：头尾钩子保留、正文定位为轻量忠实、换图走非正反打的解说节奏。"""
+    scheme = NARRATION_SCHEMES["plain_narration"]
+    # 必需占位符
+    assert "%%CHAPTER_TEXT%%" in scheme.adapt_script_template
+    assert "%%SCRIPT_LINES%%" in scheme.scene_change_template
+    # 头尾钩子保留（开篇钩子 + 拉回桥 + 结尾预告）
+    assert "开篇钩子" in scheme.adapt_script_template
+    assert "拉回过渡" in scheme.adapt_script_template
+    # 正文轻量定位
+    assert "轻量改编" in scheme.adapt_script_template
+    # 换图从正反打改成解说配图节奏
+    assert "不走正反打" in scheme.scene_change_template

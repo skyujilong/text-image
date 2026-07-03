@@ -158,6 +158,7 @@ def test_configure_chapter_grouping_payload_exposes_schemes(monkeypatch):
         "horror_viral",
         "romance_sweet",
         "general",
+        "plain_narration",
     ]
 
 
