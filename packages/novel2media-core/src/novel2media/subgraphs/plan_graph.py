@@ -43,7 +43,13 @@ def _route_review_storyboard(state: PlanGraphState) -> str:
 
 
 def _route_chapter_advance(state: PlanGraphState) -> str:
-    """规划图推进路由：next→继续规划下一章；render→本轮规划结束（graph_runner 启动渲染）。"""
+    """规划图推进路由。
+
+    render（前端唯一发送值）→ END plan 子图 → graph_runner 提取 shared 字段合并回主图
+    （render_batch/chapters_status 刷回主图 → 渲染工作台可见可开渲）→ 主图 _has_planned_chapters
+    若还有 pending 章则重委派继续规划下一章，无则整体 END。即「刷批次 + 继续规划」。
+    next（旧值，UI 已不再发送，保留兼容）→ 留在本子图 load_chapter 循环（批次不刷回主图）。
+    """
     return END if state.get("_chapter_advance") == "render" else "load_chapter"
 
 

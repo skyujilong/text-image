@@ -54,13 +54,14 @@ def run_plan_stage(state: MainGraphState) -> dict:
 def _has_planned_chapters(state: MainGraphState) -> str:
     """规划完成后路由：有章节待规划→继续规划；全部完成→END。
 
-    渲染阶段已从图中移除（改为独立渲染工作台），_chapter_advance="render" 不再触发图内渲染，
-    直接 END 让用户进入渲染工作台页面。
+    渲染阶段已从图中移除（改为独立渲染工作台）。plan 子图每章推进（_chapter_advance="render"）
+    END 后在此判定：还有 pending 章 → 重委派 run_plan_stage 继续规划下一章；无 → 整体 END。
+    每次 plan 子图 END 都会把 render_batch 刷回主图，渲染工作台据此边规划边开渲。
     """
-    # 还有待规划章节则继续规划
+    # 还有待规划章节则继续规划下一章（plan 子图刚把本章批次刷回主图）
     if state.get("plan_cursor") is not None:
         return "run_plan_stage"
-    # 全部完成（含用户选择"进入渲染"——渲染已脱离图流程，直接 END）
+    # 全部章节规划完 → END（用户在独立渲染工作台完成剩余渲染）
     return END
 
 

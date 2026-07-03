@@ -568,10 +568,11 @@ def commit_chapter(state: dict) -> dict:
 
 
 def chapter_advance_decision(state: dict) -> dict:
-    """interrupt：本章规划完成后选择推进方向，resume 为 "next" / "render"。
+    """interrupt：本章规划完成后继续规划下一章，resume 为 "next" / "render"。
 
-    - next：继续规划下一章（load_chapter）。
-    - render：当前批次规划完成，进入批量渲染（render_dispatch）。
+    - render（前端唯一发送值）：END plan 子图 → render_batch 刷回主图（渲染工作台可开渲）
+      → 主图有 pending 章则重委派继续规划下一章，无则整体 END。即「刷批次 + 继续规划」。
+    - next（旧值，UI 已不再发送，保留兼容）：留在本子图 load_chapter 循环，批次不刷回主图。
     - resume 值非 next/render：显式抛错。
     """
     chapters_status = state.get("chapters_status", {})

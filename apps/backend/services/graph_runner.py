@@ -1508,11 +1508,20 @@ async def update_run_state_values(run_id: str, updates: dict) -> None:
 
     供 render_service 等后端服务更新 chapters_status / chapters_artifacts 等字段，
     无需经过图流程驱动。
+
+    并行防护：若此刻有活跃 plan 委派（用户边规划下一章边在工作台渲染上一章），
+    同步把 updates 写进活跃 plan 子 thread——否则该子图规划完回合并时会用其（较旧的）
+    chapters_status 覆盖掉工作台刚设的 rendering。与 merge/remove_run_learned_rules
+    的「写主图 + 写活跃 plan 子 thread」对称写法一致。
     """
-    if _main_graph is None:
+    if _main_graph is None or _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
-    cfg = _thread_config(_main_thread(run_id))
-    await _main_graph.aupdate_state(cfg, updates)
+    await _main_graph.aupdate_state(_thread_config(_main_thread(run_id)), updates)
+
+    delegation = await _runs_db.get_active_delegation(run_id)
+    delegated_plan = delegation is not None and delegation.get("stage") == "plan"
+    if delegated_plan and _plan_graph is not None:
+        await _plan_graph.aupdate_state(_thread_config(delegation["child_thread_id"]), updates)
 
 
 def get_runs_db() -> RunsDB:
