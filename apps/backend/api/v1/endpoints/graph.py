@@ -12,7 +12,7 @@ def _serialize_graph(g, subgraph_id_set: set[str]) -> dict:
     """
     # 收集所有节点（过滤 __start__ / __end__）
     nodes = []
-    for node_id, node_data in g.nodes.items():
+    for node_id in g.nodes:
         if node_id in ("__start__", "__end__"):
             continue
         node_type = "subgraph" if node_id in subgraph_id_set else "internal"

@@ -2,7 +2,6 @@ import io
 from unittest.mock import AsyncMock
 
 from PIL import Image
-
 from schemas.models import RunMeta
 
 
@@ -48,9 +47,7 @@ async def test_upload_unknown_run_returns_404(client, mock_runner):
 
 async def test_upload_rejects_path_traversal_subdir(client, mock_runner, tmp_path):
     """subdir 含 .. 越界 → 400。"""
-    mock_runner.get_run = AsyncMock(
-        return_value=RunMeta(run_id="r1", novel_dir=str(tmp_path), novel_title="T")
-    )
+    mock_runner.get_run = AsyncMock(return_value=RunMeta(run_id="r1", novel_dir=str(tmp_path), novel_title="T"))
     resp = await client.post(
         "/upload",
         data={"run_id": "r1", "subdir": "../escape", "character_name": "x"},
@@ -61,9 +58,7 @@ async def test_upload_rejects_path_traversal_subdir(client, mock_runner, tmp_pat
 
 async def test_upload_rejects_non_image(client, mock_runner, tmp_path):
     """非图片/损坏文件 → 400（不静默落盘原图，保证三视图规格统一）。"""
-    mock_runner.get_run = AsyncMock(
-        return_value=RunMeta(run_id="r1", novel_dir=str(tmp_path), novel_title="T")
-    )
+    mock_runner.get_run = AsyncMock(return_value=RunMeta(run_id="r1", novel_dir=str(tmp_path), novel_title="T"))
     resp = await client.post(
         "/upload",
         data={"run_id": "r1", "subdir": "characters", "character_name": "x"},
@@ -74,9 +69,7 @@ async def test_upload_rejects_non_image(client, mock_runner, tmp_path):
 
 async def test_upload_sanitizes_illegal_chars_in_name(client, mock_runner, tmp_path):
     """小说名/人物名含文件名非法字符（/ : * 等）→ 过滤后仍能安全落盘。"""
-    mock_runner.get_run = AsyncMock(
-        return_value=RunMeta(run_id="r1", novel_dir=str(tmp_path), novel_title="A/B:C")
-    )
+    mock_runner.get_run = AsyncMock(return_value=RunMeta(run_id="r1", novel_dir=str(tmp_path), novel_title="A/B:C"))
     resp = await client.post(
         "/upload",
         data={"run_id": "r1", "subdir": "characters", "character_name": "林*辰"},

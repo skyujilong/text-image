@@ -32,10 +32,15 @@ def test_enqueue_reroll_persists_changed_prompt(tmp_path, monkeypatch):
             "chapter_id": "ch1",
             "shots": {
                 "0": {
-                    "storyboard_id": 0, "workflow": "qwen_t2i", "prompt": "old",
-                    "ref_images": [], "subjects": [],
-                    "candidates": ["/a.png"], "selected": "/a.png",
-                    "status": "done", "error": None,
+                    "storyboard_id": 0,
+                    "workflow": "qwen_t2i",
+                    "prompt": "old",
+                    "ref_images": [],
+                    "subjects": [],
+                    "candidates": ["/a.png"],
+                    "selected": "/a.png",
+                    "status": "done",
+                    "error": None,
                 }
             },
         },
@@ -59,10 +64,15 @@ def test_enqueue_reroll_keeps_old_prompt_when_none(tmp_path, monkeypatch):
             "chapter_id": "ch1",
             "shots": {
                 "0": {
-                    "storyboard_id": 0, "workflow": "qwen_t2i", "prompt": "keep",
-                    "ref_images": [], "subjects": [],
-                    "candidates": ["/a.png"], "selected": "/a.png",
-                    "status": "done", "error": None,
+                    "storyboard_id": 0,
+                    "workflow": "qwen_t2i",
+                    "prompt": "keep",
+                    "ref_images": [],
+                    "subjects": [],
+                    "candidates": ["/a.png"],
+                    "selected": "/a.png",
+                    "status": "done",
+                    "error": None,
                 }
             },
         },
@@ -85,10 +95,15 @@ def test_seed_pending_resets_orphaned_rendering_when_worker_dead(tmp_path, monke
             "chapter_id": "ch1",
             "shots": {
                 "0": {
-                    "storyboard_id": 0, "workflow": "qwen_t2i", "prompt": "p",
-                    "ref_images": [], "subjects": [],
-                    "candidates": [], "selected": None,
-                    "status": "rendering", "error": None,
+                    "storyboard_id": 0,
+                    "workflow": "qwen_t2i",
+                    "prompt": "p",
+                    "ref_images": [],
+                    "subjects": [],
+                    "candidates": [],
+                    "selected": None,
+                    "status": "rendering",
+                    "error": None,
                 }
             },
         },
@@ -120,8 +135,8 @@ def test_seed_pending_dedups_already_queued(tmp_path, monkeypatch):
 
 async def test_ensure_render_session_rebuilds_after_restart(tmp_path, monkeypatch):
     """#7：会话内存丢失（后端重启）时，render 端点据 checkpoint payload 惰性重建会话。"""
-    import services.render_session as rs
     import api.v1.endpoints.render as render_ep
+    import services.render_session as rs
 
     # 桩掉真实 worker 启动 + 配置/客户端，避免连服务器
     monkeypatch.setattr(rs.RenderSession, "_ensure_worker", lambda self: None)
@@ -133,9 +148,22 @@ async def test_ensure_render_session_rebuilds_after_restart(tmp_path, monkeypatc
     render_state.save(
         novel_dir,
         "ch1",
-        {"chapter_id": "ch1", "shots": {"0": {"storyboard_id": 0, "workflow": "qwen_t2i",
-         "prompt": "p", "ref_images": [], "subjects": [], "candidates": [],
-         "selected": None, "status": "pending", "error": None}}},
+        {
+            "chapter_id": "ch1",
+            "shots": {
+                "0": {
+                    "storyboard_id": 0,
+                    "workflow": "qwen_t2i",
+                    "prompt": "p",
+                    "ref_images": [],
+                    "subjects": [],
+                    "candidates": [],
+                    "selected": None,
+                    "status": "pending",
+                    "error": None,
+                }
+            },
+        },
     )
 
     # 桩 runner：run 仍停在 image_render（payload 随 checkpoint 持久化）
@@ -152,9 +180,12 @@ async def test_ensure_render_session_rebuilds_after_restart(tmp_path, monkeypatc
         return {
             "active_interaction": {
                 "payload": {
-                    "type": "image_render", "chapter_id": "ch1",
+                    "type": "image_render",
+                    "chapter_id": "ch1",
                     "storyboard": [{"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": []}],
-                    "specs": [{"storyboard_id": 0, "workflow": "qwen_t2i", "prompt": "p", "ref_images": [], "subjects": []}],
+                    "specs": [
+                        {"storyboard_id": 0, "workflow": "qwen_t2i", "prompt": "p", "ref_images": [], "subjects": []}
+                    ],
                 }
             }
         }
@@ -171,8 +202,8 @@ async def test_ensure_render_session_rebuilds_after_restart(tmp_path, monkeypatc
 
 async def test_ensure_render_session_returns_none_when_not_rendering(tmp_path, monkeypatch):
     """非渲染阶段 → 不重建（返回 None，端点据此 409）。"""
-    import services.render_session as rs
     import api.v1.endpoints.render as render_ep
+    import services.render_session as rs
 
     rs._sessions.clear()
 
@@ -197,8 +228,12 @@ async def test_commit_candidate_increments_index_and_default_selects(tmp_path, m
     render_state.save(
         novel_dir,
         "ch1",
-        {"chapter_id": "ch1", "shots": {"0": {"storyboard_id": 0, "candidates": [],
-         "selected": None, "status": "pending", "error": None}}},
+        {
+            "chapter_id": "ch1",
+            "shots": {
+                "0": {"storyboard_id": 0, "candidates": [], "selected": None, "status": "pending", "error": None}
+            },
+        },
     )
 
     p0, sel0 = await session._commit_candidate("0", 0, "out.png", b"img0")

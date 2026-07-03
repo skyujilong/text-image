@@ -77,7 +77,7 @@ async def delete_run(run_id: str):
     try:
         await runner.delete_run(run_id)
     except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return {"ok": True}
 
 

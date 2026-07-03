@@ -69,7 +69,7 @@ async def test_resume_run_calls_command():
     # astream 必须返回异步迭代器（_drive 用 async for 消费）；空流模拟"无事件直接结束"。
     async def _empty_stream(*_args, **_kwargs):
         return
-        yield  # noqa: 让函数成为 async generator
+        yield  # 让函数成为 async generator
 
     mock_graph = MagicMock()
     mock_graph.astream = MagicMock(side_effect=lambda *a, **k: _empty_stream())
@@ -135,9 +135,7 @@ def test_render_learned_rules_text_unions_global_and_local():
     # scene_change 仅本 run L2，不含 adapt_script 的全局规则
     assert "- L2" in out["scene_change"] and "G1" not in out["scene_change"]
     # 同文本只列一次（全局与本 run 重合时去重）
-    dup = runner._render_learned_rules_text(
-        [{"stage": "adapt_script", "rule_text": "X"}], {"adapt_script": ["X"]}
-    )
+    dup = runner._render_learned_rules_text([{"stage": "adapt_script", "rule_text": "X"}], {"adapt_script": ["X"]})
     assert dup["adapt_script"].count("- X") == 1
 
 
@@ -175,12 +173,22 @@ async def test_merge_run_learned_rules_writes_both_threads(tmp_path):
 
     async with RunsDB(str(tmp_path / "runs.db")) as rdb:
         # 全局 active 种子：adapt_script（合并的目标 stage）+ scene_change（无关 stage，须保住）
-        await rdb.insert_rules([
-            {"scheme_key": "horror_suspense", "stage": "adapt_script",
-             "rule_text": "GLOBAL_AS", "status": "active"},
-            {"scheme_key": "horror_suspense", "stage": "scene_change",
-             "rule_text": "GLOBAL_SC", "status": "active"},
-        ])
+        await rdb.insert_rules(
+            [
+                {
+                    "scheme_key": "horror_suspense",
+                    "stage": "adapt_script",
+                    "rule_text": "GLOBAL_AS",
+                    "status": "active",
+                },
+                {
+                    "scheme_key": "horror_suspense",
+                    "stage": "scene_change",
+                    "rule_text": "GLOBAL_SC",
+                    "status": "active",
+                },
+            ]
+        )
         # 登记 active plan 委派（模拟坐在 script_review interrupt）
         await rdb.upsert_delegation(run_id, runner._child_thread(run_id, "plan"), "plan")
 

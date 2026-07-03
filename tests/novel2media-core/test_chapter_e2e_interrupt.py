@@ -12,13 +12,13 @@
 
 用 MemorySaver + 真实编译的 chapter 子图（验证 R4/R10 单例 + checkpoint namespace 一致性）。
 """
+
 import json
 from unittest.mock import MagicMock
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
-
 from novel2media.subgraphs.chapter import build_chapter_subgraph
 
 

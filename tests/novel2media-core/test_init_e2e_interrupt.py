@@ -6,13 +6,13 @@ resume pass → character_setup_subgraph 的 batch_upload_tri_view interrupt。
 用 MemorySaver + 真实编译的 init 子图（验证 _route_after_parse /
 _route_initial_characters_review 条件边 + character_setup_subgraph 单例跨子图 interrupt）。
 """
+
 import json
 from unittest.mock import MagicMock
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
-
 from novel2media.subgraphs.init_graph import build_init_subgraph
 
 
@@ -26,8 +26,10 @@ def _make_novel(tmp_path, chapters=("chapter_01.txt",)):
 
 def _mock_llm(monkeypatch, payload):
     """mock invoke_llm（llm.py 统一封装），返回带 content 的 AIMessage 替身。"""
+
     def _invoke_llm(prompt, *, node, temperature=0.8, label=None, json_mode=False):
         return MagicMock(content=json.dumps(payload, ensure_ascii=False))
+
     monkeypatch.setattr("novel2media.llm.invoke_llm", _invoke_llm)
     return _invoke_llm
 
@@ -126,8 +128,26 @@ async def test_init_resume_revise_loops_back_to_parse(tmp_path, monkeypatch):
     # 两次 LLM 返回（revise 后重跑 parse）
     calls = iter(
         [
-            [{"name": "林澈", "appearance": "v1", "character_trait": "c1", "visual_trait": "vt1", "tri_view_prompt": "p1", "tri_view_prompt_cn": "中1"}],
-            [{"name": "林澈", "appearance": "v2", "character_trait": "c2", "visual_trait": "vt2", "tri_view_prompt": "p2", "tri_view_prompt_cn": "中2"}],
+            [
+                {
+                    "name": "林澈",
+                    "appearance": "v1",
+                    "character_trait": "c1",
+                    "visual_trait": "vt1",
+                    "tri_view_prompt": "p1",
+                    "tri_view_prompt_cn": "中1",
+                }
+            ],
+            [
+                {
+                    "name": "林澈",
+                    "appearance": "v2",
+                    "character_trait": "c2",
+                    "visual_trait": "vt2",
+                    "tri_view_prompt": "p2",
+                    "tri_view_prompt_cn": "中2",
+                }
+            ],
         ]
     )
     mock = MagicMock()

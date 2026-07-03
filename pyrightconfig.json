@@ -2,13 +2,14 @@
   "include": [
     "apps/backend",
     "packages/novel2media-core/src",
-    "tests"
+    "packages/novel2media-logging/src"
   ],
   "exclude": [
     "**/__pycache__",
     "**/node_modules",
     "data",
-    "workspace"
+    "workspace",
+    "tests"
   ],
   "venvPath": ".",
   "venv": ".venv",
@@ -18,6 +19,18 @@
     "packages/novel2media-core/src"
   ],
   "typeCheckingMode": "basic",
-  "reportMissingImports": "error",
-  "reportMissingTypeStubs": "none"
+
+  "//": "唯一真源：pyright 优先读本文件，pyproject.toml 的 [tool.pyright] 会被完全忽略，故策略全落这里。",
+  "//检查策略": "只开真正能抓 bug 的检查；LangGraph 的 add_node/RunnableConfig 类型桩过严，reportArgumentType 降为 warning。",
+
+  "reportMissingImports": "none",
+  "reportMissingTypeStubs": "none",
+  "reportOptionalMemberAccess": "error",
+  "reportOptionalSubscript": "error",
+  "reportOptionalCall": "error",
+  "reportOperatorIssue": "error",
+  "reportArgumentType": "warning",
+  "reportUnknownMemberType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownArgumentType": "none"
 }

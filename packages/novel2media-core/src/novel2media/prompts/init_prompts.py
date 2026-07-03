@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 # tri_view_prompt 必填要素 + 正反例子（init/detect 两处共用，避免重复维护）。
 # 关键约束：
 # - 配饰（眼镜等）「有则写、无则不写」——戴眼镜才写 round glasses，不戴眼镜绝不要凭空补

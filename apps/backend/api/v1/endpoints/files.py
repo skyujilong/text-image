@@ -3,11 +3,10 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import services.graph_runner as runner
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image, ImageOps
-
-import services.graph_runner as runner
 
 router = APIRouter()
 
@@ -81,7 +80,7 @@ def _resize_to_height(content: bytes, suffix: str, target_height: int) -> bytes:
         return content
 
     new_w = max(1, round(w * target_height / h))
-    resized = img.resize((new_w, target_height), Image.LANCZOS)
+    resized = img.resize((new_w, target_height), Image.Resampling.LANCZOS)
 
     if fmt == "JPEG" and resized.mode in ("RGBA", "LA", "P"):
         resized = resized.convert("RGB")
@@ -128,9 +127,7 @@ async def upload_file(
 
     # 命名：{小说名}-{人物名}{ext}，安全过滤后多小说不冲突
     suffix = Path(file.filename or "upload.png").suffix or ".png"
-    filename = (
-        f"{_safe_filename_part(meta.novel_title)}-{_safe_filename_part(character_name)}{suffix}"
-    )
+    filename = f"{_safe_filename_part(meta.novel_title)}-{_safe_filename_part(character_name)}{suffix}"
     local_path = target_dir / filename
     content = await file.read()
     # 等比例缩放到固定高度，统一三视图规格；非图片/损坏 → 400（不静默落盘原图）

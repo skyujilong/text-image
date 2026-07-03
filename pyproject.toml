@@ -46,22 +46,8 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = [".", "apps/backend", "packages/novel2media-core/src", "packages/novel2media-logging/src"]
 
-[tool.pyright]
-pythonVersion = "3.13"
-typeCheckingMode = "basic"
-include = ["apps/backend", "packages/novel2media-core/src", "packages/novel2media-logging/src"]
-exclude = ["**/__pycache__", "**/*.pyc", "tests"]
-
-# 只开启真正能发现 bug 的检查
-reportOptionalMemberAccess = "error"    # None.xxx
-reportOptionalSubscript = "error"       # None[key]
-reportOptionalCall = "error"            # None()
-reportOperatorIssue = "error"           # 运算符类型不匹配
-reportMissingImports = "none"           # 忽略第三方库类型缺失
-reportArgumentType = "warning"          # 参数类型（LangGraph 类型太严格先降级）
-reportUnknownMemberType = "none"
-reportUnknownVariableType = "none"
-reportUnknownArgumentType = "none"
+# pyright 配置见根目录 pyrightconfig.json（pyright 优先读它，本处 [tool.pyright] 会被完全忽略，
+# 故不在此重复以免两份配置分叉——历史上正是分叉导致 exclude tests / reportArgumentType 降级从未生效）。
 
 [tool.ruff]
 line-length = 120
@@ -93,6 +79,19 @@ lint.ignore = [
 "__init__.py" = ["F401"]
 "tests/**/*.py" = ["ARG001", "ARG002", "F841"]  # 测试文件：允许未使用参数和变量
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 依赖注入惯用法：File/Form/Query/Depends 等在参数默认值里调用是标准写法，非 B008 隐患
+extend-immutable-calls = [
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Query",
+    "fastapi.Depends",
+    "fastapi.Body",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.Cookie",
+]
+
 [project.scripts]
 backend = "uvicorn.main:main"
 
@@ -110,4 +109,3 @@ line-ending = "auto"
 
 
 # E402：导入顺序（sys.path.insert 后导入是有意的，不警告）
-# B007：循环未使用变量（node_data 是有意的）

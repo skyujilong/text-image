@@ -34,9 +34,7 @@ def _build_t2i_workflow(prompt: str, seed: int, filename_prefix: str) -> dict:
     )
 
 
-def _build_edit_workflow(
-    prompt: str, image1: str, image2: str | None, seed: int, filename_prefix: str
-) -> dict:
+def _build_edit_workflow(prompt: str, image1: str, image2: str | None, seed: int, filename_prefix: str) -> dict:
     """构建参考图编辑 workflow（qwen_edit），并改写单/双图连线。
 
     沿用 test_qwen_edit.py 的做法（目标服务器无 Boolean/Switch 节点）：
@@ -261,8 +259,9 @@ class RenderSession:
             )
             # 检查是否所有图片都已完成，是则更新章节状态为 images_done
             # 注意：用户仍需手动选择每张图的候选，这里只是标记图片生成完成
-            from novel2media import render_state
             import services.graph_runner as runner
+            from novel2media import render_state
+
             data = render_state.load(self.novel_dir, self.chapter_id)
             if data:
                 # 所有 shot 都有候选（candidates 非空），视为图片生成完成
@@ -311,20 +310,19 @@ class RenderSession:
 
             # 提交 + 轮询（同步 httpx 调用包进线程，避免阻塞事件循环）
             prompt_id = await asyncio.to_thread(self._client.submit, wf)
-            images = await asyncio.to_thread(
-                self._client._wait_for_output, prompt_id, self._candidate_timeout
-            )
+            images = await asyncio.to_thread(self._client._wait_for_output, prompt_id, self._candidate_timeout)
             if not images:
                 raise RuntimeError(f"shot {shot_id} 未产出图片")
 
             # 下载首张输出图落盘（每个 job 出 1 张候选）+ 追加进 render_state（单次锁内读写）
             img = images[0]
-            data = await asyncio.to_thread(
-                self._client.download_image, img["filename"], img.get("subfolder", "")
-            )
+            data = await asyncio.to_thread(self._client.download_image, img["filename"], img.get("subfolder", ""))
             cand_path, selected = await self._commit_candidate(sid, shot_id, img["filename"], data)
             await self._emit(
-                shot_id, status="done", candidate=cand_path, selected=selected,
+                shot_id,
+                status="done",
+                candidate=cand_path,
+                selected=selected,
                 prompt=job["prompt"],
             )
             log.info(
@@ -375,9 +373,7 @@ class RenderSession:
         ext = Path(filename).suffix or ".png"
         return out_dir / f"shot_{shot_id}_cand_{cand_idx:02d}{ext}"
 
-    async def _commit_candidate(
-        self, sid: str, shot_id: int, filename: str, data: bytes
-    ) -> tuple[str, str]:
+    async def _commit_candidate(self, sid: str, shot_id: int, filename: str, data: bytes) -> tuple[str, str]:
         """落盘候选图 + 追加进 render_state（单次锁内读写，返回 (候选路径, 选定终图)）。
 
         合并原 _save_candidate/_append_candidate 的两次 render_state.load——锁内只读写各一次：
@@ -388,9 +384,7 @@ class RenderSession:
                 "chapter_id": self.chapter_id,
                 "shots": {},
             }
-            shot = data_state.setdefault("shots", {}).setdefault(
-                sid, {"storyboard_id": int(sid)}
-            )
+            shot = data_state.setdefault("shots", {}).setdefault(sid, {"storyboard_id": int(sid)})
             cands = shot.setdefault("candidates", [])
             dest = self._candidate_dest(shot_id, filename, len(cands))
             dest.write_bytes(data)
@@ -434,6 +428,7 @@ def _get_lock():
     global _session_lock
     if _session_lock is None:
         import asyncio
+
         _session_lock = asyncio.Lock()
     return _session_lock
 

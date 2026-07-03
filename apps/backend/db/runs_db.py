@@ -175,8 +175,7 @@ class RunsDB:
             raise RuntimeError("RunsDB not initialized. Use async context manager.")
         # chapter_id 可能为 None（如初始角色审阅无 chapter_id）；用 IS ? 兼容 NULL 匹配。
         async with self._conn.execute(
-            "SELECT COUNT(*) AS c FROM generation_events "
-            "WHERE run_id=? AND chapter_id IS ? AND stage=?",
+            "SELECT COUNT(*) AS c FROM generation_events WHERE run_id=? AND chapter_id IS ? AND stage=?",
             (run_id, chapter_id, stage),
         ) as cur:
             row = await cur.fetchone()
@@ -186,8 +185,7 @@ class RunsDB:
             "INSERT INTO generation_events "
             "(run_id, scope, chapter_id, stage, attempt, scheme_key, decision, feedback, "
             "output_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (run_id, scope, chapter_id, stage, attempt, scheme_key, decision, feedback,
-             output_json, now),
+            (run_id, scope, chapter_id, stage, attempt, scheme_key, decision, feedback, output_json, now),
         )
         await self._conn.commit()
         return attempt
@@ -196,9 +194,7 @@ class RunsDB:
         """返回某 run 的全部审阅事件，按发生顺序（id）排序。"""
         if self._conn is None:
             raise RuntimeError("RunsDB not initialized. Use async context manager.")
-        async with self._conn.execute(
-            "SELECT * FROM generation_events WHERE run_id=? ORDER BY id", (run_id,)
-        ) as cur:
+        async with self._conn.execute("SELECT * FROM generation_events WHERE run_id=? ORDER BY id", (run_id,)) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
@@ -271,15 +267,22 @@ class RunsDB:
                 "(scheme_key, stage, rule_text, status, source_feedback_sample, hits, "
                 "created_at, adopted_at) VALUES (?,?,?,?,?,?,?,?)",
                 (
-                    r["scheme_key"], r["stage"], r["rule_text"], r["status"],
-                    r.get("source_feedback_sample", ""), int(r.get("hits", 0)),
-                    now, adopted_at,
+                    r["scheme_key"],
+                    r["stage"],
+                    r["rule_text"],
+                    r["status"],
+                    r.get("source_feedback_sample", ""),
+                    int(r.get("hits", 0)),
+                    now,
+                    adopted_at,
                 ),
             )
         await self._conn.commit()
 
     async def list_rules(
-        self, scheme_key: str | None = None, stage: str | None = None,
+        self,
+        scheme_key: str | None = None,
+        stage: str | None = None,
         status: str | None = None,
     ) -> list[dict]:
         """按 scheme/stage/status 过滤列出规则（均可选）。"""
@@ -287,15 +290,16 @@ class RunsDB:
             raise RuntimeError("RunsDB not initialized. Use async context manager.")
         clauses, params = [], []
         if scheme_key is not None:
-            clauses.append("scheme_key=?"); params.append(scheme_key)
+            clauses.append("scheme_key=?")
+            params.append(scheme_key)
         if stage is not None:
-            clauses.append("stage=?"); params.append(stage)
+            clauses.append("stage=?")
+            params.append(stage)
         if status is not None:
-            clauses.append("status=?"); params.append(status)
+            clauses.append("status=?")
+            params.append(status)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        async with self._conn.execute(
-            f"SELECT * FROM learned_rules{where} ORDER BY id DESC", params
-        ) as cur:
+        async with self._conn.execute(f"SELECT * FROM learned_rules{where} ORDER BY id DESC", params) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
@@ -322,9 +326,7 @@ class RunsDB:
                 (status, now, rule_id),
             )
         else:
-            await self._conn.execute(
-                "UPDATE learned_rules SET status=? WHERE id=?", (status, rule_id)
-            )
+            await self._conn.execute("UPDATE learned_rules SET status=? WHERE id=?", (status, rule_id))
         await self._conn.commit()
 
     # ── 委派关系（delegations）CRUD ──────────────────────────────────────
@@ -367,8 +369,7 @@ class RunsDB:
         if self._conn is None:
             raise RuntimeError("RunsDB not initialized. Use async context manager.")
         async with self._conn.execute(
-            "SELECT * FROM delegations WHERE parent_run_id=? AND status='active' "
-            "ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM delegations WHERE parent_run_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
             (parent_run_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -378,9 +379,7 @@ class RunsDB:
         """返回所有 active 委派（重启恢复扫描用）。"""
         if self._conn is None:
             raise RuntimeError("RunsDB not initialized. Use async context manager.")
-        async with self._conn.execute(
-            "SELECT * FROM delegations WHERE status='active'"
-        ) as cur:
+        async with self._conn.execute("SELECT * FROM delegations WHERE status='active'") as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 

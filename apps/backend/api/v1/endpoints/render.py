@@ -3,8 +3,8 @@ from __future__ import annotations
 from urllib.parse import quote
 
 import services.graph_runner as runner
-import services.render_session as render_session
 import services.render_service as render_service
+import services.render_session as render_session
 from fastapi import APIRouter, HTTPException
 from novel2media import render_planning, render_state
 from novel2media_logging import get_logger
@@ -48,9 +48,7 @@ def _build_board(novel_dir: str, chapter_id: str) -> dict:
                 "subjects": shot.get("subjects", []),
                 "status": shot.get("status", "pending"),
                 "error": shot.get("error"),
-                "candidates": [
-                    {"path": c, "url": _file_url(c)} for c in cands
-                ],
+                "candidates": [{"path": c, "url": _file_url(c)} for c in cands],
                 "selected": selected,
                 "selected_url": _file_url(selected) if selected else None,
             }
@@ -124,9 +122,7 @@ async def _ensure_render_session(run_id: str, chapter_id: str | None = None):
             if item.get("chapter_id") == chapter_id:
                 storyboard = item.get("storyboard", [])
                 characters_profile: dict = state.get("characters_profile", {})
-                specs = render_planning.build_shot_specs(
-                    storyboard, characters_profile, meta.novel_dir
-                )
+                specs = render_planning.build_shot_specs(storyboard, characters_profile, meta.novel_dir)
                 log.info(
                     "_ensure_render_session: 从参数 chapter_id 恢复渲染会话",
                     run_id=run_id,
@@ -142,12 +138,14 @@ async def _ensure_render_session(run_id: str, chapter_id: str | None = None):
                 # 从 render_state 重建 specs：只需要 storyboard_id 和 prompt
                 specs = []
                 for sid, shot in data["shots"].items():
-                    specs.append({
-                        "storyboard_id": int(sid),
-                        "prompt": shot.get("prompt", ""),
-                        "workflow": shot.get("workflow", "qwen_t2i"),
-                        "ref_images": shot.get("ref_images", []),
-                    })
+                    specs.append(
+                        {
+                            "storyboard_id": int(sid),
+                            "prompt": shot.get("prompt", ""),
+                            "workflow": shot.get("workflow", "qwen_t2i"),
+                            "ref_images": shot.get("ref_images", []),
+                        }
+                    )
                 log.info(
                     "_ensure_render_session: 从 render_state 文件恢复渲染会话",
                     run_id=run_id,
@@ -185,6 +183,8 @@ async def _ensure_render_session(run_id: str, chapter_id: str | None = None):
             )
             for item in render_batch:
                 ch_id = item.get("chapter_id")
+                if not ch_id:
+                    continue
                 status = chapters_status.get(ch_id, "")
                 if status in ("rendering", "images_done", "audio_done", "rendered"):
                     chapter_id = ch_id
@@ -215,9 +215,7 @@ async def _ensure_render_session(run_id: str, chapter_id: str | None = None):
             state.get("characters_profile", {}) if isinstance(state, dict) else {},
             meta.novel_dir,
         )
-    return render_session.start_session(
-        run_id, meta.novel_dir, chapter_id, specs, runner.push_event
-    )
+    return render_session.start_session(run_id, meta.novel_dir, chapter_id, specs, runner.push_event)
 
 
 async def _get_render_context(run_id: str) -> tuple[str, str]:
@@ -272,7 +270,7 @@ async def reroll_shot(run_id: str, req: RerollRequest):
     try:
         session.enqueue_reroll(req.shot_id, req.prompt)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True}
 
 
@@ -299,7 +297,7 @@ async def select_candidate(run_id: str, req: SelectRequest):
     try:
         render_session.select_candidate(novel_dir, chapter_id, req.shot_id, req.candidate)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True}
 
 
@@ -320,7 +318,7 @@ async def get_render_chapters(run_id: str):
         chapters = await render_service.get_render_chapters(run_id)
         return {"chapters": chapters}
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/runs/{run_id}/render/chapter/{ch_id}/start")
@@ -336,7 +334,7 @@ async def start_chapter_render(run_id: str, ch_id: str, force_switch: bool = Fal
             raise HTTPException(status_code=409, detail=result.get("message"))
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/runs/{run_id}/render/chapter/{ch_id}/audio")
@@ -346,7 +344,7 @@ async def synthesize_audio(run_id: str, ch_id: str, req: AudioRequest):
         result = await render_service.synthesize_audio(run_id, ch_id, req.model_dump())
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/runs/{run_id}/render/chapter/{ch_id}/audio")
@@ -356,7 +354,7 @@ async def get_audio_status(run_id: str, ch_id: str):
         result = await render_service.get_audio_status(run_id, ch_id)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/runs/{run_id}/render/chapter/{ch_id}/timeline")
@@ -366,7 +364,7 @@ async def build_chapter_timeline(run_id: str, ch_id: str):
         result = await render_service.build_chapter_timeline(run_id, ch_id)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/runs/{run_id}/render/chapter/{ch_id}/timeline")
@@ -376,7 +374,7 @@ async def get_chapter_timeline(run_id: str, ch_id: str):
         result = await render_service.get_chapter_timeline(run_id, ch_id)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/runs/{run_id}/render/export")
@@ -386,7 +384,7 @@ async def export_draft(run_id: str):
         result = await render_service.export_draft(run_id)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/runs/{run_id}/render/chapter/{ch_id}/preview")
@@ -397,7 +395,6 @@ async def get_render_preview(run_id: str, ch_id: str):
     返回每个换图点的 storyboard_id、workflow、prompt、subjects 等规格信息，
     但不包含候选图（除非已有 render_state 文件）。
     """
-    import services.render_service as render_service
 
     meta = await runner.get_run(run_id)
     if meta is None:

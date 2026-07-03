@@ -42,7 +42,8 @@ def get_llm(temperature: float = 0.8, *, json_mode: bool = False, max_tokens: in
     return ChatOpenAI(
         model=os.environ.get("ARK_MODEL", "doubao-seed-2.0-lite"),
         temperature=temperature,
-        max_tokens=max_tokens,
+        # langchain_openai 运行时接受 max_tokens（透传底层 openai SDK），仅类型桩未声明，故忽略误报
+        max_tokens=max_tokens,  # type: ignore[reportCallIssue]
         api_key=SecretStr(api_key),
         base_url=os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
         # 单次请求超时（秒）。缺省 600s（10 分钟）：兜住 ARK 静默挂起——无超时时

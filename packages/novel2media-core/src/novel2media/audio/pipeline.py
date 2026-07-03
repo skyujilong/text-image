@@ -77,7 +77,7 @@ class AudioPipeline:
         combined: PydubSeg | None = None
         prev_speaker: str | None = None
 
-        for b64, speaker in zip(audio_b64_list, speakers):
+        for b64, speaker in zip(audio_b64_list, speakers, strict=False):
             wav_bytes = base64.b64decode(b64)
             seg = PydubSeg.from_wav(io.BytesIO(wav_bytes))
             if combined is None:

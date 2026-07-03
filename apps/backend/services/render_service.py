@@ -9,9 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from novel2media_logging import get_logger
-
 import services.graph_runner as runner
+from novel2media_logging import get_logger
 
 log = get_logger("render_service")
 from novel2media import render_state
@@ -57,23 +56,23 @@ async def get_render_chapters(run_id: str) -> list[dict]:
         storyboard = item.get("storyboard", [])
         script = item.get("script", [])
         members = chapter_groups.get(ch_id) or []
-        ch_text_path = (
-            str(Path(novel_dir) / "chapters" / f"{members[0]}.txt") if members else ""
-        )
+        ch_text_path = str(Path(novel_dir) / "chapters" / f"{members[0]}.txt") if members else ""
         # 人读标签「第A-B章」/「第X章」；组信息缺失时置空（前端已有 groupLabel，忽略多余字段）。
         label = group_label(members) if members else ""
         has_script = bool(script)
         has_storyboard = bool(storyboard)
-        chapters.append({
-            "chapter_id": ch_id,
-            "status": chapters_status.get(ch_id, "pending"),
-            "has_script": has_script,
-            "has_storyboard": has_storyboard,
-            "storyboard_count": len(storyboard),
-            "chapter_text_path": ch_text_path,
-            "label": label,
-            "storyboard": storyboard,
-        })
+        chapters.append(
+            {
+                "chapter_id": ch_id,
+                "status": chapters_status.get(ch_id, "pending"),
+                "has_script": has_script,
+                "has_storyboard": has_storyboard,
+                "storyboard_count": len(storyboard),
+                "chapter_text_path": ch_text_path,
+                "label": label,
+                "storyboard": storyboard,
+            }
+        )
     return chapters
 
 
@@ -113,9 +112,7 @@ async def start_chapter_render(run_id: str, chapter_id: str, force_switch: bool 
 
     specs = render_generate_images(novel_dir, chapter_id, storyboard, characters_profile)
 
-    render_session.start_session(
-        run_id, novel_dir, chapter_id, specs, runner.push_event
-    )
+    render_session.start_session(run_id, novel_dir, chapter_id, specs, runner.push_event)
 
     # 更新章节状态为 rendering，确保刷新页面后渲染看板仍可见
     chapters_status[chapter_id] = "rendering"
@@ -156,9 +153,8 @@ async def synthesize_audio(run_id: str, chapter_id: str, audio_config: dict | No
     # 同步合成函数放到线程池执行，避免阻塞 FastAPI 事件循环
     # TTS 合成可能需要几十秒，直接在 async 函数里调用会卡死整个服务器
     import asyncio
-    result = await asyncio.to_thread(
-        render_synthesize_audio, novel_dir, chapter_id, script, audio_config
-    )
+
+    result = await asyncio.to_thread(render_synthesize_audio, novel_dir, chapter_id, script, audio_config)
 
     # 更新章节状态为 audio_done，并保存产物路径
     chapters_status[chapter_id] = "audio_done"

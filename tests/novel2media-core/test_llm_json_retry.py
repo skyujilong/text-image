@@ -12,7 +12,6 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
-
 from novel2media.llm import invoke_llm_json_array
 
 
@@ -62,9 +61,7 @@ def test_length_truncation_skips_l2_repair(monkeypatch):
     """
     truncated = '[{"a":1},{"b":'  # 截断，json-repair 会脑补成 [{"a":1},{"b":""}]
     good = [{"a": 1}, {"b": 2}]
-    mock = MagicMock(
-        side_effect=[_msg(truncated, finish_reason="length"), _msg(json.dumps(good))]
-    )
+    mock = MagicMock(side_effect=[_msg(truncated, finish_reason="length"), _msg(json.dumps(good))])
     monkeypatch.setattr("novel2media.llm.invoke_llm", mock)
 
     result = invoke_llm_json_array("p", node="n")
