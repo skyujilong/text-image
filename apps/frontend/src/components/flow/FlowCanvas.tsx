@@ -129,11 +129,12 @@ function useAutoScope(graphScope: string, setGraphScope: (s: 'main' | 'plan') =>
 }
 
 /**
- * 自动下钻跟随运行：当 autoFollow 开启时，根据全局 nodeStatuses 选出最深活跃节点，
- * 把 drillPath 对齐到其祖先 subgraph 路径，从而自动进入正在运行的子图。
+ * 自动跟随运行（双向）：autoFollow 开启时，在当前 graphScope 内选出最深活跃节点，
+ * 把 drillPath 对齐到其祖先 subgraph 路径 —— 活跃节点在子图内则下钻进该子图，
+ * 回到本 scope 顶层（如 character_setup 子图跑完进 generate_storyboard）则退回父图（drillPath=[]）。
  * - waiting_human 强优先（+1000），其次按 statusKey 段数深优先，避开祖先传播的虚假活跃。
- * - 仅当活跃节点位于子图内部（desiredDrill 非空）才主动下钻；顶层活跃不强制拉回，
- *   避免子图间过渡时在顶层与子图间反复闪烁。
+ * - 只跟随当前 graphScope 的活跃节点：委派后 main/run_plan_stage 永驻 running，
+ *   不按 scope 过滤会在 plan scope 下被跨 scope 节点干扰抢分。
  * - 用户手动 pushDrill/popDrill 会关 autoFollow，本 hook 即停手；setDrillPath 不改 autoFollow。
  * - scope tab 切换由 useAutoScope 独立处理，本 hook 仅负责 drill path 跟随。
  */
@@ -141,6 +142,7 @@ function useAutoFollow() {
   const nodeStatuses = useRunStore((s) => s.nodeStatuses)
   const drillPath = useRunStore((s) => s.drillPath)
   const autoFollow = useRunStore((s) => s.autoFollow)
+  const graphScope = useRunStore((s) => s.graphScope)
   const setDrillPath = useRunStore((s) => s.setDrillPath)
 
   useEffect(() => {
@@ -149,6 +151,9 @@ function useAutoFollow() {
     let bestScore = -1
     for (const [key, st] of Object.entries(nodeStatuses)) {
       if (st !== 'running' && st !== 'waiting_human') continue
+      // 只跟随当前 scope 的活跃节点（委派后 main/run_plan_stage 永驻 running，
+      // 不过滤会在 plan scope 下被跨 scope 节点抢分）
+      if (key.split('/')[0] !== graphScope) continue
       const depth = key.split('/').length
       const score = (st === 'waiting_human' ? 1000 : 0) + depth
       if (score > bestScore) {
@@ -157,13 +162,14 @@ function useAutoFollow() {
       }
     }
     if (!bestKey) return
-    // bestKey 格式为 "scope/subgraph_id/.../node_name"，drillPath 应跳过首段 scope
+    // bestKey 格式为 "scope/subgraph_id/.../node_name"，drillPath 应跳过首段 scope。
+    // desiredDrill 为空 = 活跃节点回到本 scope 顶层 → 对齐到 [] 即自动退回父图
+    // （修复：角色设定子图跑完进 generate_storyboard 后视图卡在子图内）。
     const desiredDrill = bestKey.split('/').slice(1, -1)
-    if (desiredDrill.length === 0) return
     if (drillPath.join('/') !== desiredDrill.join('/')) {
       setDrillPath(desiredDrill)
     }
-  }, [nodeStatuses, drillPath, autoFollow, setDrillPath])
+  }, [nodeStatuses, drillPath, autoFollow, graphScope, setDrillPath])
 }
 
 /** scope 标签。 */
