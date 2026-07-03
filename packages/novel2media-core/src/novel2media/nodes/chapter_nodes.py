@@ -376,10 +376,16 @@ def generate_storyboard(state: dict) -> dict:
             log.warning("generate_storyboard: 换图点缺少画面生成结果", chapter=ch_id, sid=sid)
             continue
         subjects = shot.get("subjects", [])
-        entry["subjects"] = subjects
         if isinstance(subjects, list) and len(subjects) > 2:
-            # subjects 是后续生图按名取参考图的依据；当前只记录 LLM 违规，不裁剪不伪装成功。
-            log.warning("generate_storyboard: 主体角色超 2 人（违反一致性上限）", chapter=ch_id, sid=sid, subjects=subjects)
+            # 硬约束兜底：下游图生图最多 2 个参考角色，列 3 个渲染必报错。prompt 侧已要求
+            # 「≥3 人 subjects=[]」，这里对漏网结果截断到前 2 个保证渲染不崩，并记录违规暴露
+            # （理想情况应由 LLM 拆镜/群像处理，而非在此裁剪）。
+            log.warning(
+                "generate_storyboard: 主体角色超 2 人，已截断至前 2（图生图参考图上限）",
+                chapter=ch_id, sid=sid, subjects=subjects,
+            )
+            subjects = subjects[:2]
+        entry["subjects"] = subjects
         raw_prompt = (shot.get("scene_prompt") or "").strip()
         if not raw_prompt:
             # 换图点拿到结果但画面描述为空：记录暴露，不拼成只有触发词的退化 prompt 蒙混生图
