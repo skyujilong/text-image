@@ -38,7 +38,7 @@ def _mock_llm_sequence(monkeypatch, payloads):
         resp.content = json.dumps(next(calls), ensure_ascii=False)
         return resp
 
-    monkeypatch.setattr("novel2media.nodes.chapter_nodes.invoke_llm", _invoke_llm)
+    monkeypatch.setattr("novel2media.llm.invoke_llm", _invoke_llm)
     return _invoke_llm
 
 

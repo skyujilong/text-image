@@ -249,7 +249,7 @@ def _mock_llm(monkeypatch, payload):
     """mock chapter_nodes.invoke_llm（llm.py 统一封装）；返回带 .content 的对象，并记录调用入参 prompt。"""
     mock = MagicMock()
     mock.return_value = MagicMock(content=json.dumps(payload, ensure_ascii=False))
-    monkeypatch.setattr("novel2media.nodes.chapter_nodes.invoke_llm", mock)
+    monkeypatch.setattr("novel2media.llm.invoke_llm", mock)
     return mock
 
 
@@ -260,7 +260,7 @@ def _mock_llm_steps(monkeypatch, payloads):
     """
     mock = MagicMock()
     mock.side_effect = [MagicMock(content=json.dumps(p, ensure_ascii=False)) for p in payloads]
-    monkeypatch.setattr("novel2media.nodes.chapter_nodes.invoke_llm", mock)
+    monkeypatch.setattr("novel2media.llm.invoke_llm", mock)
     return mock
 
 
@@ -546,7 +546,7 @@ def test_adapt_script_raises_on_malformed_llm_output(tmp_path, monkeypatch):
     state = _make_chapter_state(tmp_path)
     mock = MagicMock()
     mock.return_value = MagicMock(content="这不是JSON")
-    monkeypatch.setattr("novel2media.nodes.chapter_nodes.invoke_llm", mock)
+    monkeypatch.setattr("novel2media.llm.invoke_llm", mock)
     try:
         adapt_script(state)
     except ValueError:

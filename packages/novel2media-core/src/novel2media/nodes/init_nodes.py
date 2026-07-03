@@ -8,8 +8,7 @@ from novel2media.chapters import (
     chapter_pad_width,
     chapter_sort_key,
 )
-from novel2media.llm import invoke_llm
-from novel2media.prompts._parse import parse_json_array
+from novel2media.llm import invoke_llm_json_array
 from novel2media.prompts.init_prompts import build_parse_initial_characters_prompt
 from novel2media.prompts.narration_schemes import (
     DEFAULT_SCHEME_KEY,
@@ -212,8 +211,7 @@ def parse_characters_llm(state: dict) -> dict:
 
     feedback = state.get("_init_characters_feedback", "") or ""
     prompt = build_parse_initial_characters_prompt(raw, state.get("worldview", ""), feedback)
-    resp = invoke_llm(prompt, node="parse_characters_llm", json_mode=True)
-    parsed = parse_json_array(resp)  # [{name, appearance, tri_view_prompt}]
+    parsed = invoke_llm_json_array(prompt, node="parse_characters_llm")  # [{name, appearance, tri_view_prompt}]
 
     seen: set[str] = set()
     for c in parsed:

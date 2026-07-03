@@ -15,8 +15,7 @@ import asyncio
 
 import services.graph_runner as runner
 from fastapi import APIRouter, HTTPException
-from novel2media.llm import invoke_llm
-from novel2media.prompts._parse import parse_json_array
+from novel2media.llm import invoke_llm_json_array
 from novel2media.prompts.narration_schemes import NARRATION_SCHEMES, get_scheme
 from novel2media.prompts.rule_synthesis import build_rule_synthesis_prompt
 from pydantic import BaseModel
@@ -85,11 +84,10 @@ async def propose(req: ProposeRequest) -> dict:
     prompt = build_rule_synthesis_prompt(
         req.stage, scheme.label, feedbacks, base_template, active_texts
     )
-    # invoke_llm 是同步调用，丢线程池避免阻塞事件循环
-    resp = await asyncio.to_thread(
-        invoke_llm, prompt, node="rule_synthesis", label="rule_synthesis", json_mode=True
-    )
-    parsed = parse_json_array(resp)  # [{"rule","source"}]
+    # invoke_llm_json_array 是同步调用（内含解析+带反馈重试），丢线程池避免阻塞事件循环
+    parsed = await asyncio.to_thread(
+        invoke_llm_json_array, prompt, node="rule_synthesis", label="rule_synthesis"
+    )  # [{"rule","source"}]
 
     candidates: list[dict] = []
     for item in parsed:

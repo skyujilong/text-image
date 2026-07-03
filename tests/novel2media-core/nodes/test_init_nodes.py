@@ -23,7 +23,7 @@ def _mock_llm(monkeypatch, payload):
     """mock init_nodes.invoke_llm（llm.py 统一封装）；返回带 .content 的对象，并记录调用入参 prompt。"""
     mock = MagicMock()
     mock.return_value = MagicMock(content=json.dumps(payload, ensure_ascii=False))
-    monkeypatch.setattr("novel2media.nodes.init_nodes.invoke_llm", mock)
+    monkeypatch.setattr("novel2media.llm.invoke_llm", mock)
     return mock
 
 
@@ -269,7 +269,7 @@ def test_parse_characters_llm_passes_review_feedback_to_prompt(tmp_path, monkeyp
 def test_parse_characters_llm_empty_text_skips_llm(tmp_path, monkeypatch):
     """空 character_profiles → 不调 LLM，直接返回空 pending。"""
     mock = MagicMock()
-    monkeypatch.setattr("novel2media.nodes.init_nodes.invoke_llm", mock)
+    monkeypatch.setattr("novel2media.llm.invoke_llm", mock)
     result = parse_characters_llm({"character_profiles": "", "worldview": ""})
     assert result["pending_new_characters"] == []
     mock.assert_not_called()  # 空 textarea 不调 LLM

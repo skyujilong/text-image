@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from novel2media.prompts._parse import parse_json_array
+from novel2media.prompts._parse import parse_json_array, repair_json_array
 
 
 def test_parse_json_array_strips_code_fence():
@@ -47,3 +47,41 @@ def test_parse_json_array_error_includes_nearby_excerpt():
         assert "坏掉的标题" in msg
         return
     raise AssertionError("应抛 ValueError（JSON 字符串内部双引号未转义）")
+
+
+# --- L2 确定性修复 repair_json_array ---
+
+
+def test_repair_fixes_inner_double_quotes():
+    """真实踩过的坑：字符串值里混入英文双引号（半块绣"林"字）→ 无损转义成合法数组。"""
+    bad = '[{"action":"半块绣"林"字的藏青帕", "speaker":"旁白"}]'
+    result = repair_json_array(bad)
+    assert isinstance(result, list) and len(result) == 1
+    assert result[0]["speaker"] == "旁白"
+    # 内嵌引号作为内容保留下来，不丢字
+    assert "半块绣" in result[0]["action"] and "藏青帕" in result[0]["action"]
+
+
+def test_repair_fixes_trailing_and_missing_commas():
+    """尾随逗号 / 对象间漏逗号等常见语法崩就地补好。"""
+    assert repair_json_array('[{"a":1},{"b":2},]') == [{"a": 1}, {"b": 2}]
+    assert repair_json_array('[{"a":1}{"b":2}]') == [{"a": 1}, {"b": 2}]
+
+
+def test_repair_accepts_aimessage():
+    """兼容 AIMessage（取 .content）。"""
+    msg = MagicMock()
+    msg.content = '[{"text":"夜色"该"降临"}]'  # 内嵌双引号
+    result = repair_json_array(msg)
+    assert isinstance(result, list) and "夜色" in result[0]["text"]
+
+
+def test_repair_returns_none_on_plain_text():
+    """纯文本 / 无 JSON（如「服务繁忙」类回复）→ 修不出数组，返回 None 交上层重试。"""
+    assert repair_json_array("服务器繁忙，请稍后重试") is None
+    assert repair_json_array("") is None
+
+
+def test_repair_returns_none_on_object_not_array():
+    """输出是 JSON 对象而非数组 → 结构不符，返回 None（不把 dict 当数组混过去）。"""
+    assert repair_json_array('{"a":1}') is None

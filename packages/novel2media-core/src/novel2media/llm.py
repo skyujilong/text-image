@@ -4,9 +4,9 @@ import os
 import time
 
 from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
-
+from novel2media.prompts._parse import parse_json_array, repair_json_array
 from novel2media_logging import get_logger
+from pydantic import SecretStr
 
 log = get_logger("llm")
 
@@ -19,10 +19,14 @@ def get_llm(temperature: float = 0.8, *, json_mode: bool = False, max_tokens: in
     408/409/429/5xx，故超时/瞬态网络错误/限流都会重试；显式设避免依赖 SDK 隐式默认值。
     注意时间账：worst case ≈ timeout × (1 + max_retries)。
 
-    json_mode=True 时开启 OpenAI json_object 响应格式：服务端在解码层保证输出为
-    合法 JSON，消除「漏引号/漏逗号」等语法崩（adapt_script 等长 JSON 输出实测会偶发）。
+    json_mode=True 时开启 OpenAI json_object 响应格式：让服务端倾向输出合法 JSON，压低
+    「漏引号/漏逗号」等语法崩频率（adapt_script 等长 JSON 输出实测会偶发）。注意这是软保证
+    而非硬约束——doubao-seed-2.0-lite 的 json_object 非 token 级约束解码，仍会偶发漏出非法
+    JSON（实测最典型：字符串值里混入未转义的英文双引号，如 半块绣"林"字），故上层必须再兜
+    一层解析容错（见 invoke_llm_json_array 的 L2 确定性修复 + L3 带反馈重试）。
     - 仅用 json_object，不用 json_schema：ARK doubao-seed-2.0-lite 实测忽略 json_schema
-      约束（返回结构与 schema 不符），故只取真正生效的 json_object 档。
+      约束（返回结构与 schema 不符），故只取真正生效的 json_object 档。真·约束解码（采样时
+      屏蔽非法 token，从根上杜绝语法崩）需换支持 strict json_schema 的端点/模型才有。
     - 协议硬要求：开启后 prompt 必须含 "json" 字样，否则 ARK 拒绝请求。调用方
       （adapt_script/角色解析等 JSON 类 prompt）均已在正文声明，满足。
     - 不保证字段结构正确，也兜不住 finish_reason=length 截断——那是拆短输出的职责。
@@ -121,3 +125,100 @@ def invoke_llm(
         response_chars=len(getattr(resp, "content", "") or ""),
     )
     return resp
+
+
+def _build_json_repair_prompt(bad_output: str, error: str) -> str:
+    """构造 JSON 修复 prompt：告知上次输出非法 + 具体解析错误 + 常见成因，要求重输合法数组。
+
+    只带「上一版非法输出 + 报错」做纯语法纠错，不重发原始任务 prompt——修复主要靠模型把
+    自己已生成的内容改成合法 json，省 token 也更聚焦。含 "json" 字样以满足 ARK json_object
+    模式的协议要求。
+    """
+    return f"""你上一次的输出不是合法的 json，无法解析，请修正后重新输出。
+
+解析报错：{error}
+
+最常见原因（对照自查后修正）：
+1. 字符串内容里混入了英文双引号 "（例如把「绣"林"字」直接写进了值里）——字符串值内严禁英文双引号；需要引用文字时改用中文引号「」或书名号《》。
+2. 对象之间漏了英文逗号，或最后一个元素后多了尾随逗号。
+3. 字段名或字符串没有用英文双引号包裹，或字符串内部有换行。
+
+要求：严格输出合法的 json 数组（最外层只能是 []），字段结构与上次保持一致；只输出 json 本身，不要 markdown 代码块、不要任何解释文字。
+
+你上一次的（非法）输出如下，请在此基础上仅修正 JSON 语法后重新输出：
+{bad_output}
+"""
+
+
+def invoke_llm_json_array(
+    prompt: str,
+    *,
+    node: str,
+    label: str | None = None,
+    temperature: float = 0.8,
+    max_parse_retries: int = 2,
+) -> list:
+    """调用 LLM 并把输出解析为 JSON 数组；两级容错：先本地确定性修复，修不动再带反馈重试。
+
+    为什么需要：json_object 模式偶尔仍漏出非法 JSON（最常见是字符串值里混入英文双引号，
+    如「绣"林"字」）。这类是内容层语法错、不是网络/超时，openai SDK 内建重试兜不住，
+    parse_json_array 会直接抛 ValueError。分两层兜：
+
+    - L2 确定性修复（省 LLM 往返）：parse 失败后先试 repair_json_array，用 json-repair
+      就地转义/补全常见语法崩（内嵌双引号、尾/漏逗号、单引号等），0 延迟 0 token。修得出
+      非空数组就直接返回，绝大多数「输出完整但语法有瑕」在此了结、不再调 LLM。
+      例外：finish_reason=length 截断时跳过本层——截断产物会被 json-repair 脑补成残缺
+      数据，宁可交给下一层重新生成，也不拿脑补数据伪装成功。
+    - L3 带反馈重试（兜底）：L2 也修不动时，把「上一版非法输出 + 具体解析错误 + 修正规则」
+      拼成修复 prompt 再调 LLM，最多重试 max_parse_retries 次；全部失败才抛最后一次错误，
+      不静默吞。
+
+    - json_mode 恒开（本函数只服务 JSON 数组类输出）。
+    - 首次调用用传入 temperature；后续修复调用降到 0.3，减少「越改越飞」、倾向忠实纠错。
+    - finish_reason=length 截断类失败重试也修不好（那是拆短输出的职责），此处会重试到
+      耗尽再抛，把错误暴露给调用方。
+    """
+    attempt_prompt = prompt
+    attempt_temp = temperature
+    last_error: ValueError | None = None
+    for attempt in range(max_parse_retries + 1):
+        resp = invoke_llm(
+            attempt_prompt,
+            node=node,
+            label=label,
+            temperature=attempt_temp,
+            json_mode=True,
+        )
+        try:
+            return parse_json_array(resp)
+        except ValueError as err:
+            last_error = err
+            raw = str(getattr(resp, "content", "") or "")
+            # L2：非截断输出先试 0 成本确定性修复；截断产物不可信，跳过直接走重试。
+            finish_reason = (getattr(resp, "response_metadata", None) or {}).get("finish_reason")
+            if finish_reason != "length":
+                repaired = repair_json_array(resp)
+                if repaired is not None:
+                    log.info(
+                        "invoke_llm_json_array.repaired",
+                        node=node,
+                        label=label,
+                        attempt=attempt + 1,
+                        items=len(repaired),
+                        response_chars=len(raw),
+                    )
+                    return repaired
+            log.warning(
+                "invoke_llm_json_array.parse_failed",
+                node=node,
+                label=label,
+                attempt=attempt + 1,
+                max_attempts=max_parse_retries + 1,
+                error=str(err),
+                response_chars=len(raw),
+                finish_reason=finish_reason,
+            )
+            attempt_prompt = _build_json_repair_prompt(raw, str(err))
+            attempt_temp = 0.3
+    assert last_error is not None
+    raise last_error

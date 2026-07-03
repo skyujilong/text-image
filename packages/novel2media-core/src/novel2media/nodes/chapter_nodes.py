@@ -11,9 +11,8 @@ from novel2media.chapters import (
     group_id_for,
     read_group_text,
 )
-from novel2media.llm import invoke_llm
+from novel2media.llm import invoke_llm_json_array
 from novel2media.nodes.init_nodes import _REQUIRED_CHAR_FIELDS
-from novel2media.prompts._parse import parse_json_array
 from novel2media.prompts.chapter_prompts import (
     _SCENE_STYLE_TRIGGER,
     build_adapt_script_prompt,
@@ -228,8 +227,7 @@ def adapt_script(state: dict) -> dict:
         worldview=state.get("worldview", ""),
         learned_rules=learned_rules_text.get("adapt_script", ""),
     )
-    resp = invoke_llm(prompt, node="adapt_script", label="adapt_script", json_mode=True)
-    script = parse_json_array(resp)  # [{"text","action","speaker"}]
+    script = invoke_llm_json_array(prompt, node="adapt_script", label="adapt_script")  # [{"text","action","speaker"}]
 
     # feedback 记录原文（便于核对 revise 意见是否真拼进 prompt）
     log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=feedback)
@@ -310,8 +308,7 @@ def generate_storyboard(state: dict) -> dict:
         template=narration_templates.get("scene_change"),
         learned_rules=learned_rules_text.get("scene_change", ""),
     )
-    sc_resp = invoke_llm(sc_prompt, node="generate_storyboard", label="storyboard_scene_change", json_mode=True)
-    raw_indices = parse_json_array(sc_resp)
+    raw_indices = invoke_llm_json_array(sc_prompt, node="generate_storyboard", label="storyboard_scene_change")
     n_script = len(script)
     # 输出已从「等长布尔数组」改为「换图点下标列表」：模型不再需要逐条铺满 N 个 bool，
     # 从根上消除「数组长度对不上」的崩溃。这里只校验下标合法性（整数、在范围内），
@@ -350,10 +347,9 @@ def generate_storyboard(state: dict) -> dict:
         prompt = build_scene_prompt_for_shots(
             batch, chapter_text, characters_profile, feedback, batch_info=batch_info, worldview=worldview
         )
-        resp = invoke_llm(
-            prompt, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]", json_mode=True
+        return invoke_llm_json_array(
+            prompt, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]"
         )
-        return parse_json_array(resp)
 
     # 收集所有批次的 {anchor_id -> {subjects, scene_prompt}}；任一批抛错经 result() 重新抛出（不吞错）
     results: list[list[dict]] = []
@@ -432,8 +428,7 @@ def detect_new_characters_llm(state: dict) -> dict:
     existing_names = set(state.get("characters_profile", {}).keys())
 
     prompt = build_detect_new_characters_prompt(chapter_text, existing_names, worldview=state.get("worldview", ""))
-    resp = invoke_llm(prompt, node="detect_new_characters_llm", label="detect_new_characters", json_mode=True)
-    detected = parse_json_array(resp)  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn"}]
+    detected = invoke_llm_json_array(prompt, node="detect_new_characters_llm", label="detect_new_characters")  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn"}]
 
     # 校验六字段（与 init parse_characters_llm 同一真相），剔除已知角色后写 setup_queue
     validated: list[dict] = []
