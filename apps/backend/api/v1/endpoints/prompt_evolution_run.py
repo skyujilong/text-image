@@ -39,6 +39,18 @@ class MergeRequest(BaseModel):
     also_global: bool = True
 
 
+class RemoveRequest(BaseModel):
+    """还原入参。rule_stage 直接是规则 stage（adapt_script | scene_change），
+    非面板 type——因还原可从 /prompts 检视页（按规则 stage 组织）触发，非只审阅面板。"""
+
+    rule_stage: str
+    rules: list[str] | None = None  # None/空 → 清空该 stage 全部；否则移除命中文本
+
+
+# 规则 stage 白名单（remove / run-rules 以规则 stage 直接入参，区别于 analyze/merge 用面板 type）。
+_RULE_STAGES = frozenset(_PANEL_TYPE_TO_RULE_STAGE.values())
+
+
 def _rule_stage(panel_type: str) -> str:
     """面板 type → 规则 stage，未知抛 400。"""
     rule_stage = _PANEL_TYPE_TO_RULE_STAGE.get(panel_type)
@@ -46,6 +58,16 @@ def _rule_stage(panel_type: str) -> str:
         raise HTTPException(
             status_code=400,
             detail=f"未知 stage: {panel_type}（应为 script_review/storyboard_review）",
+        )
+    return rule_stage
+
+
+def _validate_rule_stage(rule_stage: str) -> str:
+    """校验规则 stage（adapt_script / scene_change），未知抛 400。"""
+    if rule_stage not in _RULE_STAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知 rule_stage: {rule_stage}（应为 {'/'.join(sorted(_RULE_STAGES))}）",
         )
     return rule_stage
 
@@ -144,3 +166,31 @@ async def merge(run_id: str, req: MergeRequest) -> dict:
         global_candidates = len(cleaned)
 
     return {"ok": True, "merged": len(cleaned), "global_candidates": global_candidates}
+
+
+@router.get("/runs/{run_id}/prompt-evolution/run-rules")
+async def run_rules(run_id: str, stage: str) -> dict:
+    """本 run 已合并进提示词的校正规则（供「还原」UI 展示）。stage 为规则 stage（adapt_script/scene_change）。"""
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    rule_stage = _validate_rule_stage(stage)
+    state_values = await runner.get_run_state_values(run_id)
+    run_local = state_values.get("run_learned_rules") or {}
+    return {"stage": rule_stage, "rules": list(run_local.get(rule_stage, []))}
+
+
+@router.post("/runs/{run_id}/prompt-evolution/remove")
+async def remove(run_id: str, req: RemoveRequest) -> dict:
+    """还原：从本 run 移除已合并的校正规则（rules=None/空 → 清空该阶段全部），两线程写、即时生效。
+
+    只动本 run 提示词；不触碰当初可能写入的全局候选（那在提示词进化台独立管理，去那儿 reject）。
+    """
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    rule_stage = _validate_rule_stage(req.rule_stage)
+    removed = await runner.remove_run_learned_rules(run_id, rule_stage, req.rules)
+    return {"ok": True, "removed": removed}

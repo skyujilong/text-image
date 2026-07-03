@@ -245,6 +245,12 @@ export interface RunProposeResult {
   message: string
 }
 
+/** 本 run 已合并进提示词的校正规则（GET /runs/{run_id}/prompt-evolution/run-rules）。 */
+export interface RunRulesResult {
+  stage: RuleStage
+  rules: string[]
+}
+
 /** 内置题材方案（GET /prompt-evolution/schemes）。 */
 export interface SchemeOption {
   key: string
@@ -481,4 +487,15 @@ export const api = {
         body: JSON.stringify({ stage: panelType, rules, also_global: alsoGlobal }),
       },
     ),
+
+  /** 本 run 某规则阶段已合并进提示词的校正规则（供「还原」展示）。ruleStage 为规则 stage。 */
+  getRunRules: (runId: string, ruleStage: RuleStage) =>
+    request<RunRulesResult>(`/runs/${runId}/prompt-evolution/run-rules?stage=${ruleStage}`),
+
+  /** 还原：从本 run 移除已合并的校正规则；rules=null 清空该阶段全部。不触碰全局候选。 */
+  removeRunRules: (runId: string, ruleStage: RuleStage, rules: string[] | null) =>
+    request<{ ok: boolean; removed: number }>(`/runs/${runId}/prompt-evolution/remove`, {
+      method: 'POST',
+      body: JSON.stringify({ rule_stage: ruleStage, rules }),
+    }),
 }

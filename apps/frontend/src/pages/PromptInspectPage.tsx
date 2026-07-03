@@ -11,6 +11,7 @@ import {
 import { useRunStore } from '@/store/runStore'
 import { cn } from '@/lib/utils'
 import TemplateDiff from '@/components/prompt/TemplateDiff'
+import MergedRunRules from '@/components/prompt/MergedRunRules'
 
 // 阶段（模块）中文标签。
 const STAGE_LABEL: Record<EvolutionStage, string> = {
@@ -138,6 +139,26 @@ export default function PromptInspectPage() {
                   <TemplateDiff before={config.defaults[key]} after={config.templates[key]} />
                 </div>
               ))}
+            </section>
+
+            {/* 本 run 已合并的校正规则（可还原） */}
+            <section className="space-y-4">
+              <div>
+                <h2 className="text-base font-semibold text-foreground">本 run 已合并的校正规则</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  审阅面板归纳合并进本 run 提示词的校正规则（注入 %%LEARNED_RULES%% 槽，上方对比不含）。逐条移除或一键清空即可还原。
+                </p>
+              </div>
+              {(['adapt_script', 'scene_change'] as const).map((key) =>
+                runId ? (
+                  <MergedRunRules
+                    key={key}
+                    runId={runId}
+                    ruleStage={key}
+                    label={TEMPLATE_LABEL[key]}
+                  />
+                ) : null,
+              )}
             </section>
 
             {/* 审阅记录 */}

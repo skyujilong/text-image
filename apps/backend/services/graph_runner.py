@@ -847,6 +847,67 @@ async def merge_run_learned_rules(run_id: str, rule_stage: str, new_rules: list[
     )
 
 
+async def remove_run_learned_rules(
+    run_id: str, rule_stage: str, rules: list[str] | None
+) -> int:
+    """提示词自进化 · 环②③ run 内版「还原」：从本 run 的 run_learned_rules[rule_stage] 移除校正规则，
+    与全局 active 规则并集重渲染 learned_rules_text，写回**主图 + 活跃 plan 子 thread** 两处（与 merge 对称）。
+
+    rules 为 None 或空 → 清空该 stage 全部；否则按文本精确匹配移除其中命中的条目。
+    只动本 run 的 run_local；全局 active 种子规则绝不删（重渲染时仍从台账载入保留）。
+    若当初 merge 勾了 also_global 写过全局候选，那是进化台独立台账，此处不触碰。
+    返回实际移除条数（0 表示无变化，不写 state）。rule_stage 为规则 stage（adapt_script / scene_change）。
+    """
+    if _main_graph is None or _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+
+    # 1. 主图 state：读累积真源 run_learned_rules（各 stage 列表拷贝，勿就地改 state）
+    main_shared = await get_run_state_values(run_id)
+    scheme_key = main_shared.get("narration_scheme")
+    run_local: dict[str, list[str]] = {
+        k: list(v) for k, v in (main_shared.get("run_learned_rules") or {}).items()
+    }
+    existing = run_local.get(rule_stage, [])
+    if not existing:
+        return 0
+
+    # 2. 计算保留清单：rules 空 → 清空该 stage；否则移除命中文本
+    if rules:
+        to_remove = {t.strip() for t in rules if t and t.strip()}
+        kept = [t for t in existing if t not in to_remove]
+    else:
+        kept = []
+    removed = len(existing) - len(kept)
+    if removed == 0:
+        return 0
+
+    # 空 stage 不留空列表键，回到干净未注入态（与 _render_learned_rules_text 的空判一致）
+    if kept:
+        run_local[rule_stage] = kept
+    else:
+        run_local.pop(rule_stage, None)
+
+    # 3. 全局 active 规则重渲染（保住全局种子；无 scheme 则不取，避免列全表）
+    global_rules = await _runs_db.list_active_rules(scheme_key) if scheme_key else []
+    learned_text = _render_learned_rules_text(global_rules, run_local)
+    updates = {"run_learned_rules": run_local, "learned_rules_text": learned_text}
+
+    # 4. 写主 thread
+    await _main_graph.aupdate_state(_thread_config(_main_thread(run_id)), updates)
+
+    # 5. 若有 active plan 委派：写活跃 plan 子 thread（当前章即时生效）
+    delegation = await _runs_db.get_active_delegation(run_id)
+    delegated_plan = delegation is not None and delegation.get("stage") == "plan"
+    if delegated_plan and _plan_graph is not None:
+        await _plan_graph.aupdate_state(_thread_config(delegation["child_thread_id"]), updates)
+
+    log.info(
+        "run_learned_rules_removed",
+        run_id=run_id, stage=rule_stage, removed=removed, delegated=delegated_plan,
+    )
+    return removed
+
+
 async def resume_run(run_id: str, scope: str | None = None, thread_id: str | None = None, resume_value: Any = None) -> None:  # noqa: ARG001
     """Resume 中断的 run：委派架构下需判断当前暂停在主图还是子图。
 

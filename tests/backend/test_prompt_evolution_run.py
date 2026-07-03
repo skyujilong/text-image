@@ -143,3 +143,84 @@ async def test_merge_run_not_found_404(client, mock_runner):
         json={"stage": "script_review", "rules": ["x"]},
     )
     assert resp.status_code == 404
+
+
+# ── run-rules（读已合并规则，供还原展示）────────────────────────────────
+
+async def test_run_rules_returns_stage_rules(client, mock_runner):
+    mock_runner.get_run = AsyncMock(return_value=_meta("r1"))
+    mock_runner.get_run_state_values = AsyncMock(
+        return_value={"run_learned_rules": {"adapt_script": ["旁白≤15字", "别用书面语"]}}
+    )
+    resp = await client.get("/runs/r1/prompt-evolution/run-rules", params={"stage": "adapt_script"})
+    assert resp.status_code == 200
+    assert resp.json() == {"stage": "adapt_script", "rules": ["旁白≤15字", "别用书面语"]}
+
+
+async def test_run_rules_missing_stage_returns_empty(client, mock_runner):
+    mock_runner.get_run = AsyncMock(return_value=_meta("r1"))
+    mock_runner.get_run_state_values = AsyncMock(return_value={})  # 无 run_learned_rules
+    resp = await client.get("/runs/r1/prompt-evolution/run-rules", params={"stage": "scene_change"})
+    assert resp.status_code == 200
+    assert resp.json() == {"stage": "scene_change", "rules": []}
+
+
+async def test_run_rules_unknown_stage_400(client, mock_runner):
+    mock_runner.get_run = AsyncMock(return_value=_meta("r1"))
+    # 用面板 type 而非规则 stage 应被拒（run-rules 直接吃规则 stage）
+    resp = await client.get("/runs/r1/prompt-evolution/run-rules", params={"stage": "script_review"})
+    assert resp.status_code == 400
+
+
+async def test_run_rules_run_not_found_404(client, mock_runner):
+    mock_runner.get_run = AsyncMock(return_value=None)
+    resp = await client.get("/runs/nope/prompt-evolution/run-rules", params={"stage": "adapt_script"})
+    assert resp.status_code == 404
+
+
+# ── remove（还原：移除/清空已合并规则）─────────────────────────────────
+
+async def test_remove_specific_rules_delegates_to_runner(client, mock_runner):
+    mock_runner.get_run = AsyncMock(return_value=_meta("r1"))
+    mock_runner.remove_run_learned_rules = AsyncMock(return_value=1)
+    resp = await client.post(
+        "/runs/r1/prompt-evolution/remove",
+        json={"rule_stage": "adapt_script", "rules": ["别用书面语"]},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "removed": 1}
+    mock_runner.remove_run_learned_rules.assert_awaited_once_with(
+        "r1", "adapt_script", ["别用书面语"]
+    )
+
+
+async def test_remove_clear_all_passes_none(client, mock_runner):
+    mock_runner.get_run = AsyncMock(return_value=_meta("r1"))
+    mock_runner.remove_run_learned_rules = AsyncMock(return_value=3)
+    # 不传 rules → 清空该 stage 全部
+    resp = await client.post(
+        "/runs/r1/prompt-evolution/remove", json={"rule_stage": "scene_change"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "removed": 3}
+    mock_runner.remove_run_learned_rules.assert_awaited_once_with("r1", "scene_change", None)
+
+
+async def test_remove_unknown_rule_stage_400(client, mock_runner):
+    mock_runner.get_run = AsyncMock(return_value=_meta("r1"))
+    mock_runner.remove_run_learned_rules = AsyncMock()
+    resp = await client.post(
+        "/runs/r1/prompt-evolution/remove",
+        json={"rule_stage": "storyboard_review", "rules": ["x"]},  # 面板 type 非规则 stage
+    )
+    assert resp.status_code == 400
+    mock_runner.remove_run_learned_rules.assert_not_awaited()
+
+
+async def test_remove_run_not_found_404(client, mock_runner):
+    mock_runner.get_run = AsyncMock(return_value=None)
+    resp = await client.post(
+        "/runs/nope/prompt-evolution/remove",
+        json={"rule_stage": "adapt_script", "rules": ["x"]},
+    )
+    assert resp.status_code == 404

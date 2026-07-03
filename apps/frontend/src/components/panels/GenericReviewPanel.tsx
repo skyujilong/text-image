@@ -2,12 +2,19 @@ import { useState } from 'react'
 import { Check, CheckSquare, Loader2, Sparkles, Square, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { api } from '@/api/client'
+import { api, type RuleStage } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { useRunStore } from '@/store/runStore'
+import MergedRunRules from '@/components/prompt/MergedRunRules'
 
 /** 细分审阅 payload 的 type，与后端 _make_review_node 传入的 payload_type 对齐。 */
 type ReviewType = 'script_review' | 'storyboard_review'
+
+/** 审阅 type → 规则 stage（与后端 _PANEL_TYPE_TO_RULE_STAGE 对齐）：分镜换图点信号来自分镜审阅。 */
+const RULE_STAGE_BY_TYPE: Record<ReviewType, RuleStage> = {
+  script_review: 'adapt_script',
+  storyboard_review: 'scene_change',
+}
 
 /** 各审阅类型的展示元信息（标题 / 产物名 / 打回说明）。 */
 const META: Record<ReviewType, { title: string; artifactLabel: string; reviseHint: string }> = {
@@ -178,6 +185,7 @@ function RunRuleRefineSection({ runId, type }: { runId: string; type: ReviewType
   const [alsoGlobal, setAlsoGlobal] = useState(true)
   const [merging, setMerging] = useState(false)
   const [msg, setMsg] = useState('')
+  const [mergedReload, setMergedReload] = useState(0) // bump 触发下方「已合并规则」重取
 
   const acceptedCount = proposed?.filter((p) => p.accepted).length ?? 0
 
@@ -213,6 +221,7 @@ function RunRuleRefineSection({ runId, type }: { runId: string; type: ReviewType
     try {
       const res = await api.mergeRunRules(runId, type, rules, alsoGlobal)
       setProposed(null)
+      setMergedReload((n) => n + 1) // 刷新下方「已合并规则」清单
       setMsg(
         `已合并 ${res.merged} 条到本 run，后续该阶段生成自动遵守` +
           (res.global_candidates ? `；另写入 ${res.global_candidates} 条全局候选待采纳` : ''),
@@ -305,6 +314,15 @@ function RunRuleRefineSection({ runId, type }: { runId: string; type: ReviewType
       )}
 
       {msg && <p className="text-xs text-muted-foreground mt-2">{msg}</p>}
+
+      <div className="mt-3 border-t border-border pt-3">
+        <MergedRunRules
+          runId={runId}
+          ruleStage={RULE_STAGE_BY_TYPE[type]}
+          label={META[type].artifactLabel}
+          reloadSignal={mergedReload}
+        />
+      </div>
     </section>
   )
 }
