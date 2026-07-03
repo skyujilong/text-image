@@ -1,6 +1,7 @@
 """分镜两步法 prompt builder 测试：换图点初筛 + 换图点画面生成。"""
 
 from novel2media.prompts.chapter_prompts import (
+    build_adapt_script_prompt,
     build_scene_change_prompt,
     build_scene_prompt_for_shots,
 )
@@ -78,3 +79,33 @@ def test_scene_prompt_for_shots_injects_feedback():
     shots = [{"anchor_id": 0, "text": "a", "coverage": "a"}]
     prompt = build_scene_prompt_for_shots(shots, "原文", {}, feedback="画面太空")
     assert "画面太空" in prompt
+
+
+# ── 提示词自进化 · %%LEARNED_RULES%% 注入 ──────────────────────────────
+
+def test_adapt_script_injects_learned_rules():
+    """adapt_script：learned_rules 非空时渲染进 prompt，且 token 不泄漏。"""
+    prompt = build_adapt_script_prompt("原文", {}, learned_rules="- 旁白控制在15字内")
+    assert "- 旁白控制在15字内" in prompt
+    assert "%%LEARNED_RULES%%" not in prompt
+
+
+def test_adapt_script_no_learned_rules_no_token_leak():
+    """adapt_script：默认模板含 %%LEARNED_RULES%% 槽，无规则时渲染为空、token 不泄漏。"""
+    prompt = build_adapt_script_prompt("原文", {})
+    assert "%%LEARNED_RULES%%" not in prompt
+
+
+def test_scene_change_injects_learned_rules():
+    """scene_change：learned_rules 非空时渲染进 prompt，且 token 不泄漏。"""
+    script = [{"text": "a", "action": "", "speaker": "旁白"}]
+    prompt = build_scene_change_prompt(script, "原文", learned_rules="- 说话人切换即换图")
+    assert "- 说话人切换即换图" in prompt
+    assert "%%LEARNED_RULES%%" not in prompt
+
+
+def test_scene_change_no_learned_rules_no_token_leak():
+    """scene_change：默认模板含 %%LEARNED_RULES%% 槽，无规则时渲染为空、token 不泄漏。"""
+    script = [{"text": "a", "action": "", "speaker": "旁白"}]
+    prompt = build_scene_change_prompt(script, "原文")
+    assert "%%LEARNED_RULES%%" not in prompt

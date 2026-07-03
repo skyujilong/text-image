@@ -173,6 +173,72 @@ export interface CreateNarrationPresetBody {
   scene_change_template: string
 }
 
+/** 提示词自进化的三个受记录阶段（= "模块"）。 */
+export type EvolutionStage = 'adapt_script' | 'storyboard' | 'initial_characters'
+
+/** per-run 提示词配置：本 run 实际生效模板 vs 该题材内置预设原文（GET /runs/{id}/prompt-config）。 */
+export interface PromptConfig {
+  scheme_key: string
+  scheme_label: string
+  templates: { adapt_script: string; scene_change: string }
+  defaults: { adapt_script: string; scene_change: string }
+}
+
+/** 一次「人类审阅一版生成物」事件（GET /runs/{id}/generation-events）。 */
+export interface GenerationEvent {
+  id: number
+  run_id: string
+  scope: string
+  chapter_id: string | null
+  stage: EvolutionStage
+  attempt: number
+  scheme_key: string | null
+  decision: 'pass' | 'revise'
+  feedback: string
+  output: unknown
+  created_at: string
+}
+
+/** 摩擦度排行一行（GET /prompt-evolution/friction）。 */
+export interface FrictionStat {
+  stage: string
+  scheme_key: string | null
+  revise_count: number
+  pass_count: number
+  total: number
+}
+
+/** 规则可注入的模板阶段（rule stage）。 */
+export type RuleStage = 'adapt_script' | 'scene_change'
+export type RuleStatus = 'candidate' | 'active' | 'retired'
+
+/** 校正规则台账一条（GET /prompt-evolution/rules）。 */
+export interface LearnedRule {
+  id: number
+  scheme_key: string
+  stage: RuleStage
+  rule_text: string
+  status: RuleStatus
+  source_feedback_sample: string
+  hits: number
+  created_at: string
+  adopted_at: string | null
+  retired_at: string | null
+}
+
+/** 归纳结果（POST /prompt-evolution/propose）。 */
+export interface ProposeResult {
+  candidates: LearnedRule[]
+  feedback_count: number
+  message: string
+}
+
+/** 内置题材方案（GET /prompt-evolution/schemes）。 */
+export interface SchemeOption {
+  key: string
+  label: string
+}
+
 export const api = {
   startRun: (params: StartRunParams) =>
     request<{ run_id: string }>('/runs', { method: 'POST', body: JSON.stringify(params) }),
@@ -341,4 +407,48 @@ export const api = {
 
   deleteNarrationPreset: (id: string) =>
     request<{ ok: boolean }>(`/narration-presets/${id}`, { method: 'DELETE' }),
+
+  // ─── 提示词自进化 · per-run 检视 ──────────────────────────────
+  // 本 run 实际生效模板 vs 内置预设原文（供"调整 vs 原始"对比）
+  getPromptConfig: (runId: string) =>
+    request<PromptConfig>(`/runs/${runId}/prompt-config`),
+
+  // 本 run 的审阅事件时间线（含被审输出、决策、修改意见）
+  getGenerationEvents: (runId: string) =>
+    request<GenerationEvent[]>(`/runs/${runId}/generation-events`),
+
+  // ─── 提示词自进化 · 进化台（跨 run 全局）──────────────────────
+  getEvolutionSchemes: () => request<SchemeOption[]>('/prompt-evolution/schemes'),
+
+  getFriction: () => request<FrictionStat[]>('/prompt-evolution/friction'),
+
+  listRules: (params?: { scheme_key?: string; stage?: string; status?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.scheme_key) qs.set('scheme_key', params.scheme_key)
+    if (params?.stage) qs.set('stage', params.stage)
+    if (params?.status) qs.set('status', params.status)
+    const q = qs.toString()
+    return request<LearnedRule[]>(`/prompt-evolution/rules${q ? `?${q}` : ''}`)
+  },
+
+  proposeRules: (schemeKey: string, stage: RuleStage) =>
+    request<ProposeResult>('/prompt-evolution/propose', {
+      method: 'POST',
+      body: JSON.stringify({ scheme_key: schemeKey, stage }),
+    }),
+
+  createRule: (schemeKey: string, stage: RuleStage, ruleText: string) =>
+    request<{ ok: boolean }>('/prompt-evolution/rules', {
+      method: 'POST',
+      body: JSON.stringify({ scheme_key: schemeKey, stage, rule_text: ruleText }),
+    }),
+
+  adoptRule: (id: number) =>
+    request<{ ok: boolean }>(`/prompt-evolution/rules/${id}/adopt`, { method: 'POST' }),
+
+  rejectRule: (id: number) =>
+    request<{ ok: boolean }>(`/prompt-evolution/rules/${id}/reject`, { method: 'POST' }),
+
+  retireRule: (id: number) =>
+    request<{ ok: boolean }>(`/prompt-evolution/rules/${id}/retire`, { method: 'POST' }),
 }

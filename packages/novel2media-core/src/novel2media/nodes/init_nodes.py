@@ -169,6 +169,11 @@ def configure_chapter_grouping(state: dict) -> dict:
     else:
         narration_templates = validate_templates(raw_templates)
 
+    # 提示词自进化：web 层（graph_runner.resume_run）在 resume 时按所选 scheme 从 learned_rules
+    # 台账载入 active 规则、渲染成按 stage 的注入块塞进 resume value。core 不碰 DB，只透传落 state。
+    # 缺省 {} 即不注入（旧 checkpoint / 无规则 / 直接调用均安全）。
+    learned_rules_text = raw_dict.get("learned_rules_text") or {}
+
     pad_width = chapter_pad_width(files)
     groups = build_chapter_groups(files, group_size, pad_width)
 
@@ -185,6 +190,7 @@ def configure_chapter_grouping(state: dict) -> dict:
         "chapters_status": {gid: "pending" for gid in groups},
         "narration_scheme": scheme.key,
         "narration_templates": narration_templates,
+        "learned_rules_text": learned_rules_text,
     }
 
 

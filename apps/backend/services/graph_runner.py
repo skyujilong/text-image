@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,9 @@ from db.runs_db import RunsDB
 from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
+from novel2media_logging import get_logger
+
+log = get_logger("graph_runner")
 
 # 加载环境变量
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env.local")
@@ -82,6 +86,8 @@ _SHARED_FIELDS = frozenset({
     "chapter_groups", "chapter_group_pad_width", "chapter_group_size",
     # 解说方案：run 内选定/自定义的题材模板，plan 子图的 adapt_script/generate_storyboard 消费
     "narration_scheme", "narration_templates",
+    # 提示词自进化 · 环③：注入 %%LEARNED_RULES%% 的已渲染规则块（按 stage），须委派到 plan 子图
+    "learned_rules_text",
     "_chapter_advance",  # MainGraphState 路由字段，plan_graph 内部写入
 })
 
@@ -675,6 +681,92 @@ async def start_run(params: dict) -> str:
     return run_id
 
 
+# 提示词自进化 · 环①捕获：审阅 interrupt 的 type → (stage 模块名, payload 中被审输出的字段名)
+_REVIEW_TYPE_TO_STAGE: dict[str, tuple[str, str]] = {
+    "script_review": ("adapt_script", "script"),
+    "storyboard_review": ("storyboard", "storyboard"),
+    "initial_characters_review": ("initial_characters", "characters"),
+}
+
+
+async def _record_generation_event(run_id: str, resume_value: Any) -> None:
+    """resume 一刻捕获「人类审阅一版生成物」：被审输出 + 决策 + 意见一次落 generation_events。
+
+    尽力而为：任何异常只 warning，**绝不阻断 resume 主流程**。
+    仅对带 decision(pass/revise) 的人类审阅 resume 生效——retry_run 的 Command(resume=None)
+    等非人类信号（resume_value 非 dict 或无 decision）天然跳过、不误记。
+    """
+    try:
+        if not isinstance(resume_value, dict):
+            return
+        decision = resume_value.get("decision")
+        if decision not in ("pass", "revise"):
+            return
+        snapshot = await get_current_run_state(run_id)
+        ai = snapshot.get("active_interaction")
+        if not ai:
+            return
+        payload = ai.get("payload") or {}
+        mapping = _REVIEW_TYPE_TO_STAGE.get(payload.get("type"))
+        if mapping is None:
+            return
+        stage, artifact_field = mapping
+        state_values = await get_run_state_values(run_id)
+        attempt = await _runs_db.insert_generation_event(
+            run_id,
+            scope=ai.get("scope") or "main",
+            chapter_id=payload.get("chapter_id"),
+            stage=stage,
+            scheme_key=state_values.get("narration_scheme"),
+            decision=decision,
+            feedback=(resume_value.get("feedback") or ""),
+            output_json=json.dumps(payload.get(artifact_field), ensure_ascii=False),
+        )
+        log.info(
+            "generation_event_recorded",
+            run_id=run_id, stage=stage, attempt=attempt, decision=decision,
+        )
+    except Exception as e:  # noqa: BLE001 — 捕获纯记录副作用，绝不影响 resume
+        log.warning("generation_event_record_failed", run_id=run_id, error=str(e))
+
+
+def _render_learned_rules_block(rules: list[dict]) -> dict[str, str]:
+    """把 active 规则按 stage 渲染成注入块文本 {stage: block}。无该 stage 规则则不含该键。"""
+    by_stage: dict[str, list[str]] = {}
+    for r in rules:
+        by_stage.setdefault(r["stage"], []).append(r["rule_text"])
+    out: dict[str, str] = {}
+    for stage, texts in by_stage.items():
+        bullets = "\n".join(f"- {t}" for t in texts)
+        out[stage] = (
+            "【已沉淀的校正清单（历次人工反馈归纳，务必逐条遵守）】\n"
+            "本清单优先级高于上文：若某条规则与上文的要求相冲突，一律以本清单为准。\n"
+            f"{bullets}\n\n"
+        )
+    return out
+
+
+async def _inject_learned_rules(resume_value: Any) -> None:
+    """提示词自进化 · 环③注入缝：chapter_grouping resume 时，按所选题材从台账载 active 规则，
+    渲染成按 stage 的注入块塞进 resume_value（就地改 dict），随后经 configure_chapter_grouping 落 state。
+
+    仅当 resume_value 带 narration_scheme（= chapter_grouping resume 的特征）时生效；
+    尽力而为，异常只 warning、不阻断 resume。
+    """
+    try:
+        if not isinstance(resume_value, dict):
+            return
+        scheme_key = resume_value.get("narration_scheme")
+        if not scheme_key:
+            return
+        rules = await _runs_db.list_active_rules(scheme_key)
+        resume_value["learned_rules_text"] = _render_learned_rules_block(rules)
+        if rules:
+            log.info("learned_rules_injected", scheme=scheme_key, count=len(rules))
+    except Exception as e:  # noqa: BLE001 — 注入失败退化为不注入，不影响 resume
+        log.warning("learned_rules_inject_failed", error=str(e))
+
+
 async def resume_run(run_id: str, scope: str | None = None, thread_id: str | None = None, resume_value: Any = None) -> None:  # noqa: ARG001
     """Resume 中断的 run：委派架构下需判断当前暂停在主图还是子图。
 
@@ -695,6 +787,12 @@ async def resume_run(run_id: str, scope: str | None = None, thread_id: str | Non
     render_session.stop_session(run_id)
 
     get_or_create_sse_queue(run_id)
+
+    # 提示词自进化 · 环①：resume 前捕获这版生成物 + 人类决策/意见（此刻 status 仍 waiting_human，
+    # active_interaction 尚可解析出被审输出）。纯记录副作用，失败不阻断。
+    await _record_generation_event(run_id, real_value)
+    # 提示词自进化 · 环③：chapter_grouping resume 时按题材注入 active 校正规则（就地改 real_value）。
+    await _inject_learned_rules(real_value)
 
     # 委派架构：检查是否有 active delegation（子图暂停）
     delegation = await _runs_db.get_active_delegation(run_id)
@@ -1274,6 +1372,16 @@ async def update_run_state_values(run_id: str, updates: dict) -> None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
     cfg = _thread_config(_main_thread(run_id))
     await _main_graph.aupdate_state(cfg, updates)
+
+
+def get_runs_db() -> RunsDB:
+    """暴露 RunsDB 单例给端点层（提示词自进化的 generation_events / learned_rules CRUD 走它）。
+
+    与 get_run/list_runs 等薄封装同源，复用同一 aiosqlite 连接（该连接本就跨并发请求共享）。
+    """
+    if _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+    return _runs_db
 
 
 async def list_runs():

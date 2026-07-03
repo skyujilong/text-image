@@ -41,6 +41,7 @@ def build_adapt_script_prompt(
     feedback: str = "",
     template: str | None = None,
     worldview: str = "",
+    learned_rules: str = "",
 ) -> str:
     """构造有声漫剧单播脚本提示词（只出口播脚本，不含新角色检测）。
 
@@ -66,6 +67,7 @@ def build_adapt_script_prompt(
         {
             "CHARACTER_NAMES": names,
             "WORLDVIEW_BLOCK": worldview_block,
+            "LEARNED_RULES": learned_rules or "",
             "FEEDBACK_BLOCK": feedback_block,
             "CHAPTER_TEXT": chapter_text,
         },
@@ -92,6 +94,7 @@ def build_scene_change_prompt(
     chapter_text: str,
     feedback: str = "",
     template: str | None = None,
+    learned_rules: str = "",
 ) -> str:
     """构造分镜第一步「换图点初筛」提示词。
 
@@ -124,6 +127,7 @@ def build_scene_change_prompt(
     return render_template(
         tmpl,
         {
+            "LEARNED_RULES": learned_rules or "",
             "FEEDBACK_BLOCK": feedback_block,
             "MAX_INDEX": str(n - 1),
             "LINE_COUNT": str(n),

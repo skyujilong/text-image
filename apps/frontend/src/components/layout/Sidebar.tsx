@@ -4,11 +4,13 @@ import {
   Check,
   ChevronDown,
   GitBranch,
+  GitCompare,
   LayoutGrid,
   Pencil,
   Plus,
   RotateCcw,
   Settings2,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
@@ -152,11 +154,21 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
 
   return (
     <aside className="w-96 border-r border-sidebar-border bg-sidebar flex flex-col h-full">
-      {/* 顶部：新建 Run */}
-      <div className="p-3 border-b border-sidebar-border">
+      {/* 顶部：新建 Run + 全局进化台入口 */}
+      <div className="p-3 border-b border-sidebar-border space-y-2">
         <Button className="w-full" size="sm" onClick={onNewRun}>
           <Plus className="size-4" />
           新建 Run
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full text-muted-foreground"
+          title="提示词进化台：摩擦度排行 + 归纳候选规则 + 校正规则台账"
+          onClick={() => navigate('/prompt-evolution')}
+        >
+          <Sparkles className="size-4" />
+          提示词进化台
         </Button>
       </div>
 
@@ -286,6 +298,14 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
                 title="渲染工作台" onClick={() => navigate(`/runs/${currentRun.run_id}/render`)}>
                 <LayoutGrid className="size-3.5" />
                 渲染工作台
+              </Button>
+            )}
+            {currentRun.status !== 'pending' && (
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground"
+                title="提示词检视：本 run 模板 vs 预设对比 + 审阅记录"
+                onClick={() => navigate(`/runs/${currentRun.run_id}/prompts`)}>
+                <GitCompare className="size-3.5" />
+                提示词
               </Button>
             )}
           </div>

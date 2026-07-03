@@ -124,6 +124,11 @@ class MainGraphState(SharedGraphState):
     # 详见 novel2media.prompts.narration_schemes。两者必须进 _SHARED_FIELDS 才能委派到 plan 子图。
     narration_scheme: str
     narration_templates: dict[str, str]
+    # 提示词自进化 · 环③：已采纳(active)校正规则渲染成的注入块，按 stage 键
+    # （{"adapt_script": "...", "scene_change": "..."}）。由 web 层在 chapter_grouping resume 时
+    # 按所选 scheme 从 learned_rules 台账载入并注入；builder 渲染进 %%LEARNED_RULES%% 槽。
+    # 与 narration_templates 同理须进 _SHARED_FIELDS 才能委派到 plan 子图。缺省 {} 即不注入。
+    learned_rules_text: dict[str, str]
 
     # ── init/setup 阶段字段（load_config 初始化，仅 init/setup 节点读写） ──
     setup_queue: list[CharacterProfile]  # 待批量配置三视图的角色列表

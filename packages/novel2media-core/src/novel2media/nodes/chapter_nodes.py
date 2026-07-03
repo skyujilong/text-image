@@ -218,12 +218,15 @@ def adapt_script(state: dict) -> dict:
     # 解说方案模板：run 内选定/自定义（configure_chapter_grouping 写入，随委派进 plan 子图）；
     # 缺失（旧 checkpoint）时传 None，builder 回退恐怖悬疑默认预设。
     narration_templates = state.get("narration_templates") or {}
+    # 提示词自进化：已采纳校正规则注入块（web 层按 scheme 载入，随委派进 plan 子图）；缺省不注入。
+    learned_rules_text = state.get("learned_rules_text") or {}
     prompt = build_adapt_script_prompt(
         chapter_text,
         characters_profile,
         feedback,
         template=narration_templates.get("adapt_script"),
         worldview=state.get("worldview", ""),
+        learned_rules=learned_rules_text.get("adapt_script", ""),
     )
     resp = invoke_llm(prompt, node="adapt_script", label="adapt_script", json_mode=True)
     script = parse_json_array(resp)  # [{"text","action","speaker"}]
@@ -300,8 +303,12 @@ def generate_storyboard(state: dict) -> dict:
     # ---- 第一步：初筛换图点（串行单次，输出换图点下标列表）----
     # 换图点节奏密度也走 run 内解说方案模板；缺失时 builder 回退默认预设。
     narration_templates = state.get("narration_templates") or {}
+    # 提示词自进化：换图点阶段的已采纳校正规则注入块；缺省不注入。
+    learned_rules_text = state.get("learned_rules_text") or {}
     sc_prompt = build_scene_change_prompt(
-        script, chapter_text, feedback, template=narration_templates.get("scene_change")
+        script, chapter_text, feedback,
+        template=narration_templates.get("scene_change"),
+        learned_rules=learned_rules_text.get("scene_change", ""),
     )
     sc_resp = invoke_llm(sc_prompt, node="generate_storyboard", label="storyboard_scene_change", json_mode=True)
     raw_indices = parse_json_array(sc_resp)
