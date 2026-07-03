@@ -111,43 +111,52 @@ async def get_current_run_state(run_id: str):
 
 @router.get("/runs/{run_id}/stream")
 async def stream_run(run_id: str):
-    q = runner.get_or_create_sse_queue(run_id)
+    meta = await runner.get_run(run_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="run not found")
 
     async def event_generator() -> AsyncIterator[str]:
-        # 建流即重放当前 pending interrupt。SSE 无重放：若 interrupt 在客户端建流的
-        # 窗口内触发（如 configure_chapter_grouping 紧接 run 启动、无 LLM 前置即中断），
-        # 那一条 interrupt 事件会落空——首次 current-state 恰好取到 running（interrupt
-        # 尚未落库），此后又无重连触发 restore，右侧交互区便永久卡在空态。
-        # 这里在建流时主动补发一次当前待处理 interrupt（复用 get_current_run_state，
-        # 覆盖主图与委派子图），与前端「重连即 restore」互补，令首次建连同样不丢 interrupt。
-        # 已 resume（status 非 waiting_human）时 active_interaction 为 None，不补发；
-        # 前端 setActiveInteraction 幂等，与随后可能到达的实时 interrupt 事件重复无副作用。
+        # 每连接私有队列：subscribe 必须是 try 第一句、unsubscribe 在 finally——
+        # 客户端断开时 Starlette 会 aclose 本 generator，finally 是唯一可靠的清理钩子。
+        q = runner.subscribe_sse(run_id)
         try:
-            snapshot = await runner.get_current_run_state(run_id)
-            pending = snapshot.get("active_interaction")
-            if pending:
-                replay = {
-                    "type": "interrupt",
-                    "scope": pending["scope"],
-                    "thread_id": pending["thread_id"],
-                    "node_path": pending["path"],
-                    "status": "waiting_human",
-                    "node": pending["node"],
-                    "payload": pending["payload"],
-                }
-                yield f"data: {json.dumps(replay)}\n\n"
-        except Exception:
-            # 重放是尽力而为的兜底，解析失败不得影响正常事件流
-            pass
-
-        while True:
+            # 建流即重放当前 pending interrupt。SSE 无重放：若 interrupt 在客户端建流的
+            # 窗口内触发（如 configure_chapter_grouping 紧接 run 启动、无 LLM 前置即中断），
+            # 那一条 interrupt 事件会落空——首次 current-state 恰好取到 running（interrupt
+            # 尚未落库），此后又无重连触发 restore，右侧交互区便永久卡在空态。
+            # 这里在建流时主动补发一次当前待处理 interrupt（复用 get_current_run_state，
+            # 覆盖主图与委派子图），与前端「onopen 即 restore」互补，令首次建连同样不丢 interrupt。
+            # 顺序约束：先 subscribe 再取快照——反序会丢两步之间触发的 interrupt；
+            # 同序最多重复收到一次，前端 setActiveInteraction 幂等，无副作用。
+            # 已 resume（status 非 waiting_human）时 active_interaction 为 None，不补发。
             try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get("type") == "run_complete":
-                    break
-                # run_error 时保持流打开，以便用户重试后继续接收事件
-            except TimeoutError:
-                yield ": heartbeat\n\n"
+                snapshot = await runner.get_current_run_state(run_id)
+                pending = snapshot.get("active_interaction")
+                if pending:
+                    replay = {
+                        "type": "interrupt",
+                        "scope": pending["scope"],
+                        "thread_id": pending["thread_id"],
+                        "node_path": pending["path"],
+                        "status": "waiting_human",
+                        "node": pending["node"],
+                        "payload": pending["payload"],
+                    }
+                    yield f"data: {json.dumps(replay)}\n\n"
+            except Exception:
+                # 重放是尽力而为的兜底，解析失败不得影响正常事件流
+                pass
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                    if event.get("type") in ("run_complete", "run_deleted"):
+                        break
+                    # run_error 时保持流打开，以便用户重试后继续接收事件
+                except TimeoutError:
+                    yield ": heartbeat\n\n"
+        finally:
+            runner.unsubscribe_sse(run_id, q)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

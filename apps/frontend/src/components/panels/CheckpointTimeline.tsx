@@ -17,7 +17,7 @@ export default function CheckpointTimeline({ runId }: Props) {
   const {
     runs,
     setRuns,
-    upsertRun,
+    patchRunStatus,
     resetNodeStatuses,
     resetDrill,
     setCurrentRunId,
@@ -66,8 +66,7 @@ export default function CheckpointTimeline({ runId }: Props) {
     setCurrentRunId(runId)
     resetNodeStatuses()
     resetDrill()
-    const run = runs[runId]
-    if (run) upsertRun({ ...run, status: 'running' })
+    patchRunStatus(runId, 'running')
     incrementStreamGeneration()
   }
 

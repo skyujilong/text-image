@@ -46,6 +46,7 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
     setRuns,
     setCurrentRunId,
     upsertRun,
+    patchRunStatus,
     removeRun,
     resetNodeStatuses,
     resetDrill,
@@ -89,7 +90,7 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
     try {
       setRunError(null) // 重试前先清空旧错误
       await api.retryRun(runId)
-      upsertRun({ ...runs[runId], status: 'running' })
+      patchRunStatus(runId, 'running')
       setCurrentRunId(runId)
       navigate(`/runs/${runId}`)
       resetNodeStatuses()

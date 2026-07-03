@@ -20,11 +20,13 @@ export interface GraphSchema {
   edges: GraphSchemaEdge[]
 }
 
+export type RunStatus = 'pending' | 'running' | 'waiting_human' | 'done' | 'error'
+
 export interface RunMeta {
   run_id: string
   novel_dir: string
   novel_title: string
-  status: 'pending' | 'running' | 'waiting_human' | 'done' | 'error'
+  status: RunStatus
   created_at: string
   params: Record<string, unknown>
   parent_run_id?: string | null
@@ -32,8 +34,9 @@ export interface RunMeta {
 }
 
 export interface RunCurrentState {
-  status: string
+  status: 'pending' | 'running' | 'waiting_human' | 'done' | 'error' | 'unknown'
   node_statuses: Record<string, string>
+  delegated_scope: 'main' | 'plan' | null
   active_interaction: {
     scope: string
     thread_id: string
