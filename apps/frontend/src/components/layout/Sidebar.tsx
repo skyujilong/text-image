@@ -278,9 +278,9 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
           </div>
         )}
 
-        {/* 当前 Run 的操作行 */}
+        {/* 当前 Run 的操作行：按钮多时超出栏宽自动换行到下一行 */}
         {currentRun && editingId !== currentRun.run_id && (
-          <div className="flex items-center gap-0.5 mt-2">
+          <div className="flex flex-wrap items-center gap-x-0.5 gap-y-1 mt-2">
             <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground"
               title="重命名" onClick={(e) => startEdit(e, currentRun.run_id)}>
               <Pencil className="size-3.5" />
