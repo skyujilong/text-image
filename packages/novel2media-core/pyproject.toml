@@ -16,4 +16,6 @@ dependencies = [
     "pydub>=0.25.1",
     "python-dotenv>=1.0.0",
     "json-repair>=0.30.0",
+    "pyjianyingdraft>=0.2.7",
+    "pillow>=10.0.0",
 ]

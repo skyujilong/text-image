@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { AudioLines, Loader2, Play, Mic } from 'lucide-react'
+import { AudioLines, Loader2, Play, Mic, FileDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -35,6 +35,7 @@ export default function AudioSynthesisPanel({ runId, chapterId }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const [audioStatus, setAudioStatus] = useState<string>('pending')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [subtitlesUrl, setSubtitlesUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
 
@@ -50,6 +51,7 @@ export default function AudioSynthesisPanel({ runId, chapterId }: Props) {
           // 加时间戳破浏览器缓存，确保重新合成后播放最新音频
           setAudioUrl(`${fileUrl(res.audio_path)}?t=${Date.now()}`)
         }
+        setSubtitlesUrl(res.subtitles_path ? fileUrl(res.subtitles_path) : null)
       })
       .catch(() => {})
   }, [runId, chapterId])
@@ -73,6 +75,7 @@ export default function AudioSynthesisPanel({ runId, chapterId }: Props) {
           if (res.status === 'done' && res.audio_path) {
             // 加时间戳破浏览器缓存，确保重新合成后播放最新音频
             setAudioUrl(`${fileUrl(res.audio_path)}?t=${Date.now()}`)
+            setSubtitlesUrl(res.subtitles_path ? fileUrl(res.subtitles_path) : null)
             if (pollRef.current) clearInterval(pollRef.current)
           } else if (res.status === 'error') {
             if (pollRef.current) clearInterval(pollRef.current)
@@ -174,6 +177,14 @@ export default function AudioSynthesisPanel({ runId, chapterId }: Props) {
         <div className="space-y-2 rounded border border-border p-3">
           <Label className="text-xs">合成完成</Label>
           <audio controls src={audioUrl} className="w-full" />
+          {subtitlesUrl && (
+            <Button asChild variant="ghost" size="sm" className="w-full justify-start">
+              <a href={subtitlesUrl} download>
+                <FileDown className="size-4" />
+                下载句级字幕 (SRT)
+              </a>
+            </Button>
+          )}
         </div>
       )}
 

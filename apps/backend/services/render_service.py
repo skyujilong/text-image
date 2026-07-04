@@ -15,6 +15,11 @@ from novel2media_logging import get_logger
 log = get_logger("render_service")
 from novel2media import render_state
 from novel2media.chapters import group_label
+from novel2media.jianying import (
+    build_jianying_draft,
+    detect_jianying_drafts_dir,
+    install_draft_to_jianying,
+)
 from novel2media.nodes.chapter_nodes import (
     export_to_jianying,
     render_build_timeline,
@@ -171,19 +176,23 @@ async def synthesize_audio(run_id: str, chapter_id: str, audio_config: dict | No
 
 
 async def get_audio_status(run_id: str, chapter_id: str) -> dict:
-    """查询音频合成状态：检查音频文件是否存在。"""
+    """查询音频合成状态：检查音频文件是否存在，并带出句级字幕 SRT 路径（若已生成）。"""
     novel_dir = await _get_novel_dir(run_id)
     audio_path = Path(novel_dir) / chapter_id / "audio.wav"
+    srt_path = Path(novel_dir) / chapter_id / "subtitles.srt"
+    subtitles_path = str(srt_path) if srt_path.exists() else None
     if audio_path.exists():
         return {
             "chapter_id": chapter_id,
             "status": "done",
             "audio_path": str(audio_path),
+            "subtitles_path": subtitles_path,
         }
     return {
         "chapter_id": chapter_id,
         "status": "pending",
         "audio_path": None,
+        "subtitles_path": None,
     }
 
 
@@ -249,15 +258,45 @@ async def get_chapter_timeline(run_id: str, chapter_id: str) -> dict:
 
 
 async def export_draft(run_id: str) -> dict:
-    """导出剪映草稿：调用纯函数导出 rendered 章节为 jianying_draft.json。"""
+    """导出剪映草稿：翻状态 + 写路径清单，并生成可被最新版剪映打开的真·草稿工程。
+
+    1) export_to_jianying：把 rendered 章节翻为 exported（增量记账）+ 写 jianying_draft.json 清单。
+    2) build_jianying_draft：把 rendered/exported 章节的 音频/图片(按时间落位)/字幕 组装成
+       draft_content.json + draft_meta_info.json 的真·剪映草稿文件夹（媒体自包含）。
+    """
+    import asyncio
+
     novel_dir = await _get_novel_dir(run_id)
     state = await _get_shared_state(run_id)
-    chapters_status: dict[str, str] = state.get("chapters_status", {})
+    chapters_status: dict[str, str] = dict(state.get("chapters_status", {}))
     chapters_artifacts: dict = state.get("chapters_artifacts", {})
+    chapter_order: list[str] = state.get("chapter_order", [])
 
     result = export_to_jianying(novel_dir, chapters_status, chapters_artifacts)
+    new_status: dict[str, str] = result.get("chapters_status", chapters_status)
+
+    # 组装真·剪映草稿（读媒体元数据可能较慢，放线程池避免阻塞事件循环）
+    draft_dir = await asyncio.to_thread(
+        build_jianying_draft, novel_dir, chapter_order, new_status, chapters_artifacts
+    )
+
+    # 本机若装了剪映，直接装入其草稿目录（沙盒路径已处理），一键出稿；否则回退手动拷贝
+    installed_dir: str | None = None
+    detected = detect_jianying_drafts_dir()
+    if detected:
+        real_root, view_root = detected
+        installed_dir = await asyncio.to_thread(
+            install_draft_to_jianying, draft_dir, real_root, view_root
+        )
+
+    # 持久化 rendered→exported 翻转
+    await runner.update_run_state_values(run_id, {"chapters_status": new_status})
+
     export_path = str(Path(novel_dir) / "export" / "jianying_draft.json")
     return {
         "export_path": export_path,
-        "chapters_status": result.get("chapters_status", chapters_status),
+        "draft_dir": draft_dir,
+        "installed_dir": installed_dir,
+        "jianying_detected": installed_dir is not None,
+        "chapters_status": new_status,
     }

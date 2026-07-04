@@ -5,6 +5,21 @@ from pathlib import Path
 from typing import Any
 
 
+def format_srt_time(seconds: float) -> str:
+    """秒 → SRT 时间戳 `HH:MM:SS,mmm`（毫秒逗号分隔）。
+
+    模块级单一实现，供 AudioPipeline 与 audio.subtitles 复用，避免两处各写一份。
+    """
+    ms = int(round(seconds * 1000))
+    h = ms // 3_600_000
+    ms %= 3_600_000
+    m = ms // 60_000
+    ms %= 60_000
+    s = ms // 1000
+    ms %= 1000
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
 @dataclass
 class AudioSegment:
     storyboard_id: int
@@ -51,14 +66,7 @@ class AudioPipeline:
 
     @staticmethod
     def _fmt_srt_time(seconds: float) -> str:
-        ms = int(round(seconds * 1000))
-        h = ms // 3_600_000
-        ms %= 3_600_000
-        m = ms // 60_000
-        ms %= 60_000
-        s = ms // 1000
-        ms %= 1000
-        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+        return format_srt_time(seconds)
 
     def concat_and_normalize(
         self,

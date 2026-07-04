@@ -126,6 +126,8 @@ export interface AudioStatus {
   chapter_id: string
   status: string
   audio_path: string | null
+  /** 句级字幕 SRT 绝对路径（合成成功且服务端句级对齐可用时非空）。 */
+  subtitles_path: string | null
 }
 
 /** 时间轴数据（GET /runs/{id}/render/chapter/{ch_id}/timeline）。 */
@@ -467,9 +469,15 @@ export const api = {
   getTimeline: (runId: string, chapterId: string) =>
     request<TimelineData>(`/runs/${runId}/render/chapter/${chapterId}/timeline`),
 
-  // 导出剪映草稿
+  // 导出剪映草稿（返回真·草稿文件夹 draft_dir；本机装了剪映则 installed_dir 为装入位置）
   exportDraft: (runId: string) =>
-    request<{ export_path: string; chapters_status: Record<string, string> }>(`/runs/${runId}/render/export`, {
+    request<{
+      export_path: string
+      draft_dir: string
+      installed_dir: string | null
+      jianying_detected: boolean
+      chapters_status: Record<string, string>
+    }>(`/runs/${runId}/render/export`, {
       method: 'POST',
     }),
 
