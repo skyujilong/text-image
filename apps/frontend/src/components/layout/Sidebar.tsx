@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  BookOpen,
   Check,
   ChevronDown,
   GitBranch,
@@ -19,6 +20,7 @@ import { api, type RunMeta } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import CheckpointTimeline from '@/components/panels/CheckpointTimeline'
+import NovelInfoDrawer from '@/components/novel/NovelInfoDrawer'
 
 // 运行状态 → 语义化展示（圆点颜色 + 中文标签）。
 // 与 CheckpointTimeline 等面板共用同一套状态语义，避免各处配色不一致。
@@ -55,6 +57,7 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
   } = useRunStore()
   const [retrying, setRetrying] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [novelInfoOpen, setNovelInfoOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
@@ -313,6 +316,14 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
                 提示词
               </Button>
             )}
+            {currentRun.status !== 'pending' && (
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground"
+                title="小说信息：章节原文 / 世界观 / 人物"
+                onClick={() => setNovelInfoOpen(true)}>
+                <BookOpen className="size-3.5" />
+                小说信息
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -329,6 +340,11 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
         <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground px-4 text-center">
           选择一个 Run 查看执行历史
         </div>
+      )}
+
+      {/* 「小说信息」左抽屉：由操作行按钮触发；章节/世界观/人物 Tab 常驻切换。 */}
+      {currentRunId && (
+        <NovelInfoDrawer runId={currentRunId} open={novelInfoOpen} onOpenChange={setNovelInfoOpen} />
       )}
     </aside>
   )

@@ -9,6 +9,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+# pydantic/FastAPI 在 Python <3.12 上要求用 typing_extensions.TypedDict（作为响应模型解析），
+# 该包由 pydantic 传递依赖保证可用；用它在各 Python 版本下都成立。
+from typing_extensions import TypedDict
+
 from novel2media_logging import get_logger
 
 log = get_logger(__name__)
@@ -130,3 +134,28 @@ def read_group_text(paths: list[str]) -> str:
     if not paths:
         raise ValueError("read_group_text: paths 不能为空")
     return "\n\n".join(Path(p).read_text(encoding="utf-8") for p in paths)
+
+
+class ChapterFileInfo(TypedDict):
+    """一个原始章节文件的可读元信息（供前端逐章列表）。"""
+
+    stem: str
+    number: int
+    label: str
+
+
+def list_chapter_files(novel_dir: str | Path) -> list[ChapterFileInfo]:
+    """列 `<novel_dir>/chapters/*.txt`，按章序返回逐章元信息。
+
+    - chapters 目录不存在或无 `.txt` → 返回 `[]`。
+    - number 取 `chapter_number(stem)`（解析不出为 0）；label 用 `group_label([stem])` → `第{n}章`。
+    - 按 `chapter_sort_key` 排序（数字序，`chapter_10` 排在 `chapter_2` 之后）。
+    """
+    chapters_dir = Path(novel_dir) / "chapters"
+    if not chapters_dir.is_dir():
+        return []
+    stems = sorted((p.stem for p in chapters_dir.glob("*.txt")), key=chapter_sort_key)
+    return [
+        {"stem": stem, "number": chapter_number(stem), "label": group_label([stem])}
+        for stem in stems
+    ]

@@ -96,6 +96,31 @@ export interface RenderChapter {
   storyboard?: Array<Record<string, unknown>>
 }
 
+/** 小说原始章节文件元信息（GET /runs/{id}/chapters）。 */
+export interface ChapterFile {
+  stem: string
+  number: number
+  label: string
+}
+
+/** 某章原文正文（GET /runs/{id}/chapters/{stem}/text）。 */
+export interface ChapterText extends ChapterFile {
+  text: string
+}
+
+/** 人物档案（GET /runs/{id}/characters）；portrait_path 为立绘绝对路径，用 fileUrl 展示。 */
+export interface CharacterInfo {
+  name: string
+  role: string
+  character_trait: string
+  appearance: string
+  outfit: string
+  visual_trait: string
+  tri_view_prompt_cn: string
+  tri_view_prompt: string
+  portrait_path: string | null
+}
+
 /** 音频合成状态（GET /runs/{id}/render/chapter/{ch_id}/audio）。 */
 export interface AudioStatus {
   chapter_id: string
@@ -388,6 +413,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ shot_id: shotId, chapter_id: chapterId, candidate }),
     }),
+
+  // ─── 小说原文阅读 ───────────────────────────────────────────
+  // 逐章文件列表（左侧 Sidebar「小说」Tab）
+  listRunChapters: (runId: string) =>
+    request<ChapterFile[]>(`/runs/${runId}/chapters`),
+
+  // 某章原文正文（阅读 Sheet）
+  getRunChapterText: (runId: string, stem: string) =>
+    request<ChapterText>(`/runs/${runId}/chapters/${encodeURIComponent(stem)}/text`),
+
+  // 世界观设定文本
+  getRunWorldview: (runId: string) =>
+    request<{ worldview: string }>(`/runs/${runId}/worldview`).then((r) => r.worldview),
+
+  // 人物档案列表
+  getRunCharacters: (runId: string) =>
+    request<CharacterInfo[]>(`/runs/${runId}/characters`),
 
   // ─── 渲染工作台 ─────────────────────────────────────────────
   // 章节列表 + 渲染状态（后端返回 {chapters: [...]}，解包为裸数组）

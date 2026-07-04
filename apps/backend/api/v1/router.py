@@ -7,6 +7,7 @@ from .endpoints import (
     inspect,
     interact,
     narration_presets,
+    novel_reference,
     novels,
     prompt_evolution,
     prompt_evolution_run,
@@ -17,6 +18,7 @@ from .endpoints import (
 
 api_router = APIRouter()
 api_router.include_router(runs.router, tags=["runs"])
+api_router.include_router(novel_reference.router, tags=["novel-reference"])
 api_router.include_router(novels.router, tags=["novels"])
 api_router.include_router(fs.router, tags=["fs"])
 api_router.include_router(files.router, tags=["files"])

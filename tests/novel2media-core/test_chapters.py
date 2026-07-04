@@ -6,6 +6,7 @@ from novel2media.chapters import (
     chapter_pad_width,
     group_id_for,
     group_label,
+    list_chapter_files,
     read_group_text,
 )
 
@@ -137,6 +138,30 @@ def test_read_group_text_empty_raises():
 
     with pytest.raises(ValueError):
         read_group_text([])
+
+
+# ── list_chapter_files：逐章列表（阅读接口数据源）──────────────────────────
+
+
+def test_list_chapter_files_sorted_by_chapter_number(tmp_path):
+    """按章号数字序，chapter_10 排在 chapter_2 之后（非字符串序）。"""
+    chapters_dir = tmp_path / "chapters"
+    chapters_dir.mkdir()
+    (chapters_dir / "chapter_10_y.txt").write_text("十", encoding="utf-8")
+    (chapters_dir / "chapter_2_x.txt").write_text("二", encoding="utf-8")
+
+    files = list_chapter_files(tmp_path)
+
+    assert [f["number"] for f in files] == [2, 10]
+    assert [f["label"] for f in files] == ["第2章", "第10章"]
+    assert [f["stem"] for f in files] == ["chapter_2_x", "chapter_10_y"]
+
+
+def test_list_chapter_files_missing_dir_returns_empty(tmp_path):
+    """chapters 目录不存在或无 .txt → 返回 []。"""
+    assert list_chapter_files(tmp_path) == []
+    (tmp_path / "chapters").mkdir()
+    assert list_chapter_files(tmp_path) == []
 
 
 # ── _discover_new_single_chapter_groups：id 碰撞不覆盖既有组 ──────────────────
