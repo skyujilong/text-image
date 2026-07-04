@@ -44,7 +44,7 @@ export default function RunPage() {
           />
         }
       />
-      {currentRunId && <InteractionDispatcher runId={currentRunId} />}
+      {currentRunId && !showNewRunForm && <InteractionDispatcher runId={currentRunId} />}
       <StateInspector
         open={!!inspectingNode}
         nodePath={inspectingNode}
