@@ -28,7 +28,16 @@ class ChapterArtifacts(ChapterArtifactsRequired, total=False):
     """章节产物路径。仅含媒体产物（音频/字幕/timeline）落盘路径。
 
     script/storyboard 稿件不再落盘，改存 render_batch（主图 state），
-    渲染阶段从 state 读，故本表不再含 script_path/storyboard_path。"""
+    渲染阶段从 state 读，故本表不再含 script_path/storyboard_path。
+
+    可选字段（合成阶段写入，供时间轴/草稿使用）：
+    - sentences_path: dots 原始句级时间轴 sentences.json 存档路径。
+    - timestamps: 逐口播行时间戳 [{storyboard_id, text, speaker, start_time, end_time}]，
+      由 sentences.json 归并而来，供 build_timeline 把图片按时间落位。
+    """
+
+    sentences_path: str
+    timestamps: list[dict]
 
 
 class CharacterProfileRequired(TypedDict):

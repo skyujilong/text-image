@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 
@@ -15,6 +16,19 @@ class TTSJob:
 
     job_id: str
     poll_url: str
+
+
+@dataclass
+class TTSResult:
+    """一次合成的完整产物：整段 wav + 可选句级时间轴。
+
+    sentences/timeline 缺失（服务端未开句级对齐 / 该任务无该产物）时为 None，
+    由上层决定降级，不在客户端静默造假。
+    """
+
+    wav: bytes
+    sentences: dict | None = None  # dots sentences.json（句级、估计值）
+    timeline: dict | None = None  # dots timeline.json（chunk 级、逐样本精确），降级备用
 
 
 class TTSClient:
@@ -181,7 +195,11 @@ class TTSClient:
             time.sleep(self._poll_interval)
 
     def download_artifact(self, job_id: str, artifact_name: str = "final.wav") -> bytes:
-        """下载任务产物字节流。artifact_name 仅 dots 白名单允许的 4 种之一。"""
+        """下载任务产物字节流。artifact_name 须为 dots 白名单允许的产物名。
+
+        白名单（见 dots-tts-webui-api 文档）：final.wav / final.txt / final.tts /
+        timeline.json / sentences.json / manifest.json。
+        """
         resp = httpx.get(
             f"{self._base}/api/jobs/{job_id}/artifacts/{artifact_name}",
             timeout=self._timeout,
@@ -192,8 +210,43 @@ class TTSClient:
     def synthesize(self, text: str, params: dict, wait_timeout: float = 600.0) -> bytes:
         """同步一次性：提交 → 等待完成 → 下载 final.wav，返回整段音频字节。
 
-        供 LangGraph 节点/测试调用。本期只取整段 wav，不取逐句时间戳。
+        供 LangGraph 节点/测试调用。只取整段 wav，不取时间轴（见 synthesize_full）。
         """
         job = self.submit(text, params)
         self._wait_for_job(job.job_id, wait_timeout)
         return self.download_artifact(job.job_id, "final.wav")
+
+    def synthesize_full(
+        self, text: str, params: dict, wait_timeout: float = 600.0
+    ) -> TTSResult:
+        """同步一次性：提交 → 等待完成 → 下载 final.wav + 句级 sentences.json（可得则取）。
+
+        句级字幕/时间轴用于生成字幕文件与图片按时间落位。dots 仅在服务端开启句级对齐且
+        成功时才有 sentences.json（状态体的 final_sentences_url 非空为准）；缺失则 sentences=None，
+        由上层告警降级——不在此处静默造假时间戳。timeline.json（chunk 级精确）一并取回作降级备用。
+        """
+        job = self.submit(text, params)
+        status = self._wait_for_job(job.job_id, wait_timeout)
+        wav = self.download_artifact(job.job_id, "final.wav")
+
+        sentences: dict | None = None
+        if status.get("final_sentences_url"):
+            try:
+                sentences = json.loads(self.download_artifact(job.job_id, "sentences.json"))
+            except (httpx.HTTPError, json.JSONDecodeError) as e:
+                log.warning("dots.tts sentences.json 取回失败", job_id=job.job_id, error=str(e))
+
+        timeline: dict | None = None
+        if status.get("final_timeline_url"):
+            try:
+                timeline = json.loads(self.download_artifact(job.job_id, "timeline.json"))
+            except (httpx.HTTPError, json.JSONDecodeError) as e:
+                log.warning("dots.tts timeline.json 取回失败", job_id=job.job_id, error=str(e))
+
+        log.info(
+            "dots.tts 合成产物取回",
+            job_id=job.job_id,
+            has_sentences=sentences is not None,
+            has_timeline=timeline is not None,
+        )
+        return TTSResult(wav=wav, sentences=sentences, timeline=timeline)

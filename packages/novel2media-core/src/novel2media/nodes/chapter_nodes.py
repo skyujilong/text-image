@@ -718,22 +718,45 @@ def render_synthesize_audio(
     script: list[dict],
     audio_config: dict | None = None,
 ) -> dict:
-    """TTS 音频合成纯函数：整章脚本拼成整段文本提交，下载 final.wav 落盘。
+    """TTS 音频合成纯函数：整章脚本拼成整段文本提交，取回 final.wav + 句级时间轴。
 
     从图节点提取为纯函数（不再依赖图 state），由后端 API 直接调用。
-    dots.tts 服务端按换行把文本切 chunk、串行合成后拼成整段音频，单章只产出一段 final.wav。
+    dots.tts 服务端按换行把文本切 chunk、串行合成后拼成整段音频，单章只产出一段 final.wav；
+    并（服务端开启句级对齐时）产出 sentences.json 句级时间轴。
 
-    返回 {audio_path, subtitles_path, timestamps} 供调用方更新 chapters_artifacts。
+    产物落盘：
+    - <ch>/audio.wav：整段音频。
+    - <ch>/sentences.json：dots 原始句级时间轴存档（可得时）。
+    - <ch>/subtitles.srt：编辑器可用字幕（可得时）。
+
+    返回 {audio_path, subtitles_path, sentences_path, timestamps}——timestamps 为逐口播行
+    时间戳，供 build_timeline 把图片按时间落位。句级对齐不可得时 subtitles_path/sentences_path
+    为空、timestamps 为 []（音频仍成功，不阻断），并告警暴露。
     """
+    from novel2media.audio.subtitles import (
+        LineItem,
+        build_srt,
+        map_cues_to_lines,
+        parse_dots_sentences,
+    )
     from novel2media.clients.tts import TTSClient
     from novel2media.nodes.image_nodes import _load_config
 
     novel_dir_path = Path(novel_dir)
 
-    lines = [str(it.get("text", "")).strip() for it in script if str(it.get("text", "")).strip()]
-    if not lines:
+    # 只喂非空行，但保留其在 script 全量数组中的下标作为 storyboard_id（与分镜/图一一对应）
+    line_items = [
+        LineItem(
+            storyboard_id=i,
+            text=str(it.get("text", "")).strip(),
+            speaker=str(it.get("speaker", "")),
+        )
+        for i, it in enumerate(script)
+        if str(it.get("text", "")).strip()
+    ]
+    if not line_items:
         raise ValueError(f"render_synthesize_audio: 章节 {chapter_id} script 为空，无可合成文本")
-    text = "\n".join(lines)
+    text = "\n".join(li.text for li in line_items)
 
     cfg = _load_config({"novel_dir": novel_dir})
     client = TTSClient(cfg.tts_url, cfg.tts_timeout, cfg.retry_max, cfg.retry_backoff)
@@ -754,22 +777,49 @@ def render_synthesize_audio(
         text_len=len(text),
         tts_url=cfg.tts_url,
     )
-    wav_bytes = client.synthesize(text, params)
+    result = client.synthesize_full(text, params)
+
     out_dir = novel_dir_path / chapter_id
     out_dir.mkdir(parents=True, exist_ok=True)
     audio_path = out_dir / "audio.wav"
-    audio_path.write_bytes(wav_bytes)
+    audio_path.write_bytes(result.wav)
+
+    subtitles_path = ""
+    sentences_path = ""
+    timestamps: list[dict] = []
+    if result.sentences is not None:
+        sentences_file = out_dir / "sentences.json"
+        sentences_file.write_text(
+            json.dumps(result.sentences, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        sentences_path = str(sentences_file)
+
+        cues = parse_dots_sentences(result.sentences)
+        timestamps = map_cues_to_lines(cues, line_items)
+
+        srt_file = out_dir / "subtitles.srt"
+        srt_file.write_text(build_srt(cues), encoding="utf-8")
+        subtitles_path = str(srt_file)
+    else:
+        log.warning(
+            "render_synthesize_audio: 未取回句级 sentences.json（服务端句级对齐未开或失败），"
+            "本章无字幕/时间戳，图片将无法按时间落位",
+            chapter=chapter_id,
+        )
 
     log.info(
         "render_synthesize_audio: 合成完成",
         chapter=chapter_id,
         audio=str(audio_path),
         chars=len(text),
+        has_subtitles=bool(subtitles_path),
+        timestamps=len(timestamps),
     )
     return {
         "audio_path": str(audio_path),
-        "subtitles_path": "",
-        "timestamps": [],
+        "subtitles_path": subtitles_path,
+        "sentences_path": sentences_path,
+        "timestamps": timestamps,
     }
 
 
@@ -830,14 +880,15 @@ def build_timeline(
     timeline_path = out_dir / "timeline.json"
     timeline_path.write_text(json.dumps(timeline, ensure_ascii=False, indent=2))
 
+    # 保留合成阶段写入的 subtitles_path / sentences_path，不要用空串覆盖
     existing = dict(chapters_artifacts.get(chapter_id, {}))
     existing.update(
         {
-            "audio_path": audio_path,
-            "subtitles_path": "",
+            "audio_path": audio_path or existing.get("audio_path", ""),
             "timeline_path": str(timeline_path),
         }
     )
+    existing.setdefault("subtitles_path", "")
     artifacts = dict(chapters_artifacts)
     artifacts[chapter_id] = existing
     log.info("build_timeline: 完成", chapter=chapter_id, entries=len(timeline))

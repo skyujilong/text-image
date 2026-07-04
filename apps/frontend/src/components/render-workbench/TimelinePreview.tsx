@@ -25,12 +25,14 @@ export default function TimelinePreview({ runId, chapterId }: Props) {
   const [building, setBuilding] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [entries, setEntries] = useState<TimelineEntry[] | null>(null)
-  const [exportPath, setExportPath] = useState<string | null>(null)
+  const [exportResult, setExportResult] = useState<
+    { draftDir: string; installedDir: string | null; detected: boolean } | null
+  >(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setEntries(null)
-    setExportPath(null)
+    setExportResult(null)
     setError(null)
     api.getTimeline(runId, chapterId)
       .then((res) => {
@@ -62,7 +64,11 @@ export default function TimelinePreview({ runId, chapterId }: Props) {
     setError(null)
     try {
       const res = await api.exportDraft(runId)
-      setExportPath(res.export_path ?? null)
+      setExportResult({
+        draftDir: res.draft_dir,
+        installedDir: res.installed_dir,
+        detected: res.jianying_detected,
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -90,10 +96,28 @@ export default function TimelinePreview({ runId, chapterId }: Props) {
 
       {error && <p className="text-xs text-destructive">{error}</p>}
 
-      {exportPath && (
-        <div className="flex items-center gap-2 text-xs text-green-600 rounded border border-green-200 bg-green-50 p-2">
-          <FileVideo className="size-4" />
-          导出完成：{exportPath}
+      {exportResult && (
+        <div className="flex items-start gap-2 rounded border border-border bg-accent p-2 text-xs text-foreground">
+          <FileVideo className="size-4 shrink-0 mt-0.5" />
+          {exportResult.detected ? (
+            <div className="space-y-1">
+              <p className="font-medium">已自动装入剪映</p>
+              <p className="font-mono break-all text-muted-foreground">{exportResult.installedDir}</p>
+              <p className="text-muted-foreground">
+                打开（或重启）剪映，在草稿列表即可看到该草稿。
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              <p className="font-medium">剪映草稿已生成</p>
+              <p className="font-mono break-all text-muted-foreground">{exportResult.draftDir}</p>
+              <p className="text-muted-foreground">
+                未检测到本机剪映——把此文件夹整包拷入剪映草稿目录后即可打开
+                （macOS：~/Movies/JianyingPro/User Data/Projects/com.lveditor.draft/；
+                Windows：%LOCALAPPDATA%\JianyingPro\User Data\Projects\com.lanying.editor.draft\）。
+              </p>
+            </div>
+          )}
         </div>
       )}
 
