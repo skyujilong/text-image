@@ -146,15 +146,6 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
     }
   }
 
-  // Build storyboard map for quick lookup of scene_prompt
-  const storyboardMap = useMemo(() => {
-    const map = new Map<number, StoryboardShot>()
-    for (const sb of storyboard) {
-      if (sb.storyboard_id != null) map.set(sb.storyboard_id, sb)
-    }
-    return map
-  }, [storyboard])
-
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
@@ -193,7 +184,7 @@ export default function ImageRenderBoard({ runId, chapterId, storyboard }: Props
             <Button
               variant="default"
               size="sm"
-              onClick={handleStartRender}
+              onClick={() => handleStartRender()}
               disabled={startingRender}
             >
               {startingRender ? (

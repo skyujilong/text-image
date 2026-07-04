@@ -14,7 +14,11 @@ router = APIRouter()
 
 @router.post("/runs")
 async def post_runs(req: StartRunRequest):
-    run_id = await runner.start_run(req.model_dump())
+    try:
+        run_id = await runner.start_run(req.model_dump())
+    except (FileNotFoundError, NotADirectoryError, FileExistsError) as e:
+        # provision_run_workspace 的输入校验失败 → 400
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"run_id": run_id}
 
 

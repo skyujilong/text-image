@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import services.workspace as workspace
 from db.runs_db import RunsDB
 from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -718,14 +719,24 @@ async def start_run(params: dict) -> str:
     """
     if _runs_db is None or _main_graph is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
+    # 隔离：source_dir=用户源目录（只读）。灰度期容旧 novel_dir key。
+    source_dir = params.get("source_dir") or params.get("novel_dir", "")
     # Bug 7: 加随机后缀保证 run_id 唯一（同一本书跑两次不冲突）
-    base = params.get("novel_title", "run")[:10] + "-" + str(Path(params.get("novel_dir", "")).name)[:8]
+    base = params.get("novel_title", "run")[:10] + "-" + str(Path(source_dir).name)[:8]
     run_id = f"{base}-{uuid.uuid4().hex[:6]}"
-    await _runs_db.insert(run_id, params.get("novel_dir", ""), params.get("novel_title", ""), params)
+
+    # 建 run 即把源的输入白名单 copy 进独立工作副本；novel_dir 指向副本，源永不被写。
+    # 阻塞 copy 放线程池，别卡事件循环。
+    work_dir = await asyncio.to_thread(workspace.provision_run_workspace, run_id, source_dir)
+    novel_dir = str(work_dir)
+
+    await _runs_db.insert(
+        run_id, novel_dir, params.get("novel_title", ""), params, source_dir=source_dir
+    )
 
     main_input = {
         "novel_title": params.get("novel_title", ""),
-        "novel_dir": params.get("novel_dir", ""),
+        "novel_dir": novel_dir,  # 工作副本，非源
         "worldview": params.get("worldview", ""),
         "character_profiles": params.get("character_profiles", ""),
     }
@@ -1175,9 +1186,13 @@ async def fork_from_checkpoint(
     if not real_checkpoint_id:
         raise ValueError(f"checkpoint not found for run {run_id!r}")
 
-    # 2. 生成新 run_id / thread_id
+    # 2. 生成新 run_id / thread_id；先取源 run 元信息（需其 novel_dir 作 clone 源）
     new_run_id = "fork-" + run_id[:8] + "-" + real_checkpoint_id[:8]
     new_thread_id = _main_thread(new_run_id)
+    src_meta = await _runs_db.get(run_id)
+    if src_meta is None:
+        raise ValueError(f"run {run_id!r} not found in runs.db")
+    parent_novel_dir = src_meta.novel_dir
 
     import aiosqlite
 
@@ -1199,24 +1214,45 @@ async def fork_from_checkpoint(
         )
         await db.commit()
 
-    # 4. runs_db 记录新 run
-    src_meta = await _runs_db.get(run_id)
-    if src_meta is None:
-        raise ValueError(f"run {run_id!r} not found in runs.db")
+    # 4. 隔离：整树 copy 父工作副本 → fork 独立工作副本（含已渲染产出），
+    #    再机械修正文件产出（render_state/timeline/…）里烘死的父 novel_dir 前缀。
+    new_novel_dir = str(await asyncio.to_thread(workspace.clone_run_workspace, new_run_id, parent_novel_dir))
+    await asyncio.to_thread(
+        workspace.rewrite_abs_prefix_in_json_artifacts, Path(new_novel_dir), parent_novel_dir, new_novel_dir
+    )
+
+    # 5. runs_db 记录新 run（novel_dir=fork 工作副本，携 source_dir）
     await _runs_db.insert(
         new_run_id,
-        src_meta.novel_dir,
+        new_novel_dir,
         src_meta.novel_title,
         src_meta.params,
         parent_run_id=run_id,
         fork_source_checkpoint_id=real_checkpoint_id,
+        source_dir=src_meta.source_dir,
     )
 
-    # 5. 从目标 checkpoint 继续
+    # 6. 复制来的 checkpoint 里仍烘着父 novel_dir——不改则 fork 续跑会写回父目录。
+    #    用 aupdate_state 在 fork 起点 checkpoint 上打补丁重指 novel_dir（属 _SHARED_FIELDS，
+    #    能正确 round-trip），并条件重写 chapters_artifacts 里的绝对 audio/timeline 路径。
+    fork_cfg = _thread_config(new_thread_id, checkpoint_id=real_checkpoint_id)
+    patch: dict[str, Any] = {"novel_dir": new_novel_dir}
+    fork_snap = await _main_graph.aget_state(fork_cfg)
+    arts = (getattr(fork_snap, "values", {}) or {}).get("chapters_artifacts") or {}
+    if arts:
+
+        def _fix(v: Any) -> Any:
+            return v.replace(parent_novel_dir, new_novel_dir) if isinstance(v, str) and parent_novel_dir in v else v
+
+        arts2 = {ch: {k: _fix(v) for k, v in a.items()} for ch, a in arts.items()}
+        if arts2 != arts:
+            patch["chapters_artifacts"] = arts2
+    new_cfg = await _main_graph.aupdate_state(fork_cfg, patch)
+    start_cid = new_cfg["configurable"]["checkpoint_id"]
+
+    # 7. 从修正后的 checkpoint 继续
     asyncio.create_task(
-        _drive(
-            _main_graph, _main_thread(new_run_id), Command(resume=None), new_run_id, checkpoint_id=real_checkpoint_id
-        )
+        _drive(_main_graph, _main_thread(new_run_id), Command(resume=None), new_run_id, checkpoint_id=start_cid)
     )
     return new_run_id
 
@@ -1620,12 +1656,38 @@ async def update_run_title(run_id: str, novel_title: str):
     await _runs_db.update_title(run_id, novel_title)
 
 
+# ── 工作目录注册表（薄封装，端点经此访问 runs_db）──────────────────────
+
+
+def _require_runs_db() -> RunsDB:
+    if _runs_db is None:
+        raise RuntimeError("Runner not initialized. Call init_runner() first.")
+    return _runs_db
+
+
+async def list_work_dirs() -> list[dict]:
+    return await _require_runs_db().list_work_dirs()
+
+
+async def add_work_dir(path: str, label: str = "") -> dict:
+    return await _require_runs_db().add_work_dir(path, label)
+
+
+async def get_work_dir(work_dir_id: int) -> dict | None:
+    return await _require_runs_db().get_work_dir(work_dir_id)
+
+
+async def delete_work_dir(work_dir_id: int) -> None:
+    await _require_runs_db().delete_work_dir(work_dir_id)
+
+
 async def delete_run(run_id: str) -> None:
-    """删除废弃 run：清理 checkpoint 数据 + 内存 SSE 订阅 + runs.db 记录。
+    """删除废弃 run：清理 checkpoint 数据 + 内存 SSE 订阅 + runs.db 记录 + 隔离工作副本。
 
     边界：
     - running 状态不可删（后端未保存 asyncio task handle，无法安全取消正在执行的任务）→ 抛 ValueError，端点转 409。
-    - 仅删 DB 记录与 checkpoint，**不动 novel_dir**（用户小说工程目录可能被多 run 共享）。
+    - 连带删 RUNS_WORKSPACE_ROOT 下的工作副本（本 run 专属产出）；**永不动 source_dir**（用户源小说目录）。
+      legacy run 的 novel_dir 指向源、不在 root 内 → delete_run_workspace 天然 no-op。
     """
     if _main_graph is None or _runs_db is None:
         raise RuntimeError("Runner not initialized. Call init_runner() first.")
@@ -1657,3 +1719,5 @@ async def delete_run(run_id: str) -> None:
     # Bug 1: 清理委派记录
     await _runs_db.delete_delegations(run_id)
     await _runs_db.delete(run_id)
+    # 删隔离工作副本（守 is_within_workspace，legacy 安全 no-op；源永不被删）
+    await asyncio.to_thread(workspace.delete_run_workspace, run_id)

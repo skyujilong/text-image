@@ -125,12 +125,16 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
     }
   }
 
-  // 删除废弃 run：仅清理运行记录 + checkpoint，不动 novel_dir。
-  // running 状态前端隐藏删除入口；后端兜底 409。
+  // 删除废弃 run：清理运行记录 + checkpoint + 本 run 的隔离工作副本（图片/音频/导出等产出）。
+  // 原始小说源目录（source_dir）永不受影响。running 状态前端隐藏删除入口；后端兜底 409。
   const handleDelete = async (e: React.MouseEvent, run: RunMeta) => {
     e.stopPropagation()
     const title = run.novel_title || run.run_id.slice(0, 8)
-    if (!window.confirm(`确认删除「${title}」？\n仅清理运行记录与 checkpoint，不会删除小说文件。`)) {
+    if (
+      !window.confirm(
+        `确认删除「${title}」？\n本次运行生成的全部结果（图片 / 音频 / 导出）将被永久删除，无法恢复。\n原始小说文件不受影响。`,
+      )
+    ) {
       return
     }
     setDeleting(run.run_id)
@@ -254,7 +258,7 @@ export default function Sidebar({ onNewRun, onCloneRun }: SidebarProps) {
                       variant="ghost"
                       size="icon"
                       className="size-7 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10"
-                      title="删除（仅清理运行记录与 checkpoint，不删小说文件）"
+                      title="删除本次运行的全部生成结果，不影响原始小说"
                       disabled={deleting === run.run_id}
                       onClick={(e) => handleDelete(e, run)}
                     >

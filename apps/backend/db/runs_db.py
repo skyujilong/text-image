@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS learned_rules (
 )
 """
 
+# 工作目录注册表：用户添加的「父文件夹」，后端扫其下小说供选择（后端持久化）。
+_CREATE_WORK_DIRS = """
+CREATE TABLE IF NOT EXISTS work_dirs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    path       TEXT NOT NULL UNIQUE,
+    label      TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+)
+"""
+
 
 class RunsDB:
     def __init__(self, db_path: str):
@@ -81,12 +91,15 @@ class RunsDB:
         await self._conn.execute(_CREATE_DELEGATIONS)
         await self._conn.execute(_CREATE_GENERATION_EVENTS)
         await self._conn.execute(_CREATE_LEARNED_RULES)
+        await self._conn.execute(_CREATE_WORK_DIRS)
         await self._conn.commit()
         # 兼容旧库：逐列补齐（已存在则跳过）
         for ddl in [
             "ALTER TABLE runs ADD COLUMN params TEXT NOT NULL DEFAULT '{}'",
             "ALTER TABLE runs ADD COLUMN parent_run_id TEXT",
             "ALTER TABLE runs ADD COLUMN fork_source_checkpoint_id TEXT",
+            # 隔离：source_dir=用户源目录（只读），novel_dir=每-run 工作副本
+            "ALTER TABLE runs ADD COLUMN source_dir TEXT",
         ]:
             try:
                 await self._conn.execute(ddl)
@@ -108,13 +121,14 @@ class RunsDB:
         *,
         parent_run_id: str | None = None,
         fork_source_checkpoint_id: str | None = None,
+        source_dir: str | None = None,
     ) -> None:
         if self._conn is None:
             raise RuntimeError("RunsDB not initialized. Use async context manager.")
         now = datetime.now(UTC).isoformat()
         await self._conn.execute(
             "INSERT INTO runs (run_id, novel_dir, novel_title, status, created_at, params, "
-            "parent_run_id, fork_source_checkpoint_id) VALUES (?,?,?,?,?,?,?,?)",
+            "parent_run_id, fork_source_checkpoint_id, source_dir) VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 run_id,
                 novel_dir,
@@ -124,6 +138,7 @@ class RunsDB:
                 json.dumps(params or {}),
                 parent_run_id,
                 fork_source_checkpoint_id,
+                source_dir,
             ),
         )
         await self._conn.commit()
@@ -151,6 +166,43 @@ class RunsDB:
             raise RuntimeError("RunsDB not initialized. Use async context manager.")
         await self._conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
         await self._conn.execute("DELETE FROM generation_events WHERE run_id=?", (run_id,))
+        await self._conn.commit()
+
+    # ── 工作目录注册表（work_dirs）──────────────────────────────────────
+
+    async def add_work_dir(self, path: str, label: str = "") -> dict:
+        """注册一个工作目录（幂等：同 path 重复添加返回既有行）。返回该行 dict。"""
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        now = datetime.now(UTC).isoformat()
+        await self._conn.execute(
+            "INSERT OR IGNORE INTO work_dirs (path, label, created_at) VALUES (?,?,?)",
+            (path, label, now),
+        )
+        await self._conn.commit()
+        async with self._conn.execute("SELECT * FROM work_dirs WHERE path=?", (path,)) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row is not None else {}
+
+    async def list_work_dirs(self) -> list[dict]:
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        async with self._conn.execute("SELECT * FROM work_dirs ORDER BY created_at DESC") as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_work_dir(self, work_dir_id: int) -> dict | None:
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        async with self._conn.execute("SELECT * FROM work_dirs WHERE id=?", (work_dir_id,)) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row is not None else None
+
+    async def delete_work_dir(self, work_dir_id: int) -> None:
+        """仅删注册记录，不碰文件系统。"""
+        if self._conn is None:
+            raise RuntimeError("RunsDB not initialized. Use async context manager.")
+        await self._conn.execute("DELETE FROM work_dirs WHERE id=?", (work_dir_id,))
         await self._conn.commit()
 
     # ── 生成/审阅事件（generation_events）· 环① ──────────────────────────
@@ -429,4 +481,5 @@ class RunsDB:
             fork_source_checkpoint_id=(
                 row["fork_source_checkpoint_id"] if "fork_source_checkpoint_id" in row.keys() else None
             ),
+            source_dir=row["source_dir"] if "source_dir" in row.keys() else None,
         )

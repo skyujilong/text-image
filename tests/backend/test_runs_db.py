@@ -38,6 +38,37 @@ async def test_get_nonexistent_returns_none(db):
     assert meta is None
 
 
+# ── 隔离：source_dir 列 + work_dirs 注册表 ────────────────────────────
+
+
+async def test_source_dir_round_trip(db):
+    await db.insert("r-iso", "/data/runs/r-iso", "标题", {"k": "v"}, source_dir="/src/小说A")
+    meta = await db.get("r-iso")
+    assert meta.novel_dir == "/data/runs/r-iso"
+    assert meta.source_dir == "/src/小说A"
+
+
+async def test_source_dir_defaults_none(db):
+    await db.insert("r-legacy", "/src/legacy", "标题")
+    meta = await db.get("r-legacy")
+    assert meta.source_dir is None  # legacy run 无 source_dir
+
+
+async def test_work_dirs_crud(db):
+    row = await db.add_work_dir("/novels", "库")
+    assert row["path"] == "/novels" and row["label"] == "库"
+    wid = row["id"]
+    # 幂等：同 path 重复添加返回既有行
+    again = await db.add_work_dir("/novels", "别的label")
+    assert again["id"] == wid
+    assert [w["path"] for w in await db.list_work_dirs()] == ["/novels"]
+    got = await db.get_work_dir(wid)
+    assert got is not None and got["path"] == "/novels"
+    await db.delete_work_dir(wid)
+    assert await db.get_work_dir(wid) is None
+    assert await db.list_work_dirs() == []
+
+
 # ── 提示词自进化 · generation_events ──────────────────────────────────
 
 async def _ev(db, run_id, *, stage, decision, chapter_id="ch1", scheme="horror_suspense",

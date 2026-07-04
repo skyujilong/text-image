@@ -14,7 +14,7 @@ export default function MainContent({ showNewRunForm, newRunFormSlot }: MainCont
 
   if (showNewRunForm) {
     return (
-      <main className="flex-1 flex items-center justify-center bg-gray-50">
+      <main className="flex-1 flex items-center justify-center bg-muted/30">
         {newRunFormSlot}
       </main>
     )
@@ -22,7 +22,7 @@ export default function MainContent({ showNewRunForm, newRunFormSlot }: MainCont
 
   if (!currentRunId) {
     return (
-      <main className="flex-1 flex items-center justify-center bg-gray-50 text-gray-400">
+      <main className="flex-1 flex items-center justify-center bg-muted/30 text-muted-foreground">
         请从左侧选择一个 Run，或新建 Run
       </main>
     )

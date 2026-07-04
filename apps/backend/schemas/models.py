@@ -3,11 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class StartRunRequest(BaseModel):
-    novel_dir: str
+    # source_dir=用户选中的源小说目录（只读）。后端建 run 时 copy 出隔离工作副本。
+    # 灰度期兼容旧前端的 novel_dir key：二者取其一即可（见 validator）。
+    source_dir: str = ""
+    novel_dir: str = ""
     novel_title: str = ""
     genre: str = ""
     writing_style: str = ""
@@ -22,6 +25,15 @@ class StartRunRequest(BaseModel):
     character_profiles: str = ""
     start_chapter: int = 1
     end_chapter: int | None = None
+
+    @model_validator(mode="after")
+    def _require_source(self) -> StartRunRequest:
+        """source_dir 缺省时回退旧 novel_dir key；两者皆空则报错。"""
+        if not self.source_dir:
+            self.source_dir = self.novel_dir
+        if not self.source_dir:
+            raise ValueError("source_dir is required")
+        return self
 
 
 class ResumeRequest(BaseModel):
@@ -48,7 +60,7 @@ class UpdateRunRequest(BaseModel):
 
 class RunMeta(BaseModel):
     run_id: str
-    novel_dir: str
+    novel_dir: str  # 每-run 隔离工作副本（产出落此处）
     novel_title: str
     status: Literal["pending", "running", "waiting_human", "done", "error"] = "pending"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -56,6 +68,42 @@ class RunMeta(BaseModel):
     # fork 血缘：parent_run_id 为源 run，fork_source_checkpoint_id 为分叉点
     parent_run_id: str | None = None
     fork_source_checkpoint_id: str | None = None
+    # 用户选中的源小说目录（只读）。legacy run 无此值（None）。
+    source_dir: str | None = None
+
+
+class AddWorkDirRequest(BaseModel):
+    path: str
+    label: str = ""
+
+
+class FsEntry(BaseModel):
+    """目录浏览器的一个子目录条目。"""
+
+    name: str
+    path: str
+    is_novel: bool  # 是否形似小说（含 chapters/*.txt）
+    hidden: bool = False
+
+
+class FsListing(BaseModel):
+    path: str
+    parent: str
+    entries: list[FsEntry]
+
+
+class NovelEntry(BaseModel):
+    """工作目录下扫出的一本小说。"""
+
+    name: str
+    path: str
+    title: str | None = None
+    chapter_count: int = 0
+
+
+class WorkDirNovels(BaseModel):
+    work_dir: str
+    novels: list[NovelEntry]
 
 
 class NarrationPreset(BaseModel):

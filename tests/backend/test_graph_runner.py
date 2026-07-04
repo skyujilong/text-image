@@ -289,3 +289,124 @@ async def test_reconcile_zombie_runs_only_fixes_running(tmp_path):
         assert (await db.get("r-done")).status == "done"
         assert (await db.get("r-error")).status == "error"
         assert (await db.get("r-pending")).status == "pending"
+
+
+async def test_start_run_provisions_isolated_workspace(tmp_path, monkeypatch):
+    """建 run 供给隔离工作副本：copy 输入、不带产出、源不动、同书多 run 不冲突；删 run 清副本留源。"""
+    from db.runs_db import RunsDB
+
+    runs_root = tmp_path / "runs"
+    monkeypatch.setenv("RUNS_WORKSPACE_ROOT", str(runs_root))
+    monkeypatch.setattr(runner, "CHECKPOINT_DB", str(tmp_path / "checkpoints.db"))
+
+    # 源小说：含 chapters（输入）+ 一份章节产出（不该被 copy）
+    source = tmp_path / "src" / "小说A"
+    (source / "chapters").mkdir(parents=True)
+    (source / "chapters" / "c1.txt").write_text("正文", encoding="utf-8")
+    (source / "ch0001").mkdir()
+    (source / "ch0001" / "audio.wav").write_bytes(b"out")
+
+    async with RunsDB(str(tmp_path / "runs.db")) as db:
+        monkeypatch.setattr(runner, "_runs_db", db)
+        monkeypatch.setattr(runner, "_main_graph", object())  # 非 None 即可
+        monkeypatch.setattr(runner, "_drive", AsyncMock())  # 背景驱动置空
+
+        run_id = await runner.start_run({"source_dir": str(source), "novel_title": "标题"})
+
+        meta = await db.get(run_id)
+        assert meta.source_dir == str(source)
+        assert meta.novel_dir == str(runs_root / run_id)  # 指向工作副本
+        # 工作副本：章节被 copy、产出未被 copy
+        assert (runs_root / run_id / "chapters" / "c1.txt").is_file()
+        assert not (runs_root / run_id / "ch0001").exists()
+        # 源纹丝不动
+        assert (source / "ch0001" / "audio.wav").is_file()
+
+        # 同源再跑 → 不同 run_id / 目录，不冲突
+        run_id2 = await runner.start_run({"source_dir": str(source), "novel_title": "标题"})
+        assert run_id2 != run_id
+        assert (runs_root / run_id2 / "chapters" / "c1.txt").is_file()
+
+        # 删除 run：工作副本被删，源保留
+        await runner.delete_run(run_id)
+        assert not (runs_root / run_id).exists()
+        assert (source / "chapters" / "c1.txt").is_file()
+
+
+async def test_start_run_bad_source_raises(tmp_path, monkeypatch):
+    """源目录缺 chapters/*.txt → provision 抛 FileNotFoundError（端点转 400）。"""
+    from db.runs_db import RunsDB
+
+    monkeypatch.setenv("RUNS_WORKSPACE_ROOT", str(tmp_path / "runs"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    async with RunsDB(str(tmp_path / "runs.db")) as db:
+        monkeypatch.setattr(runner, "_runs_db", db)
+        monkeypatch.setattr(runner, "_main_graph", object())
+        monkeypatch.setattr(runner, "_drive", AsyncMock())
+        with pytest.raises(FileNotFoundError):
+            await runner.start_run({"source_dir": str(empty)})
+
+
+async def test_fork_provisions_isolated_copy_and_repoints_novel_dir(tmp_path, monkeypatch):
+    """fork：整树 copy 父工作副本 + 重写文件产出绝对路径 + aupdate_state 重指 novel_dir。"""
+    import aiosqlite
+    from db.runs_db import RunsDB
+
+    runs_root = tmp_path / "runs"
+    monkeypatch.setenv("RUNS_WORKSPACE_ROOT", str(runs_root))
+    monkeypatch.setattr(runner, "CHECKPOINT_DB", str(tmp_path / "checkpoints.db"))
+
+    # 父 run 工作副本：含 chapters + 已渲染产出（render_state.json 烘着父目录绝对路径）
+    parent_dir = runs_root / "parent-run"
+    (parent_dir / "chapters").mkdir(parents=True)
+    (parent_dir / "chapters" / "c1.txt").write_text("正文", encoding="utf-8")
+    (parent_dir / "ch0001").mkdir()
+    (parent_dir / "ch0001" / "render_state.json").write_text(
+        f'{{"selected": "{parent_dir}/ch0001/images/s.png"}}', encoding="utf-8"
+    )
+
+    # fork 的 checkpoint 复制 SQL 需要 checkpoints/writes 表存在
+    async with aiosqlite.connect(str(tmp_path / "checkpoints.db")) as cdb:
+        await cdb.execute(
+            "CREATE TABLE checkpoints (thread_id, checkpoint_ns, checkpoint_id, "
+            "parent_checkpoint_id, type, checkpoint, metadata)"
+        )
+        await cdb.execute(
+            "CREATE TABLE writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value)"
+        )
+        await cdb.commit()
+
+    async with RunsDB(str(tmp_path / "runs.db")) as db:
+        await db.insert("parent-run", str(parent_dir), "标题", {"source_dir": "/src/小说A"}, source_dir="/src/小说A")
+        monkeypatch.setattr(runner, "_runs_db", db)
+
+        # mock 主图：aget_state 给带绝对 audio_path 的快照，aupdate_state 回新 checkpoint config
+        snap = SimpleNamespace(
+            values={"chapters_artifacts": {"ch0001": {"audio_path": f"{parent_dir}/ch0001/audio.wav", "timeline_path": ""}}}
+        )
+        graph = MagicMock()
+        graph.aget_state = AsyncMock(return_value=snap)
+        graph.aupdate_state = AsyncMock(return_value={"configurable": {"thread_id": "x", "checkpoint_id": "new-cid"}})
+        monkeypatch.setattr(runner, "_main_graph", graph)
+        monkeypatch.setattr(runner, "_drive", AsyncMock())
+
+        new_run_id = await runner.fork_from_checkpoint("parent-run", "cid-12345")
+
+        new_meta = await db.get(new_run_id)
+        new_dir = runs_root / new_run_id
+        assert new_meta.novel_dir == str(new_dir)
+        assert new_meta.source_dir == "/src/小说A"
+        assert new_meta.parent_run_id == "parent-run"
+        # 整树 copy：产出也带过来
+        assert (new_dir / "ch0001" / "render_state.json").is_file()
+        # 文件产出里的父前缀被重写为新目录
+        rs = (new_dir / "ch0001" / "render_state.json").read_text(encoding="utf-8")
+        assert str(parent_dir) not in rs and str(new_dir) in rs
+        # aupdate_state 收到重指 novel_dir 的 patch（含重写后的 chapters_artifacts）
+        patch = graph.aupdate_state.call_args.args[1]
+        assert patch["novel_dir"] == str(new_dir)
+        assert patch["chapters_artifacts"]["ch0001"]["audio_path"] == f"{new_dir}/ch0001/audio.wav"
+        # 从 aupdate_state 返回的新 checkpoint 续跑
+        assert runner._drive.call_args.kwargs.get("checkpoint_id") == "new-cid"

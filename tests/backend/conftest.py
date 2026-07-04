@@ -22,6 +22,10 @@ _PINNED_RUNNER_FUNCS = (
     "get_current_run_state",
     "get_node_state",
     "get_run_state_values",
+    "list_work_dirs",
+    "add_work_dir",
+    "get_work_dir",
+    "delete_work_dir",
 )
 
 

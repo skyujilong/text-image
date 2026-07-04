@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { api } from '@/api/client'
-import { useRunStore } from '@/store/runStore'
 
 interface Props {
   open: boolean
@@ -11,7 +10,6 @@ interface Props {
 }
 
 export default function StateInspector({ open, nodePath, runId, onClose }: Props) {
-  const { activeInteraction } = useRunStore()
   const [data, setData] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(false)
 

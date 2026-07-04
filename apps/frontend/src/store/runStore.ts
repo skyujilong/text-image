@@ -78,14 +78,11 @@ interface RunStore {
   setInspectingNode: (path: string | null) => void
   incrementStreamGeneration: () => void
   // 全量替换渲染看板（GET /render/state 拉取后初始化）。
-  // chapterId 不传时使用 '__active__'（旧 interrupt 流程兼容）
-  setRenderBoard: (shotsOrChapterId: string | RenderShot[], shots?: RenderShot[]) => void
+  setRenderBoard: (chapterId: string, shots: RenderShot[]) => void
   // 按 shot 合并看板（挂载拉取用，避免覆盖竞态期间 SSE 已写入的增量）。
-  // chapterId 不传时使用 '__active__'（旧 interrupt 流程兼容）
-  mergeRenderBoard: (shotsOrChapterId: string | RenderShot[], shots?: RenderShot[]) => void
+  mergeRenderBoard: (chapterId: string, shots: RenderShot[]) => void
   // 增量更新单个 shot（SSE render_image 事件 / select 后局部刷新）。
-  // chapterId 不传时使用 '__active__'（旧 interrupt 流程兼容）
-  upsertRenderShot: (shotOrChapterId: string | RenderShot, shot?: RenderShot) => void
+  upsertRenderShot: (chapterId: string, shot: RenderShot) => void
   clearRenderBoard: (chapterId?: string) => void
   // 渲染工作台章节列表
   renderChapters: RenderChapter[]

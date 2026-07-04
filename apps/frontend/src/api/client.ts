@@ -24,13 +24,14 @@ export type RunStatus = 'pending' | 'running' | 'waiting_human' | 'done' | 'erro
 
 export interface RunMeta {
   run_id: string
-  novel_dir: string
+  novel_dir: string  // 每-run 隔离工作副本（产出落此处）
   novel_title: string
   status: RunStatus
   created_at: string
   params: Record<string, unknown>
   parent_run_id?: string | null
   fork_source_checkpoint_id?: string | null
+  source_dir?: string | null  // 用户选中的源小说目录（只读）；legacy run 无此值
 }
 
 export interface RunCurrentState {
@@ -117,7 +118,7 @@ export interface VoicePreset {
 }
 
 export interface StartRunParams {
-  novel_dir: string
+  source_dir: string  // 用户选中的源小说目录；后端 copy 出隔离工作副本
   novel_title?: string
   genre?: string
   writing_style?: string
@@ -132,6 +133,41 @@ export interface StartRunParams {
   character_profiles?: string
   start_chapter?: number
   end_chapter?: number | null
+}
+
+/** 目录浏览器条目（GET /fs/list）。 */
+export interface FsEntry {
+  name: string
+  path: string
+  is_novel: boolean
+  hidden: boolean
+}
+
+export interface FsListing {
+  path: string
+  parent: string
+  entries: FsEntry[]
+}
+
+/** 已注册的工作目录（GET /work-dirs）。 */
+export interface WorkDir {
+  id: number
+  path: string
+  label: string
+  created_at: string
+}
+
+/** 工作目录下扫出的一本小说（GET /work-dirs/{id}/novels）。 */
+export interface NovelEntry {
+  name: string
+  path: string
+  title: string | null
+  chapter_count: number
+}
+
+export interface WorkDirNovels {
+  work_dir: string
+  novels: NovelEntry[]
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -295,7 +331,7 @@ export const api = {
       body: JSON.stringify({ novel_title: novelTitle }),
     }),
 
-  // 删除废弃 run（清理 checkpoint + 记录，不动 novel_dir）；running 状态后端会 409
+  // 删除废弃 run（清理 checkpoint + 记录 + 隔离工作副本，不动 source_dir）；running 状态后端会 409
   deleteRun: (runId: string) =>
     request<{ ok: boolean }>(`/runs/${runId}`, { method: 'DELETE' }),
 
@@ -305,7 +341,20 @@ export const api = {
   getNovelConfig: (dir: string) =>
     request<Record<string, unknown>>(`/novels/config?dir=${encodeURIComponent(dir)}`),
 
-  listNovels: () => request<{ dirs: string[] }>('/novels/list'),
+  // ─── 目录浏览器 + 工作目录注册表 ──────────────────────────────
+  listFs: (path?: string) =>
+    request<FsListing>(`/fs/list${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+
+  listWorkDirs: () => request<WorkDir[]>('/work-dirs'),
+
+  addWorkDir: (path: string, label = '') =>
+    request<WorkDir>('/work-dirs', { method: 'POST', body: JSON.stringify({ path, label }) }),
+
+  deleteWorkDir: (id: number) =>
+    request<{ ok: boolean }>(`/work-dirs/${id}`, { method: 'DELETE' }),
+
+  listWorkDirNovels: (id: number) =>
+    request<WorkDirNovels>(`/work-dirs/${id}/novels`),
 
   getGraphSchema: (scope?: string) =>
     request<GraphSchema>(`/graph/schema?scope=${encodeURIComponent(scope || 'main')}`),
