@@ -1,5 +1,7 @@
 """分镜两步法 prompt builder 测试：换图点初筛 + 换图点画面生成。"""
 
+from unittest.mock import MagicMock
+
 from novel2media.prompts.chapter_prompts import (
     _build_character_roster,
     build_adapt_script_prompt,
@@ -32,19 +34,26 @@ def test_build_character_roster_empty_profile():
     assert _build_character_roster({}) == "（暂无已知角色）"
 
 
-def test_scene_change_prompt_requires_index_array_and_indexed_lines():
-    """第一步初筛：要求输出换图点下标整数数组，且口播带显式下标行。"""
+def test_scene_change_prompt_requires_indexed_lines_and_trigger_objects():
+    """第一步初筛（默认 horror 方案）：要求输出带触发标注的对象数组 {"i","trigger"}，口播带显式下标行。"""
     script = [
         {"text": "第一句", "action": "动作1", "speaker": "旁白"},
         {"text": "第二句", "action": "动作2", "speaker": "旁白"},
         {"text": "第三句", "action": "动作3", "speaker": "旁白"},
     ]
     prompt = build_scene_change_prompt(script, "原文内容")
-    # 明确要求整数下标数组
-    assert "整数" in prompt
-    # 显式禁止输出布尔值（与旧契约区分）
-    assert "不要输出布尔值" in prompt
-    # 口播带显式下标行，且携带说话人 + 画面描述（正反打换图 + 画面变更判定的输入）
+    # 新契约：每个换图点是 {"i": 下标整数, "trigger": 触发类别} 对象，不再是裸整数数组
+    assert '"i"' in prompt
+    assert '"trigger"' in prompt
+    assert "下标整数" in prompt
+    # 六类触发枚举必须在提示词中列全（模型只能从中指认，指认不出即不换）
+    for trig in ("场景切换", "新人物", "动作跳变", "氛围突变", "剧情爆点", "道具特写"):
+        assert trig in prompt
+    # 判定纪律：说得出触发才换图（externalize 推理以引导 lite 模型）
+    assert "说得出" in prompt
+    # 仍禁止布尔值输出（与旧的等长布尔数组契约区分）
+    assert "不要布尔值" in prompt
+    # 口播带显式下标行，且携带说话人 + 画面描述（换图判定的输入）
     assert "0. [说话人:旁白] 第一句 [画面:动作1]" in prompt
     assert "2. [说话人:旁白] 第三句 [画面:动作3]" in prompt
     # 约束下标范围上界为条目数-1（3 条 → 0~2）
@@ -145,6 +154,55 @@ def test_scene_change_no_learned_rules_no_token_leak():
     script = [{"text": "a", "action": "", "speaker": "旁白"}]
     prompt = build_scene_change_prompt(script, "原文")
     assert "%%LEARNED_RULES%%" not in prompt
+
+
+# ── 自进化与手改共存 · %%LEARNED_RULES%% 槽缺失告警 ────────────────────────────
+# 自进化规则(learned_rules)是往模板 %%LEARNED_RULES%% 槽里追加的补充规则，与手改/源码模板是
+# 合并关系。若手改模板误删了该槽、却又有自进化规则 → render_template 静默丢弃，最难查，故告警。
+
+
+def test_scene_change_warns_when_learned_rules_slot_missing(monkeypatch):
+    """手改模板删了 %%LEARNED_RULES%% 槽、却有自进化规则 → 告警（否则规则被静默丢弃）。"""
+    mock_log = MagicMock()
+    monkeypatch.setattr("novel2media.prompts.chapter_prompts.log", mock_log)
+    script = [{"text": "a", "action": "", "speaker": "旁白"}]
+    # 自定义模板保留必需 %%SCRIPT_LINES%% 但删了 %%LEARNED_RULES%%
+    build_scene_change_prompt(
+        script, "原文", template="只有换图正文 %%SCRIPT_LINES%%", learned_rules="- 少换图"
+    )
+    mock_log.warning.assert_called_once()
+    assert mock_log.warning.call_args.kwargs["stage"] == "scene_change"
+
+
+def test_adapt_script_warns_when_learned_rules_slot_missing(monkeypatch):
+    """adapt_script：同理，手改模板缺槽 + 有自进化规则 → 告警。"""
+    mock_log = MagicMock()
+    monkeypatch.setattr("novel2media.prompts.chapter_prompts.log", mock_log)
+    build_adapt_script_prompt(
+        "原文", {}, template="改编正文 %%CHAPTER_TEXT%%", learned_rules="- 旁白控制在15字内"
+    )
+    mock_log.warning.assert_called_once()
+    assert mock_log.warning.call_args.kwargs["stage"] == "adapt_script"
+
+
+def test_no_warn_when_slot_present(monkeypatch):
+    """默认模板含 %%LEARNED_RULES%% 槽 → 有规则也不告警（正常合并路径）。"""
+    mock_log = MagicMock()
+    monkeypatch.setattr("novel2media.prompts.chapter_prompts.log", mock_log)
+    script = [{"text": "a", "action": "", "speaker": "旁白"}]
+    build_scene_change_prompt(script, "原文", learned_rules="- 少换图")
+    build_adapt_script_prompt("原文", {}, learned_rules="- 旁白控制在15字内")
+    mock_log.warning.assert_not_called()
+
+
+def test_no_warn_when_no_learned_rules(monkeypatch):
+    """无自进化规则 → 即使手改模板没槽也不告警（没东西可丢，不打扰）。"""
+    mock_log = MagicMock()
+    monkeypatch.setattr("novel2media.prompts.chapter_prompts.log", mock_log)
+    script = [{"text": "a", "action": "", "speaker": "旁白"}]
+    build_scene_change_prompt(script, "原文", template="无槽模板 %%SCRIPT_LINES%%", learned_rules="")
+    build_adapt_script_prompt("原文", {}, template="无槽模板 %%CHAPTER_TEXT%%", learned_rules="   ")
+    mock_log.warning.assert_not_called()
 
 
 def test_detect_new_characters_prompt_extracts_minor_and_alias():

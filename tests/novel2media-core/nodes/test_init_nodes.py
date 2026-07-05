@@ -163,25 +163,27 @@ def test_configure_chapter_grouping_payload_exposes_schemes(monkeypatch):
 
 
 def test_configure_chapter_grouping_default_narration_scheme(monkeypatch):
-    """resume 不带 narration_scheme → 默认恐怖悬疑 + 其预设模板（含必需占位符）。"""
+    """resume 不带 narration_scheme → 默认恐怖悬疑；不带模板 → 不快照模板正文（override 留空），
+    下游按 scheme 现取源码（改 narration_schemes.py 即时生效）。"""
     monkeypatch.setattr(
         "novel2media.nodes.init_nodes.interrupt", lambda payload: {"group_size": 1}
     )
     result = configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
     assert result["narration_scheme"] == "horror_suspense"
-    assert "%%CHAPTER_TEXT%%" in result["narration_templates"]["adapt_script"]
-    assert "%%SCRIPT_LINES%%" in result["narration_templates"]["scene_change"]
+    # 静态默认：模板正文不再快照进 state，覆盖槽为空
+    assert result["narration_templates"] == {}
 
 
 def test_configure_chapter_grouping_selects_scheme_preset(monkeypatch):
-    """resume 带 narration_scheme 但不带模板 → 用该方案预设模板。"""
+    """resume 带 narration_scheme 但不带模板 → 只存 scheme 选择，override 留空
+    （scheme 选择足以让下游 _resolve_narration_template 现取言情源码，无需快照）。"""
     monkeypatch.setattr(
         "novel2media.nodes.init_nodes.interrupt",
         lambda payload: {"group_size": 1, "narration_scheme": "romance_sweet"},
     )
     result = configure_chapter_grouping({"chapter_files": list(_SEVEN_STEMS)})
     assert result["narration_scheme"] == "romance_sweet"
-    assert "甜" in result["narration_templates"]["adapt_script"]
+    assert result["narration_templates"] == {}
 
 
 def test_configure_chapter_grouping_unknown_scheme_falls_back(monkeypatch):

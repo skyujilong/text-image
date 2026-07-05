@@ -12,7 +12,6 @@ from novel2media.llm import invoke_llm_json_array
 from novel2media.prompts.init_prompts import build_parse_initial_characters_prompt
 from novel2media.prompts.narration_schemes import (
     DEFAULT_SCHEME_KEY,
-    default_templates,
     get_scheme,
     list_scheme_presets,
     validate_templates,
@@ -103,10 +102,11 @@ def load_config(state: dict) -> dict:
         "character_profiles": state.get("character_profiles", ""),
         "characters_profile": {},
         "ignored_characters": [],
-        # 解说方案默认恐怖悬疑（= 现状）；configure_chapter_grouping 按用户选择/自定义覆盖。
-        # 这里预置默认，保证即便 grouping resume 未带该字段，下游也有可用模板（旧 checkpoint 兼容）。
+        # 解说方案默认恐怖悬疑（= 现状）；configure_chapter_grouping 按用户选择覆盖 scheme。
+        # 模板正文不在此快照进 state：下游 node 按 narration_scheme 现取源码（改 .py 即时生效）。
+        # narration_templates 仅作「用户手改 prompt」的覆盖槽，默认空 → 走源码；见 _resolve_narration_template。
         "narration_scheme": DEFAULT_SCHEME_KEY,
-        "narration_templates": default_templates(DEFAULT_SCHEME_KEY),
+        "narration_templates": {},
         # chapters_status 置空占位；configure_chapter_grouping 按组 id 预填 pending
         "chapters_status": {},
         # 有序原始章节文件 stem 列表，供 configure_chapter_grouping 分组消费
@@ -177,12 +177,14 @@ def configure_chapter_grouping(state: dict) -> dict:
             f"configure_chapter_grouping: 非法 group_size（应为 1..5 的整数）: {group_size!r}"
         )
 
-    # 解说方案：resolve 未知 key 回退默认；模板缺失回退所选方案预设，提供则校验必需占位符。
+    # 解说方案：resolve 未知 key 回退默认（scheme 选择仍存 state）。
+    # 模板走「静态默认 + 覆盖槽」：未带（用户没手改）→ 存空 dict，下游按 scheme 现取源码，
+    # 改 narration_schemes.py 即时生效；带了（用户显式自定义）→ 校验后作为该 run 的 override 落 state。
     raw_dict = raw if isinstance(raw, dict) else {}
     scheme = get_scheme(raw_dict.get("narration_scheme"))
     raw_templates = raw_dict.get("narration_templates")
     if raw_templates is None:
-        narration_templates = default_templates(scheme.key)
+        narration_templates: dict[str, str] = {}
     else:
         narration_templates = validate_templates(raw_templates)
 

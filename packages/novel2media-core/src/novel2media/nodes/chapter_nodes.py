@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TypedDict
 
 from langgraph.types import interrupt
 from novel2media.chapters import (
@@ -20,16 +21,70 @@ from novel2media.prompts.chapter_prompts import (
     build_scene_change_prompt,
     build_scene_prompt_for_shots,
 )
+from novel2media.prompts.narration_schemes import get_scheme
 from novel2media_logging import get_logger
 
 log = get_logger("chapter_nodes")
 
 _PENDING_STATUSES = {"pending", "processing"}
 
+
+def _resolve_narration_template(state: dict, field: str) -> str:
+    """按 run 的 narration_scheme 现取解说模板正文（field ∈ {adapt_script, scene_change}）。
+
+    静态默认 + 覆盖槽：默认按所选 scheme 直接读源码模板——改 narration_schemes.py
+    对**所有** run 即时生效（不再快照进 state、不用新开 run）。仅当 state["narration_templates"]
+    带该字段的显式 override 时才优先用它：覆盖场景 = 用户在分组面板手改了 prompt，
+    或旧 checkpoint 里 configure_chapter_grouping 快照的整段模板（向后兼容，行为不变）。
+    """
+    override = (state.get("narration_templates") or {}).get(field)
+    if override:
+        return override
+    scheme = get_scheme(state.get("narration_scheme"))
+    return getattr(scheme, f"{field}_template")
+
 # 分镜第二步「画面生成」分批参数：换图点过多时按批并行调 LLM。
 # max_tokens 已调至 16384，大幅放宽批大小以减少调用次数（每次调用都有大量 prompt 固定开销）
 _SCENE_PROMPT_BATCH_SIZE = 40  # 每批最多多少个换图点（40 个换图点输出约 4k~6k tokens）
 _SCENE_PROMPT_MAX_WORKERS = 2  # 并发上限（控制 ARK 限流压力，不宜过大）
+
+# ---- 分镜观测（storyboard.debug.json + backend.log 诊断行）关键词表 ----
+# 仅用于事后分析的启发式命中标记，命中即算「近似信号」（非精确语义判断），
+# 不参与任何换图/生成/渲染逻辑。用于量化用户反馈的四个问题（重复切换/高潮/背景/氛围）。
+_BG_SUPPRESS_MARKERS = (
+    "背景全黑", "背景压黑", "背景压至全黑", "背景全糊", "背景深暗",
+    "纯色背景", "背景虚化", "浅景深", "背景模糊",
+)
+_ENV_MARKERS = (
+    "室内", "室外", "街", "巷", "夜", "房间", "屋", "厂", "仓库", "走廊",
+    "门", "窗", "墙", "桌", "森林", "山", "车", "办公室", "教室", "医院",
+    "雨", "雪", "雾", "灯",
+)
+_TONE_WORDS = (
+    "低调", "高调", "高对比", "柔光", "柔和", "硬光", "暗调", "逆光", "冷光", "暖光",
+)
+
+
+class SceneScan(TypedDict):
+    """单条 scene_prompt 的启发式关键词扫描结果（近似信号，仅供事后筛查）。"""
+
+    bg_suppressed: bool  # 命中「背景压黑/全糊/虚化」等消灭背景表述
+    has_env: bool  # 命中常见环境/地点词（背景是否有交代的近似信号）
+    tone_word: str  # 命中的首个影调词，未命中为 ""
+
+
+class ChangeStats(TypedDict):
+    """整章换图节奏的聚合信号（量化「重复切换 / 高潮反差」）。"""
+
+    lines: int  # 口播总条数
+    change_points: int  # 换图点数
+    change_ratio: float  # 换图点 / 口播总数
+    speaker_switch_changes: int  # 换图点中相对上一句「说话人切换」的数量
+    speaker_switch_ratio: float  # speaker_switch_changes / change_points
+    content_driven_changes: int  # 说话人未变、靠画面变化换的换图点数
+    max_consecutive_changes: int  # 相邻连续换图点的最长段长（闪切）
+    consecutive_run_count: int  # 相邻连续换图点段数（长度≥2）
+    dwell_histogram: dict[str, int]  # 每张图覆盖几句口播的分桶 {1,2,3-5,>5}
 
 
 def _discover_new_single_chapter_groups(
@@ -214,16 +269,15 @@ def adapt_script(state: dict) -> dict:
     characters_profile = state.get("characters_profile", {})
     feedback = state.get("_script_review_feedback", "") or ""
 
-    # 解说方案模板：run 内选定/自定义（configure_chapter_grouping 写入，随委派进 plan 子图）；
-    # 缺失（旧 checkpoint）时传 None，builder 回退恐怖悬疑默认预设。
-    narration_templates = state.get("narration_templates") or {}
+    # 解说方案模板：默认按 narration_scheme 现取源码（改 .py 即时生效）；用户手改 / 旧 checkpoint
+    # 有 override 才用 override。详见 _resolve_narration_template。
     # 提示词自进化：已采纳校正规则注入块（web 层按 scheme 载入，随委派进 plan 子图）；缺省不注入。
     learned_rules_text = state.get("learned_rules_text") or {}
     prompt = build_adapt_script_prompt(
         chapter_text,
         characters_profile,
         feedback,
-        template=narration_templates.get("adapt_script"),
+        template=_resolve_narration_template(state, "adapt_script"),
         worldview=state.get("worldview", ""),
         learned_rules=learned_rules_text.get("adapt_script", ""),
     )
@@ -271,6 +325,130 @@ def _batch_shots(shots: list[dict], batch_size: int) -> list[list[dict]]:
     return [shots[i : i + batch_size] for i in range(0, len(shots), batch_size)]
 
 
+def _scan_scene_prompt(scene_prompt: str) -> SceneScan:
+    """对单条 scene_prompt 做启发式关键词扫描，产出背景/影调观测标记。
+
+    纯字符串匹配、无副作用；命中与否是近似信号（非精确语义判断），仅供
+    storyboard.debug.json 与日志分析筛查，不参与任何生成逻辑。
+    """
+    text = scene_prompt or ""
+    tone = next((w for w in _TONE_WORDS if w in text), "")
+    return SceneScan(
+        bg_suppressed=any(m in text for m in _BG_SUPPRESS_MARKERS),
+        has_env=any(m in text for m in _ENV_MARKERS),
+        tone_word=tone,
+    )
+
+
+def _storyboard_change_stats(skeleton: list[dict]) -> ChangeStats:
+    """从最终 skeleton 汇总换图节奏信号（量化「重复切换 / 高潮反差」）。纯函数、无副作用。
+
+    speaker_switch_changes 统计「换图点相对上一句口播说话人是否切换」——量化「说话人
+    切换即换图」规则驱动的换图占比；dwell_histogram 反映每张图覆盖几句口播的疏密分布
+    （看铺垫段与高潮段是否有节奏反差）。整章首条为强制换图，不纳入说话人切换比对。
+    """
+    lines = len(skeleton)
+    change_indices = [i for i, e in enumerate(skeleton) if e.get("scene_change")]
+    change_points = len(change_indices)
+    if change_points == 0:
+        return ChangeStats(
+            lines=lines, change_points=0, change_ratio=0.0,
+            speaker_switch_changes=0, speaker_switch_ratio=0.0,
+            content_driven_changes=0, max_consecutive_changes=0,
+            consecutive_run_count=0, dwell_histogram={},
+        )
+
+    speaker_switch_changes = 0
+    content_driven_changes = 0
+    for idx in change_indices:
+        if idx == 0:
+            continue  # 整章首条为强制换图，无「上一句」可比
+        if skeleton[idx].get("speaker") != skeleton[idx - 1].get("speaker"):
+            speaker_switch_changes += 1
+        else:
+            content_driven_changes += 1
+
+    # 相邻连续换图点（下标连续）= 闪切段：算最长段长与段数（长度≥2 的段）
+    max_run = run = 1
+    consecutive_run_count = 0
+    for prev, cur in zip(change_indices, change_indices[1:]):
+        if cur == prev + 1:
+            run += 1
+        else:
+            if run >= 2:
+                consecutive_run_count += 1
+            max_run = max(max_run, run)
+            run = 1
+    if run >= 2:
+        consecutive_run_count += 1
+    max_run = max(max_run, run)
+
+    # 每个换图点覆盖几句口播（到下一换图点/章末）的疏密分布
+    histogram: dict[str, int] = {"1": 0, "2": 0, "3-5": 0, ">5": 0}
+    for pos, idx in enumerate(change_indices):
+        next_idx = change_indices[pos + 1] if pos + 1 < change_points else lines
+        dwell = next_idx - idx
+        bucket = "1" if dwell == 1 else "2" if dwell == 2 else "3-5" if dwell <= 5 else ">5"
+        histogram[bucket] += 1
+
+    return ChangeStats(
+        lines=lines,
+        change_points=change_points,
+        change_ratio=round(change_points / lines, 3) if lines else 0.0,
+        speaker_switch_changes=speaker_switch_changes,
+        speaker_switch_ratio=round(speaker_switch_changes / change_points, 3),
+        content_driven_changes=content_driven_changes,
+        max_consecutive_changes=max_run,
+        consecutive_run_count=consecutive_run_count,
+        dwell_histogram=histogram,
+    )
+
+
+def _build_storyboard_debug(skeleton: list[dict], stats: ChangeStats) -> dict:
+    """构造 storyboard.debug.json 内容：顶部 summary + 逐条明细（含观测标记）。纯函数。
+
+    逐条把「说话人是否切换、这张图覆盖几句、背景/影调关键词命中」标出来，便于打开产物
+    直接读 scene_prompt 做背景缺失/氛围一致的深度分析。
+    """
+    n = len(skeleton)
+    shots: list[dict] = []
+    for i, entry in enumerate(skeleton):
+        prev_speaker = skeleton[i - 1].get("speaker", "") if i > 0 else ""
+        speaker = entry.get("speaker", "")
+        dwell_lines = 0
+        if entry.get("scene_change"):
+            next_idx = next(
+                (j for j in range(i + 1, n) if skeleton[j].get("scene_change")), n
+            )
+            dwell_lines = next_idx - i
+        shots.append(
+            {
+                "storyboard_id": entry.get("storyboard_id", i),
+                "scene_change": entry.get("scene_change", False),
+                "speaker": speaker,
+                "prev_speaker": prev_speaker,
+                "speaker_switched": bool(i > 0 and speaker != prev_speaker),
+                "dwell_lines": dwell_lines,
+                "subjects": entry.get("subjects", []),
+                "scene_prompt": entry.get("scene_prompt", ""),
+                **_scan_scene_prompt(entry.get("scene_prompt", "")),
+            }
+        )
+    return {"summary": stats, "shots": shots}
+
+
+def _write_storyboard_debug(novel_dir: str, chapter_id: str, payload: dict) -> None:
+    """把分镜观测产物写到 <novel_dir>/<chapter_id>/storyboard.debug.json（沿用 build_timeline 落盘范式）。
+
+    纯观测副产物，不参与渲染、可随时删。写失败由调用方兜（只告警不抛），本函数保持直白。
+    """
+    out_dir = Path(novel_dir) / chapter_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "storyboard.debug.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2)
+    )
+
+
 def generate_storyboard(state: dict) -> dict:
     """LLM 两步生成分镜 → current_storyboard（不落盘，稿件由 commit_chapter 收入 render_batch）。
 
@@ -299,13 +477,13 @@ def generate_storyboard(state: dict) -> dict:
         return {"current_storyboard": [], "_storyboard_review_feedback": ""}
 
     # ---- 第一步：初筛换图点（串行单次，输出换图点下标列表）----
-    # 换图点节奏密度也走 run 内解说方案模板；缺失时 builder 回退默认预设。
-    narration_templates = state.get("narration_templates") or {}
+    # 换图点节奏密度默认按 narration_scheme 现取源码（改 .py 即时生效）；用户手改 / 旧 checkpoint
+    # 有 override 才用 override。详见 _resolve_narration_template。
     # 提示词自进化：换图点阶段的已采纳校正规则注入块；缺省不注入。
     learned_rules_text = state.get("learned_rules_text") or {}
     sc_prompt = build_scene_change_prompt(
         script, chapter_text, feedback,
-        template=narration_templates.get("scene_change"),
+        template=_resolve_narration_template(state, "scene_change"),
         learned_rules=learned_rules_text.get("scene_change", ""),
     )
     raw_indices = invoke_llm_json_array(sc_prompt, node="generate_storyboard", label="storyboard_scene_change")
@@ -313,13 +491,24 @@ def generate_storyboard(state: dict) -> dict:
     # 输出已从「等长布尔数组」改为「换图点下标列表」：模型不再需要逐条铺满 N 个 bool，
     # 从根上消除「数组长度对不上」的崩溃。这里只校验下标合法性（整数、在范围内），
     # 越界/非整数直接抛错暴露，不静默丢弃（否则会与 script 错位、污染音频/字幕对齐）。
+    # 兼容两种输出格式：① 纯下标整数（多数解说方案）；② {"i": 下标, "trigger": 触发类别}
+    # （horror 方案要求每个换图点标注命中的触发类别，用"说得出理由才换"压掉虚假切换，
+    # trigger 分布也进观测日志便于诊断）。两种都归一到下标集合，dict 顺带收集触发标注。
     change_set: set[int] = set()
+    change_triggers: dict[int, str] = {}
     for v in raw_indices:
-        if not isinstance(v, int) or isinstance(v, bool):
-            raise ValueError(f"换图点初筛结果含非整数下标: {v!r}（应为 0~{n_script - 1} 的整数）")
-        if v < 0 or v >= n_script:
-            raise ValueError(f"换图点初筛结果下标越界: {v}（口播共 {n_script} 条，合法范围 0~{n_script - 1}）")
-        change_set.add(v)
+        if isinstance(v, dict):
+            idx = v.get("i")
+            trigger = v.get("trigger")
+        else:
+            idx, trigger = v, None
+        if not isinstance(idx, int) or isinstance(idx, bool):
+            raise ValueError(f"换图点初筛结果含非整数下标: {idx!r}（原始元素 {v!r}，应为 0~{n_script - 1} 的整数）")
+        if idx < 0 or idx >= n_script:
+            raise ValueError(f"换图点初筛结果下标越界: {idx}（口播共 {n_script} 条，合法范围 0~{n_script - 1}）")
+        change_set.add(idx)
+        if isinstance(trigger, str) and trigger.strip():
+            change_triggers[idx] = trigger.strip()
 
     # ---- 组装骨架：text/speaker 从 script 对位填充，scene_change 取初筛下标集 ----
     skeleton: list[dict] = []
@@ -335,6 +524,23 @@ def generate_storyboard(state: dict) -> dict:
             }
         )
     skeleton[0]["scene_change"] = True  # 整章首条必为换图点
+
+    # 触发类别分布（horror 方案带 trigger 标注时才非空）：看换图点各由哪类触发驱动，
+    # 「场景切换/新人物」占比高说明换图有据，「机位/措辞」类应已被判定纪律压掉。
+    trigger_dist: dict[str, int] = {}
+    for _trig in change_triggers.values():
+        trigger_dist[_trig] = trigger_dist.get(_trig, 0) + 1
+    # 观测（不改行为）：LLM 判定的换图点 vs 强制首条后的最终换图点，看强制项影响
+    log.info(
+        "generate_storyboard.scene_change",
+        chapter=ch_id,
+        lines=n_script,
+        llm_change_points=len(change_set),
+        forced_first=0 not in change_set,
+        final_change_points=sum(1 for e in skeleton if e["scene_change"]),
+        triggers_labeled=len(change_triggers),
+        trigger_dist=trigger_dist,
+    )
 
     # ---- 第二步：只为换图点生成 subjects + scene_prompt（分批并行）----
     shots = _collect_shots(skeleton, script)
@@ -390,6 +596,22 @@ def generate_storyboard(state: dict) -> dict:
         # 画风触发词由代码统一拼接到末尾（LLM 不写画风/画质/解剖词）；
         # 画质与人体结构交给 Qwen-Image-Edit 自身，不在正向 prompt 堆解剖词。
         entry["scene_prompt"] = f"{raw_prompt}, {_SCENE_STYLE_TRIGGER}"
+
+    # ---- 观测（纯只读副作用，不改稿）：换图节奏聚合信号 + 可读分镜稿产物 ----
+    stats = _storyboard_change_stats(skeleton)
+    log.info("generate_storyboard.diagnostics", chapter=ch_id, **stats)
+    novel_dir = state.get("novel_dir")
+    if novel_dir:
+        try:
+            _write_storyboard_debug(novel_dir, ch_id, _build_storyboard_debug(skeleton, stats))
+        except OSError as exc:
+            # 观测产物写失败绝不拖垮生成链——只告警暴露，稿件照常返回
+            log.warning(
+                "generate_storyboard: 分镜观测产物写入失败（不影响生成）",
+                chapter=ch_id, error=str(exc),
+            )
+    else:
+        log.warning("generate_storyboard: 缺少 novel_dir，跳过分镜观测产物", chapter=ch_id)
 
     shots_count = len(shots)
     log.info(

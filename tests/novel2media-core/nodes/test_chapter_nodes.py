@@ -20,6 +20,12 @@ from novel2media.nodes.chapter_nodes import (
     review_script,
     review_storyboard,
 )
+from novel2media.nodes.chapter_nodes import (  # 分镜观测辅助（纯函数）
+    _resolve_narration_template,
+    _scan_scene_prompt,
+    _storyboard_change_stats,
+)
+from novel2media.prompts.narration_schemes import DEFAULT_SCHEME_KEY, get_scheme
 
 
 def _make_novel(tmp_path, chapters=("chapter_01.txt",), with_summaries=True):
@@ -298,6 +304,61 @@ def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
     assert result["_script_review_feedback"] == ""
 
 
+# ── 解说模板解析：静态默认 + 覆盖槽（不再快照进 state，改源码即时生效）─────────────
+
+
+def test_resolve_narration_template_defaults_to_live_scheme_source():
+    """未编辑 run（有 scheme、无 override）→ 按 scheme 现取源码模板，改 .py 即时生效。"""
+    state = {"narration_scheme": DEFAULT_SCHEME_KEY, "narration_templates": {}}
+    for field in ("adapt_script", "scene_change"):
+        expected = getattr(get_scheme(DEFAULT_SCHEME_KEY), f"{field}_template")
+        assert _resolve_narration_template(state, field) == expected
+
+
+def test_resolve_narration_template_is_scheme_aware_not_horror_fallback():
+    """选了非默认题材（言情）→ 现取言情源码，不回落恐怖默认（修 builder 写死 DEFAULT 的坑）。"""
+    state = {"narration_scheme": "romance_sweet", "narration_templates": {}}
+    got = _resolve_narration_template(state, "scene_change")
+    assert got == get_scheme("romance_sweet").scene_change_template
+    assert got != get_scheme(DEFAULT_SCHEME_KEY).scene_change_template
+
+
+def test_resolve_narration_template_override_wins():
+    """用户在分组面板手改 → state 里落 override，优先于源码。"""
+    custom = "自定义换图模板 %%SCRIPT_LINES%%"
+    state = {"narration_scheme": DEFAULT_SCHEME_KEY, "narration_templates": {"scene_change": custom}}
+    assert _resolve_narration_template(state, "scene_change") == custom
+
+
+def test_resolve_narration_template_backward_compat_old_snapshot():
+    """旧 checkpoint：configure_chapter_grouping 曾把整段模板快照进 state（无 narration_scheme）
+    → 当作 override 照常 replay，行为不变（零破坏）。"""
+    snapshot = {"scene_change": "旧快照 %%SCRIPT_LINES%%", "adapt_script": "旧改编 %%CHAPTER_TEXT%%"}
+    state = {"narration_templates": snapshot}  # 注意：无 narration_scheme，模拟老档
+    assert _resolve_narration_template(state, "scene_change") == snapshot["scene_change"]
+    assert _resolve_narration_template(state, "adapt_script") == snapshot["adapt_script"]
+
+
+def test_resolve_narration_template_empty_state_falls_back_to_default_scheme():
+    """彻底空 state（无 scheme 无 override）→ 回落默认 scheme 源码，不崩。"""
+    assert _resolve_narration_template({}, "adapt_script") == get_scheme(None).adapt_script_template
+
+
+def test_adapt_script_uses_override_when_present(tmp_path, monkeypatch):
+    """端到端：state 带 adapt_script override 时，build 出的 prompt 用的是 override 而非源码默认。"""
+    state = _make_chapter_state(tmp_path, profile={"主角": {"appearance": "黑发"}})
+    state["narration_scheme"] = DEFAULT_SCHEME_KEY
+    state["narration_templates"] = {"adapt_script": "覆盖版改编模板 MARKER_XYZ\n%%CHAPTER_TEXT%%"}
+    mock = _mock_llm(monkeypatch, [{"text": "主角点头", "action": "主角点头"}])
+
+    adapt_script(state)
+
+    prompt = mock.call_args.args[0]
+    assert "MARKER_XYZ" in prompt  # 用了 override
+    # 未带 override 的源码默认模板特征串不应出现（确认没走源码回落）
+    assert "覆盖版改编模板" in prompt
+
+
 def _make_group_chapter_state(tmp_path, texts, profile=None):
     """构造多成员单元 state：每个 text 写一个章节文件，member_paths 按序指向它们。"""
     novel_dir = tmp_path / "novel"
@@ -481,6 +542,34 @@ def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
     # 不落盘
     assert not (tmp_path / "novel" / "chapter_01" / "storyboard.json").exists()
     assert "chapters_artifacts" not in result
+
+
+def test_generate_storyboard_accepts_trigger_labeled_change_points(tmp_path, monkeypatch):
+    """horror 新契约：换图点初筛可返回 {"i","trigger"} 对象数组，节点归一到同一换图集合。"""
+    state = _make_chapter_state(tmp_path)
+    state["current_script"] = [
+        {"text": "主角挥手", "action": "主角挥手", "speaker": "主角"},
+        {"text": "镜头转向反派", "action": "反派登场", "speaker": "旁白"},
+    ]
+    # 第一步返回带触发标注的对象（而非裸整数）；下标 1 命中「新人物」，首条 0 由节点强制补
+    _mock_llm_steps(
+        monkeypatch,
+        [
+            [{"i": 1, "trigger": "新人物"}],
+            [
+                {"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "a scene"},
+                {"anchor_id": 1, "subjects": [], "scene_prompt": "villain"},
+            ],
+        ],
+    )
+
+    result = generate_storyboard(state)
+
+    storyboard = result["current_storyboard"]
+    # 对象格式与裸整数格式解析出同样的换图集合：首条强制 True，下标 1 为换图点
+    assert storyboard[0]["scene_change"] is True
+    assert storyboard[1]["scene_change"] is True
+    assert "villain" in storyboard[1]["scene_prompt"]
 
 
 def test_generate_storyboard_non_change_points_have_empty_prompt(tmp_path, monkeypatch):
@@ -1116,3 +1205,105 @@ def test_export_to_jianying_no_rendered_returns_empty(tmp_path):
         "chapters_artifacts": {},
     }
     assert export_to_jianying(state) == {}
+
+
+# ---- 分镜观测（storyboard.debug.json + 诊断日志）辅助函数 ----
+
+
+def _sb(scene_change, speaker, scene_prompt=""):
+    """构造一条 skeleton 分镜条目（只含统计/扫描关心的字段）。"""
+    return {
+        "storyboard_id": 0,
+        "scene_change": scene_change,
+        "speaker": speaker,
+        "subjects": [],
+        "scene_prompt": scene_prompt,
+    }
+
+
+def test_scan_scene_prompt_flags_background_and_tone():
+    """启发式扫描：命中'背景压至全黑'算 bg_suppressed，命中环境词算 has_env，取首个影调词。"""
+    scan = _scan_scene_prompt("中景，低调暗部，夜晚废弃工厂走廊，背景压至全黑")
+    assert scan == {"bg_suppressed": True, "has_env": True, "tone_word": "低调"}
+
+
+def test_scan_scene_prompt_no_env_no_tone():
+    """无环境词、无影调词、无消灭背景表述 → 三项均为否定值。"""
+    scan = _scan_scene_prompt("大特写，一只手紧攥刀柄")
+    assert scan == {"bg_suppressed": False, "has_env": False, "tone_word": ""}
+
+
+def test_storyboard_change_stats_speaker_switch_quantified():
+    """量化'说话人切换即换图'：换图点相对上一句说话人变了算 speaker_switch，没变算 content_driven。"""
+    skeleton = [
+        _sb(True, "旁白"),   # idx0 强制首条，不纳入说话人比对
+        _sb(True, "主角"),   # idx1 旁白→主角，说话人切换
+        _sb(False, "主角"),
+        _sb(True, "主角"),   # idx3 主角→主角，说话人未变（靠画面换）
+    ]
+    stats = _storyboard_change_stats(skeleton)
+    assert stats["lines"] == 4
+    assert stats["change_points"] == 3
+    assert stats["speaker_switch_changes"] == 1
+    assert stats["content_driven_changes"] == 1
+    # 换图点 [0,1,3]：idx0 覆盖 1 句、idx1 覆盖 2 句、idx3 覆盖 1 句
+    assert stats["dwell_histogram"] == {"1": 2, "2": 1, "3-5": 0, ">5": 0}
+
+
+def test_storyboard_change_stats_consecutive_runs():
+    """相邻连续换图点算闪切段：连续 3 个换图点 → 最长段长 3、段数 1。"""
+    skeleton = [_sb(True, "旁白"), _sb(True, "主角"), _sb(True, "旁白"), _sb(False, "旁白")]
+    stats = _storyboard_change_stats(skeleton)
+    assert stats["max_consecutive_changes"] == 3
+    assert stats["consecutive_run_count"] == 1
+
+
+def test_generate_storyboard_writes_debug_artifact_without_changing_output(tmp_path, monkeypatch):
+    """观测产物：generate_storyboard 落 storyboard.debug.json（summary + 逐条），且不改返回稿件。"""
+    state = _make_chapter_state(tmp_path)
+    state["current_script"] = [
+        {"text": "第一句", "action": "动作1", "speaker": "旁白"},
+        {"text": "第二句", "action": "动作2", "speaker": "主角"},
+    ]
+    _mock_llm_steps(
+        monkeypatch,
+        [
+            [1],
+            [
+                {"anchor_id": 0, "subjects": [], "scene_prompt": "夜晚走廊，低调暗调"},
+                {"anchor_id": 1, "subjects": ["主角"], "scene_prompt": "大特写，一只手"},
+            ],
+        ],
+    )
+
+    result = generate_storyboard(state)
+
+    debug_path = tmp_path / "novel" / "ch0001" / "storyboard.debug.json"
+    assert debug_path.exists()
+    debug = json.loads(debug_path.read_text(encoding="utf-8"))
+    # summary 聚合信号齐全
+    assert debug["summary"]["change_points"] == 2
+    assert debug["summary"]["speaker_switch_changes"] == 1
+    # 逐条明细带观测标记 + 完整 scene_prompt（含代码拼接的画风触发词）
+    assert len(debug["shots"]) == 2
+    assert debug["shots"][0]["has_env"] is True  # “走廊”命中环境词
+    assert debug["shots"][1]["speaker_switched"] is True
+    assert debug["shots"][0]["scene_prompt"].endswith("Qwen Anime")
+    # 观测不改稿：返回的 storyboard 与产物里的 scene_prompt 一致
+    assert result["current_storyboard"][0]["scene_prompt"] == debug["shots"][0]["scene_prompt"]
+
+
+def test_generate_storyboard_debug_dump_failure_does_not_break(tmp_path, monkeypatch):
+    """观测产物写失败绝不拖垮生成：novel_dir 缺失时只跳过，稿件照常返回。"""
+    state = _make_chapter_state(tmp_path)
+    state.pop("novel_dir")  # 触发'缺少 novel_dir'分支
+    state["current_script"] = [{"text": "第一句", "action": "动作1", "speaker": "旁白"}]
+    _mock_llm_steps(
+        monkeypatch,
+        [[0], [{"anchor_id": 0, "subjects": [], "scene_prompt": "some scene"}]],
+    )
+
+    result = generate_storyboard(state)
+
+    # 生成链不中断，稿件正常
+    assert "some scene" in result["current_storyboard"][0]["scene_prompt"]

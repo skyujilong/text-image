@@ -44,12 +44,13 @@ interface NarrationSelection {
   sceneTpl: string
   setSceneTpl: (v: string) => void
   resetTemplates: () => void
-  isDirty: boolean
+  /** 用户是否手改过模板（或应用了「我的预设」）——决定 resume 是否回传 narration_templates 覆盖槽。 */
+  userEdited: boolean
 }
 
 /**
  * 解说方案选择 + run 内模板自定义的状态逻辑。
- * 切换内置方案或应用「我的预设」时重置编辑区；isDirty 表示相对当前内置方案改过模板。
+ * 切换内置方案或应用「我的预设」时重置编辑区；userEdited 表示用户手改过模板（未改则展示 live 默认、resume 不回传）。
  */
 function useNarrationSelection(
   schemes: NarrationSchemePreset[],
@@ -60,28 +61,33 @@ function useNarrationSelection(
     () => schemes.find((s) => s.key === schemeKey),
     [schemes, schemeKey],
   )
-  const [adaptTpl, setAdaptTpl] = useState(preset?.adapt_script_template ?? '')
-  const [sceneTpl, setSceneTpl] = useState(preset?.scene_change_template ?? '')
+  // null = 用户未手改：展示时回落到当前内置方案的 live 模板（随 interrupt payload 刷新，
+  // 不会残留上一个 run/上次加载的旧模板）。非 null = 用户显式编辑 / 应用了「我的预设」，
+  // 作为该 run 的覆盖槽在 resume 时回传；未手改则不回传，后端按 scheme 现取源码。
+  const [adaptEdit, setAdaptEdit] = useState<string | null>(null)
+  const [sceneEdit, setSceneEdit] = useState<string | null>(null)
+
+  const adaptTpl = adaptEdit ?? preset?.adapt_script_template ?? ''
+  const sceneTpl = sceneEdit ?? preset?.scene_change_template ?? ''
 
   const selectScheme = (key: string) => {
-    const next = schemes.find((s) => s.key === key)
     setSchemeKey(key)
-    setAdaptTpl(next?.adapt_script_template ?? '')
-    setSceneTpl(next?.scene_change_template ?? '')
+    // 切内置方案 → 丢弃手改，展示新方案的 live 默认
+    setAdaptEdit(null)
+    setSceneEdit(null)
   }
-  // 应用已保存预设：载入其模板，schemeKey 置为它的 base_scheme（供描述展示 + resume 的 narration_scheme）。
+  // 应用已保存预设：作为显式编辑载入（会随 resume 回传），schemeKey 置为它的 base_scheme
+  // （供描述展示 + resume 的 narration_scheme）。
   const applyPreset = (adapt: string, scene: string, baseKey: string) => {
     setSchemeKey(baseKey)
-    setAdaptTpl(adapt)
-    setSceneTpl(scene)
+    setAdaptEdit(adapt)
+    setSceneEdit(scene)
   }
   const resetTemplates = () => {
-    setAdaptTpl(preset?.adapt_script_template ?? '')
-    setSceneTpl(preset?.scene_change_template ?? '')
+    setAdaptEdit(null)
+    setSceneEdit(null)
   }
-  const isDirty =
-    !!preset &&
-    (adaptTpl !== preset.adapt_script_template || sceneTpl !== preset.scene_change_template)
+  const userEdited = adaptEdit !== null || sceneEdit !== null
 
   return {
     schemeKey,
@@ -89,11 +95,11 @@ function useNarrationSelection(
     selectScheme,
     applyPreset,
     adaptTpl,
-    setAdaptTpl,
+    setAdaptTpl: (v: string) => setAdaptEdit(v),
     sceneTpl,
-    setSceneTpl,
+    setSceneTpl: (v: string) => setSceneEdit(v),
     resetTemplates,
-    isDirty,
+    userEdited,
   }
 }
 
@@ -230,7 +236,7 @@ function NarrationSchemeSection({
             <ChevronRight className="size-4" />
           )}
           自定义解说模板（高级，仅本次运行）
-          {nar.isDirty && (
+          {nar.userEdited && (
             <span className="ml-1 size-2 rounded-full bg-primary" aria-label="已修改" />
           )}
         </Button>
@@ -256,7 +262,7 @@ function NarrationSchemeSection({
                 size="sm"
                 className="text-muted-foreground"
                 onClick={nar.resetTemplates}
-                disabled={!nar.isDirty}
+                disabled={!nar.userEdited}
               >
                 <RotateCcw className="size-4" />
                 恢复预设
@@ -340,9 +346,13 @@ export default function ChapterGroupingPanel({
       const resumeValue: Record<string, unknown> = { group_size: groupSize }
       if (hasSchemes) {
         resumeValue.narration_scheme = nar.schemeKey
-        resumeValue.narration_templates = {
-          adapt_script: nar.adaptTpl,
-          scene_change: nar.sceneTpl,
+        // 静态默认：用户没手改模板就不回传 narration_templates，让后端按 scheme 现取 live 源码
+        // （改 narration_schemes.py 即时生效、不用新开 run）。只有显式编辑 / 应用预设时才回传覆盖槽。
+        if (nar.userEdited) {
+          resumeValue.narration_templates = {
+            adapt_script: nar.adaptTpl,
+            scene_change: nar.sceneTpl,
+          }
         }
       }
       await api.resumeRun(
