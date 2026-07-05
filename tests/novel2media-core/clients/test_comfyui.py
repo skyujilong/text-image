@@ -151,3 +151,80 @@ def test_fetch_result_logs_on_history_non_200(caplog):
         assert client.fetch_result("pid-1") is None
     assert any("history 查询失败" in r.getMessage() for r in caplog.records)
 
+
+@respx.mock
+def test_fetch_result_none_on_network_error():
+    """history 请求遇网络抖动（RequestError）→ 按瞬时错误返回 None，不抛（保持公开契约）。"""
+    respx.get(f"{BASE}/history/pid-1").mock(side_effect=httpx.ConnectError("blip"))
+    client = ComfyUIClient(base_url=BASE)
+    assert client.fetch_result("pid-1") is None
+
+
+@respx.mock
+def test_wait_for_output_tolerates_network_blip(tmp_path):
+    """轮询遇到瞬时网络抖动（RequestError）→ 不致命，续轮询直到产出图。"""
+    prompt_id = "pblip"
+    respx.post(f"{BASE}/prompt").mock(
+        return_value=httpx.Response(200, json={"prompt_id": prompt_id})
+    )
+    respx.get(f"{BASE}/history/{prompt_id}").mock(
+        side_effect=[
+            httpx.ConnectError("blip"),
+            httpx.Response(
+                200,
+                json={
+                    prompt_id: {
+                        "outputs": {
+                            "9": {"images": [{"filename": "o.png", "subfolder": "", "type": "output"}]}
+                        }
+                    }
+                },
+            ),
+        ]
+    )
+    respx.get(f"{BASE}/view").mock(return_value=httpx.Response(200, content=b"PNG"))
+    client = ComfyUIClient(base_url=BASE, timeout=10, poll_interval=0, backoff=0)
+    paths = client.generate(workflow_prompt={}, output_dir=tmp_path, count=1)
+    assert len(paths) == 1
+    assert paths[0].read_bytes() == b"PNG"
+
+
+@respx.mock
+def test_wait_for_output_fails_fast_after_consecutive_failures():
+    """history 持续 5xx → 连续失败达上限快速失败抛清晰诊断，不空等到 timeout。"""
+    respx.get(f"{BASE}/history/pid-1").mock(return_value=httpx.Response(500))
+    client = ComfyUIClient(
+        base_url=BASE, timeout=10, poll_interval=0, backoff=0, max_poll_failures=3
+    )
+    with pytest.raises(RuntimeError, match="连续"):
+        client._wait_for_output("pid-1", timeout=30)
+
+
+@respx.mock
+def test_download_image_retries_on_5xx(tmp_path):
+    """/view 瞬时 500 → 重试后成功返回字节（不打挂整镜）。"""
+    respx.get(f"{BASE}/view").mock(
+        side_effect=[httpx.Response(500), httpx.Response(200, content=b"OKPNG")]
+    )
+    client = ComfyUIClient(base_url=BASE, timeout=10, backoff=0, max_retries=3)
+    assert client.download_image("o.png") == b"OKPNG"
+
+
+@respx.mock
+def test_download_image_raises_after_retries():
+    """/view 恒 500 → 重试耗尽抛 RuntimeError（不静默返回空图）。"""
+    respx.get(f"{BASE}/view").mock(return_value=httpx.Response(500))
+    client = ComfyUIClient(base_url=BASE, timeout=10, backoff=0, max_retries=2)
+    with pytest.raises(RuntimeError, match="下载失败"):
+        client.download_image("o.png")
+
+
+@respx.mock
+def test_download_image_4xx_not_retried():
+    """/view 404（终态）→ 立即抛 HTTPStatusError，不重试。"""
+    route = respx.get(f"{BASE}/view").mock(return_value=httpx.Response(404))
+    client = ComfyUIClient(base_url=BASE, timeout=10, backoff=0, max_retries=3)
+    with pytest.raises(httpx.HTTPStatusError):
+        client.download_image("o.png")
+    assert route.call_count == 1  # 4xx 终态未重试
+

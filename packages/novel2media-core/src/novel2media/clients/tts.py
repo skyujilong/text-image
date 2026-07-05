@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 
 import httpx
+from novel2media.clients._retry import expo_backoff
 from novel2media_logging import get_logger
 
 log = get_logger("tts_client")
@@ -49,12 +50,18 @@ class TTSClient:
         max_retries: int = 3,
         backoff: float = 5.0,
         poll_interval: float = 2.0,
+        backoff_cap: float = 30.0,
+        max_poll_failures: int = 6,
     ) -> None:
         self._base = base_url.rstrip("/")  # 形如 http://127.0.0.1:8080（不含 /api）
         self._timeout = timeout
         self._max_retries = max_retries
-        self._backoff = backoff
-        self._poll_interval = poll_interval
+        self._backoff = backoff  # 指数回退基数（秒）；轮询/下载/提交共用
+        self._poll_interval = poll_interval  # job 正常排队/运行时的常规轮询间隔
+        self._backoff_cap = backoff_cap  # 指数回退封顶（秒），避免退避膨胀到分钟级
+        # 轮询接口连续失败上限：区分「瞬时抖动」与「服务真挂了」。指数回退下
+        # 6 次约容忍 ~90s，之后快速失败并抛清晰诊断，不再默默轮询到 wait_timeout。
+        self._max_poll_failures = max_poll_failures
 
     def list_voices(self) -> list[dict]:
         """拉取 dots.tts 已保存的音色预设列表（GET /api/voices）。
@@ -137,19 +144,29 @@ class TTSClient:
             except httpx.RequestError as e:
                 log.warning("dots.tts 请求异常", error=str(e), attempt=attempt)
             if attempt < self._max_retries:
-                time.sleep(self._backoff)
+                time.sleep(expo_backoff(self._backoff, attempt, self._backoff_cap))
         raise RuntimeError(f"dots.tts job 提交失败，已重试 {self._max_retries} 次")
 
     def fetch_status(self, job_id: str) -> dict | None:
         """单次查询任务状态（非阻塞）。
 
         返回：
-        - None：轮询接口瞬时非 200（按瞬时错误处理，让上层继续轮询，但记录暴露）。
+        - None：轮询接口瞬时失败（非 200 或网络抖动），按瞬时错误处理让上层续轮询，但记录暴露。
         - dict：含 status 字段（queued/running/succeeded）的任务状态。
 
         任务终态为 failed/cancelled → 抛错暴露，不静默返回空音频。
         """
-        resp = httpx.get(f"{self._base}/api/jobs/{job_id}", timeout=self._timeout)
+        try:
+            resp = httpx.get(f"{self._base}/api/jobs/{job_id}", timeout=self._timeout)
+        except httpx.RequestError as e:
+            # 单次轮询遇到网络抖动（连接重置/读超时等）：不是致命错误，返回 None 让上层续轮询。
+            # 与 submit 一致地把 RequestError 当瞬时错误——否则一次抖动就打挂整章合成。
+            log.warning(
+                "dots.tts 状态查询请求异常（按瞬时错误重试）",
+                job_id=job_id,
+                error=str(e),
+            )
+            return None
         if resp.status_code != 200:
             # 轮询接口本身瞬时失败：返回 None 让上层续轮询，但记录暴露——
             # 否则持续 5xx 时上层只抛泛化 TimeoutError，丢失「实为状态接口报错」的诊断线索。
@@ -172,40 +189,82 @@ class TTSClient:
     def _wait_for_job(self, job_id: str, timeout: float = 600.0) -> dict:
         """阻塞轮询直到 succeeded 或超时。超时抛 TimeoutError 暴露（不无限等待）。
 
+        区分两种「未完成」：job 仍在排队/运行（拿到状态 dict）→ 常规节奏轮询；轮询接口本身
+        瞬时失败（fetch_status 返回 None）→ 指数回退重试，容忍网络抖动。连续失败达上限判定
+        服务不可用、快速失败抛清晰诊断，不再默默轮询到 wait_timeout。
+
         记录排队→完成的等待耗时与轮询次数，便于观察单章合成实际耗时。
         """
         start = time.monotonic()
         deadline = start + timeout
         polls = 0
+        consecutive_failures = 0
         while True:
             data = self.fetch_status(job_id)
-            if data is not None and data.get("status") == "succeeded":
-                log.info(
-                    "dots.tts job 完成",
-                    job_id=job_id,
-                    wait_seconds=round(time.monotonic() - start, 1),
-                    polls=polls,
+            if data is None:
+                # 轮询接口瞬时失败（5xx / 网络抖动）：指数回退续轮询，连续失败超限才判定服务挂了。
+                consecutive_failures += 1
+                if consecutive_failures >= self._max_poll_failures:
+                    raise RuntimeError(
+                        f"dots.tts 状态接口连续 {consecutive_failures} 次失败，"
+                        f"判定服务不可用 job_id={job_id}"
+                    )
+                sleep_s = expo_backoff(
+                    self._backoff, consecutive_failures, self._backoff_cap
                 )
-                return data
+            else:
+                consecutive_failures = 0  # 一旦拿到状态即清零，抖动不累积
+                if data.get("status") == "succeeded":
+                    log.info(
+                        "dots.tts job 完成",
+                        job_id=job_id,
+                        wait_seconds=round(time.monotonic() - start, 1),
+                        polls=polls,
+                    )
+                    return data
+                sleep_s = self._poll_interval  # 正常排队/运行：常规轮询节奏
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"dots.tts job 超时（{timeout}s 未完成）job_id={job_id}"
                 )
             polls += 1
-            time.sleep(self._poll_interval)
+            time.sleep(sleep_s)
 
     def download_artifact(self, job_id: str, artifact_name: str = "final.wav") -> bytes:
         """下载任务产物字节流。artifact_name 须为 dots 白名单允许的产物名。
 
         白名单（见 dots-tts-webui-api 文档）：final.wav / final.txt / final.tts /
         timeline.json / sentences.json / manifest.json。
+
+        瞬时错误（5xx / 网络抖动）指数回退重试；4xx（如 404 产物不存在）判定终态立即抛；
+        重试耗尽抛 RuntimeError。避免一次下载抖动打挂整章。
         """
-        resp = httpx.get(
-            f"{self._base}/api/jobs/{job_id}/artifacts/{artifact_name}",
-            timeout=self._timeout,
+        url = f"{self._base}/api/jobs/{job_id}/artifacts/{artifact_name}"
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                resp = httpx.get(url, timeout=self._timeout)
+                if resp.status_code < 500:
+                    resp.raise_for_status()  # 4xx → HTTPStatusError 立即抛（终态）；2xx → 通过
+                    return resp.content
+                log.warning(
+                    "dots.tts 产物下载瞬时 5xx（重试）",
+                    status=resp.status_code,
+                    artifact=artifact_name,
+                    attempt=attempt,
+                )
+            except httpx.RequestError as e:  # HTTPStatusError 是兄弟类、不会被这里吞
+                log.warning(
+                    "dots.tts 产物下载请求异常（重试）",
+                    error=str(e),
+                    artifact=artifact_name,
+                    attempt=attempt,
+                )
+            if attempt < self._max_retries:
+                time.sleep(expo_backoff(self._backoff, attempt, self._backoff_cap))
+        raise RuntimeError(
+            f"dots.tts 产物下载失败，已重试 {self._max_retries} 次 "
+            f"artifact={artifact_name} job_id={job_id}"
         )
-        resp.raise_for_status()
-        return resp.content
 
     def synthesize(self, text: str, params: dict, wait_timeout: float = 600.0) -> bytes:
         """同步一次性：提交 → 等待完成 → 下载 final.wav，返回整段音频字节。
@@ -229,18 +288,20 @@ class TTSClient:
         status = self._wait_for_job(job.job_id, wait_timeout)
         wav = self.download_artifact(job.job_id, "final.wav")
 
+        # 可选时间轴产物：取回失败继续降级告警、不打挂整章。download_artifact 重试耗尽抛
+        # RuntimeError、4xx 抛 httpx.HTTPStatusError，故两类都要兜住。
         sentences: dict | None = None
         if status.get("final_sentences_url"):
             try:
                 sentences = json.loads(self.download_artifact(job.job_id, "sentences.json"))
-            except (httpx.HTTPError, json.JSONDecodeError) as e:
+            except (httpx.HTTPError, RuntimeError, json.JSONDecodeError) as e:
                 log.warning("dots.tts sentences.json 取回失败", job_id=job.job_id, error=str(e))
 
         timeline: dict | None = None
         if status.get("final_timeline_url"):
             try:
                 timeline = json.loads(self.download_artifact(job.job_id, "timeline.json"))
-            except (httpx.HTTPError, json.JSONDecodeError) as e:
+            except (httpx.HTTPError, RuntimeError, json.JSONDecodeError) as e:
                 log.warning("dots.tts timeline.json 取回失败", job_id=job.job_id, error=str(e))
 
         log.info(

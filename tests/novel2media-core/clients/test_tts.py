@@ -95,6 +95,98 @@ def test_job_timeout():
 
 
 @respx.mock
+def test_poll_tolerates_network_blip():
+    """轮询遇到瞬时网络抖动（RequestError）→ 不致命，续轮询直到 succeeded。"""
+    respx.post(f"{BASE}/api/jobs").mock(
+        return_value=httpx.Response(200, json={"job_id": "jb", "poll_url": ""})
+    )
+    respx.get(f"{BASE}/api/jobs/jb").mock(
+        side_effect=[
+            httpx.ConnectError("boom"),
+            httpx.Response(200, json={"status": "succeeded", "final_wav_url": "/x"}),
+        ]
+    )
+    respx.get(f"{BASE}/api/jobs/jb/artifacts/final.wav").mock(
+        return_value=httpx.Response(200, content=b"wavbytes")
+    )
+    client = TTSClient(base_url=BASE, timeout=10, backoff=0, poll_interval=0)
+    wav = client.synthesize(text="hi", params={})
+    assert wav == b"wavbytes"
+
+
+@respx.mock
+def test_poll_fails_fast_after_consecutive_failures():
+    """状态接口持续 5xx → 连续失败达上限快速失败抛清晰诊断，不空等到 wait_timeout。"""
+    respx.post(f"{BASE}/api/jobs").mock(
+        return_value=httpx.Response(200, json={"job_id": "jf", "poll_url": ""})
+    )
+    respx.get(f"{BASE}/api/jobs/jf").mock(return_value=httpx.Response(500))
+    client = TTSClient(
+        base_url=BASE, timeout=10, backoff=0, poll_interval=0, max_poll_failures=3
+    )
+    with pytest.raises(RuntimeError, match="连续"):
+        client.synthesize(text="hi", params={}, wait_timeout=30)
+
+
+@respx.mock
+def test_download_retries_on_5xx():
+    """final.wav 瞬时 500 → 重试后成功返回字节（不打挂整章）。"""
+    respx.post(f"{BASE}/api/jobs").mock(
+        return_value=httpx.Response(200, json={"job_id": "jd", "poll_url": ""})
+    )
+    respx.get(f"{BASE}/api/jobs/jd").mock(
+        return_value=httpx.Response(200, json={"status": "succeeded"})
+    )
+    respx.get(f"{BASE}/api/jobs/jd/artifacts/final.wav").mock(
+        side_effect=[httpx.Response(500), httpx.Response(200, content=b"OKWAV")]
+    )
+    client = TTSClient(
+        base_url=BASE, timeout=10, backoff=0, poll_interval=0, max_retries=3
+    )
+    wav = client.synthesize(text="hi", params={})
+    assert wav == b"OKWAV"
+
+
+@respx.mock
+def test_download_raises_after_retries():
+    """final.wav 恒 500 → 重试耗尽抛 RuntimeError（不静默写空音频）。"""
+    respx.post(f"{BASE}/api/jobs").mock(
+        return_value=httpx.Response(200, json={"job_id": "jx", "poll_url": ""})
+    )
+    respx.get(f"{BASE}/api/jobs/jx").mock(
+        return_value=httpx.Response(200, json={"status": "succeeded"})
+    )
+    respx.get(f"{BASE}/api/jobs/jx/artifacts/final.wav").mock(
+        return_value=httpx.Response(500)
+    )
+    client = TTSClient(
+        base_url=BASE, timeout=10, backoff=0, poll_interval=0, max_retries=2
+    )
+    with pytest.raises(RuntimeError, match="下载失败"):
+        client.synthesize(text="hi", params={})
+
+
+@respx.mock
+def test_download_4xx_not_retried():
+    """final.wav 404（终态）→ 立即抛 HTTPStatusError，不重试。"""
+    respx.post(f"{BASE}/api/jobs").mock(
+        return_value=httpx.Response(200, json={"job_id": "j404", "poll_url": ""})
+    )
+    respx.get(f"{BASE}/api/jobs/j404").mock(
+        return_value=httpx.Response(200, json={"status": "succeeded"})
+    )
+    route = respx.get(f"{BASE}/api/jobs/j404/artifacts/final.wav").mock(
+        return_value=httpx.Response(404)
+    )
+    client = TTSClient(
+        base_url=BASE, timeout=10, backoff=0, poll_interval=0, max_retries=3
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        client.synthesize(text="hi", params={})
+    assert route.call_count == 1  # 4xx 终态未重试
+
+
+@respx.mock
 def test_submit_passes_voice_name():
     """params 含 voice_name 时，提交 payload 透传该字段（引用音色预设）。"""
     route = respx.post(f"{BASE}/api/jobs").mock(

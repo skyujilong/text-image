@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+import httpx
 import services.graph_runner as runner
 import services.render_service as render_service
 import services.render_session as render_session
@@ -339,12 +340,24 @@ async def start_chapter_render(run_id: str, ch_id: str, force_switch: bool = Fal
 
 @router.post("/runs/{run_id}/render/chapter/{ch_id}/audio")
 async def synthesize_audio(run_id: str, ch_id: str, req: AudioRequest):
-    """提交 TTS 音频合成。"""
+    """提交 TTS 音频合成。
+
+    TTS 服务不可达/超时/合成失败时映射为 502/504 + 明确 detail，让前端看到具体原因，
+    而非裸 500（客户端已对瞬时抖动做重试+指数回退，落到这里的多为持续性故障）。
+    """
     try:
         result = await render_service.synthesize_audio(run_id, ch_id, req.model_dump())
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except (httpx.RequestError, TimeoutError) as e:
+        # 网络不可达 / job 等待超时
+        raise HTTPException(
+            status_code=504, detail=f"TTS 服务超时或网络不可达: {e}"
+        ) from e
+    except RuntimeError as e:
+        # submit/轮询/下载重试耗尽、job failed/cancelled、状态接口持续失败
+        raise HTTPException(status_code=502, detail=f"TTS 合成失败: {e}") from e
 
 
 @router.get("/runs/{run_id}/render/chapter/{ch_id}/audio")
