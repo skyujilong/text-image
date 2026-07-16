@@ -22,6 +22,8 @@ export interface NarrationSchemePreset {
   description: string
   adapt_script_template: string
   scene_change_template: string
+  /** 该方案支持的人称视角清单 [{key,label}]；不支持人称的方案为空数组（前端据此决定是否显示人称开关）。 */
+  perspectives?: { key: string; label: string }[]
 }
 
 interface Props {
@@ -31,6 +33,7 @@ interface Props {
   maxGroupSize?: number
   schemes?: NarrationSchemePreset[]
   defaultScheme?: string
+  defaultPerspective?: string
 }
 
 /** useNarrationSelection 暴露的选择态 API（供子组件消费）。 */
@@ -46,6 +49,9 @@ interface NarrationSelection {
   resetTemplates: () => void
   /** 用户是否手改过模板（或应用了「我的预设」）——决定 resume 是否回传 narration_templates 覆盖槽。 */
   userEdited: boolean
+  /** 口播人称视角 key（正交于方案）；切方案时重置为默认。始终回传 resume。 */
+  perspectiveKey: string
+  setPerspective: (key: string) => void
 }
 
 /**
@@ -55,8 +61,11 @@ interface NarrationSelection {
 function useNarrationSelection(
   schemes: NarrationSchemePreset[],
   defaultScheme?: string,
+  defaultPerspective?: string,
 ): NarrationSelection {
+  const fallbackPerspective = defaultPerspective ?? 'third_person'
   const [schemeKey, setSchemeKey] = useState(defaultScheme ?? schemes[0]?.key ?? '')
+  const [perspectiveKey, setPerspectiveKey] = useState(fallbackPerspective)
   const preset = useMemo(
     () => schemes.find((s) => s.key === schemeKey),
     [schemes, schemeKey],
@@ -75,6 +84,8 @@ function useNarrationSelection(
     // 切内置方案 → 丢弃手改，展示新方案的 live 默认
     setAdaptEdit(null)
     setSceneEdit(null)
+    // 人称正交于方案，但新方案未必支持当前人称 → 重置回默认（第三人称）
+    setPerspectiveKey(fallbackPerspective)
   }
   // 应用已保存预设：作为显式编辑载入（会随 resume 回传），schemeKey 置为它的 base_scheme
   // （供描述展示 + resume 的 narration_scheme）。
@@ -82,6 +93,7 @@ function useNarrationSelection(
     setSchemeKey(baseKey)
     setAdaptEdit(adapt)
     setSceneEdit(scene)
+    setPerspectiveKey(fallbackPerspective)
   }
   const resetTemplates = () => {
     setAdaptEdit(null)
@@ -100,6 +112,8 @@ function useNarrationSelection(
     setSceneTpl: (v: string) => setSceneEdit(v),
     resetTemplates,
     userEdited,
+    perspectiveKey,
+    setPerspective: setPerspectiveKey,
   }
 }
 
@@ -182,6 +196,29 @@ function NarrationSchemeSection({
           <p className="text-xs text-muted-foreground">{nar.preset.description}</p>
         )}
       </div>
+
+      {/* 人称视角（仅当所选方案支持时显示；目前仅 horror_viral） */}
+      {(nar.preset?.perspectives?.length ?? 0) > 0 && (
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium text-foreground">人称视角</span>
+          <div className="flex flex-wrap gap-2">
+            {nar.preset!.perspectives!.map((p) => (
+              <Button
+                key={p.key}
+                variant={p.key === nar.perspectiveKey ? 'default' : 'outline'}
+                size="sm"
+                aria-pressed={p.key === nar.perspectiveKey}
+                onClick={() => nar.setPerspective(p.key)}
+              >
+                {p.label}
+              </Button>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            口播人称。第三人称=上帝视角解说；第一人称=主角「我」的口吻自述（分镜画面仍是第三人称）。
+          </p>
+        </div>
+      )}
 
       {/* 我的预设 */}
       {presets.length > 0 && (
@@ -326,6 +363,7 @@ export default function ChapterGroupingPanel({
   maxGroupSize = 5,
   schemes,
   defaultScheme,
+  defaultPerspective,
 }: Props) {
   const { setActiveInteraction, activeInteraction } = useRunStore()
   const [groupSize, setGroupSize] = useState(defaultGroupSize)
@@ -333,7 +371,7 @@ export default function ChapterGroupingPanel({
 
   const schemeList = schemes ?? []
   const hasSchemes = schemeList.length > 0
-  const nar = useNarrationSelection(schemeList, defaultScheme)
+  const nar = useNarrationSelection(schemeList, defaultScheme, defaultPerspective)
 
   const options = Array.from({ length: maxGroupSize }, (_, i) => i + 1)
   const groupCount =
@@ -346,6 +384,8 @@ export default function ChapterGroupingPanel({
       const resumeValue: Record<string, unknown> = { group_size: groupSize }
       if (hasSchemes) {
         resumeValue.narration_scheme = nar.schemeKey
+        // 人称视角正交于方案，始终回传（后端 validate_perspective 会按方案能力校验/回退）。
+        resumeValue.narration_perspective = nar.perspectiveKey
         // 静态默认：用户没手改模板就不回传 narration_templates，让后端按 scheme 现取 live 源码
         // （改 narration_schemes.py 即时生效、不用新开 run）。只有显式编辑 / 应用预设时才回传覆盖槽。
         if (nar.userEdited) {

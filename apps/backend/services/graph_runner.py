@@ -101,6 +101,8 @@ _SHARED_FIELDS = frozenset(
         # 解说方案：run 内选定/自定义的题材模板，plan 子图的 adapt_script/generate_storyboard 消费
         "narration_scheme",
         "narration_templates",
+        # 人称视角：正交于方案的口播人称，plan 子图 adapt_script 据此注入 %%PERSP_*%% token
+        "narration_perspective",
         # 提示词自进化 · 环③：注入 %%LEARNED_RULES%% 的已渲染规则块（按 stage），须委派到 plan 子图
         "learned_rules_text",
         # 提示词自进化 · 环②③ run 内版：本 run 合并的校正规则结构化台账（按规则 stage），

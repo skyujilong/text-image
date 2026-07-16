@@ -135,6 +135,11 @@ class MainGraphState(SharedGraphState):
     # 详见 novel2media.prompts.narration_schemes。两者必须进 _SHARED_FIELDS 才能委派到 plan 子图。
     narration_scheme: str
     narration_templates: dict[str, str]
+    # 人称视角（narration perspective）：口播人称，正交于题材方案，用户在 configure_chapter_grouping
+    # 选择。取值 third_person（默认，= 现状）/ first_person_full / first_person_semi；仅 horror_viral
+    # 支持第一人称，其余方案恒为第三人称。adapt_script 节点据此注入 %%PERSP_*%% token。
+    # 详见 novel2media.prompts.narration_schemes。同须进 _SHARED_FIELDS 才能委派到 plan 子图。
+    narration_perspective: str
     # 提示词自进化 · 环③：已采纳(active)校正规则渲染成的注入块，按 stage 键
     # （{"adapt_script": "...", "scene_change": "..."}）。由 web 层在 chapter_grouping resume 时
     # 按所选 scheme 从 learned_rules 台账载入并注入；builder 渲染进 %%LEARNED_RULES%% 槽。

@@ -60,6 +60,7 @@ def build_adapt_script_prompt(
     template: str | None = None,
     worldview: str = "",
     learned_rules: str = "",
+    perspective_tokens: dict[str, str] | None = None,
 ) -> str:
     """构造有声漫剧单播脚本提示词（只出口播脚本，不含新角色检测）。
 
@@ -75,6 +76,9 @@ def build_adapt_script_prompt(
     - speaker：本条的配音者（不是画面主体）。旁白写"旁白"；角色对白写对应角色名（已知角色用 profile 名，新角色用原文中文名）。
       当前阶段所有 speaker 统一由单播 AI 配音，但须保留该字段以便后续按角色分轨音色。
     feedback 非空时为上一版打回的修改意见，提示 LLM 据此调整（review_script revise 回环）。
+    perspective_tokens 为人称视角（第三/第一人称）的 %%PERSP_*%% 取值（由 narration_schemes
+    的 resolve_perspective_tokens 按所选方案+人称给出）；方案不支持人称时为空/None，模板本就
+    无 PERSP token，注入是 no-op（不影响其它方案，也不影响第三人称逐字节行为）。
     """
     names = "、".join(characters_profile.keys()) if characters_profile else "（暂无已知角色，按原文推断）"
     feedback_block = f"上一版口播脚本的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
@@ -89,6 +93,7 @@ def build_adapt_script_prompt(
             "LEARNED_RULES": learned_rules or "",
             "FEEDBACK_BLOCK": feedback_block,
             "CHAPTER_TEXT": chapter_text,
+            **(perspective_tokens or {}),
         },
     )
 

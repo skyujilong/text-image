@@ -11,9 +11,11 @@ from novel2media.chapters import (
 from novel2media.llm import invoke_llm_json_array
 from novel2media.prompts.init_prompts import build_parse_initial_characters_prompt
 from novel2media.prompts.narration_schemes import (
+    DEFAULT_PERSPECTIVE_KEY,
     DEFAULT_SCHEME_KEY,
     get_scheme,
     list_scheme_presets,
+    validate_perspective,
     validate_templates,
 )
 from novel2media_logging import get_logger
@@ -107,6 +109,8 @@ def load_config(state: dict) -> dict:
         # narration_templates 仅作「用户手改 prompt」的覆盖槽，默认空 → 走源码；见 _resolve_narration_template。
         "narration_scheme": DEFAULT_SCHEME_KEY,
         "narration_templates": {},
+        # 人称视角默认第三人称（= 现状）；configure_chapter_grouping 按用户选择覆盖。
+        "narration_perspective": DEFAULT_PERSPECTIVE_KEY,
         # chapters_status 置空占位；configure_chapter_grouping 按组 id 预填 pending
         "chapters_status": {},
         # 有序原始章节文件 stem 列表，供 configure_chapter_grouping 分组消费
@@ -150,6 +154,8 @@ def configure_chapter_grouping(state: dict) -> dict:
     - payload 额外下发 schemes（内置方案含默认模板正文）+ default_scheme，供前端选择/预填/编辑。
     - resume 额外读 narration_scheme（方案 key）+ narration_templates（用户改后的模板对；
       缺失则回退所选方案的内置模板）。模板经 validate_templates 校验（缺必需占位符即抛错）。
+    - resume 还读 narration_perspective（人称视角，正交于方案）：经 validate_perspective 校验，
+      不被所选方案支持/未知则回退第三人称（现状）。仅 horror_viral 支持第一人称。
     """
     files: list[str] = list(state.get("chapter_files", []))
     raw = interrupt(
@@ -160,6 +166,8 @@ def configure_chapter_grouping(state: dict) -> dict:
             "max_group_size": 5,
             "schemes": list_scheme_presets(),
             "default_scheme": DEFAULT_SCHEME_KEY,
+            # 人称视角默认第三人称；各方案支持的人称清单随 schemes[].perspectives 下发。
+            "default_perspective": DEFAULT_PERSPECTIVE_KEY,
         }
     )
 
@@ -188,6 +196,9 @@ def configure_chapter_grouping(state: dict) -> dict:
     else:
         narration_templates = validate_templates(raw_templates)
 
+    # 人称视角（正交于方案）：校验 key 是否被所选方案支持，未知/不支持 → 回退第三人称（不抛错）。
+    narration_perspective = validate_perspective(scheme, raw_dict.get("narration_perspective"))
+
     # 提示词自进化：web 层（graph_runner.resume_run）在 resume 时按所选 scheme 从 learned_rules
     # 台账载入 active 规则、渲染成按 stage 的注入块塞进 resume value。core 不碰 DB，只透传落 state。
     # 缺省 {} 即不注入（旧 checkpoint / 无规则 / 直接调用均安全）。
@@ -201,6 +212,7 @@ def configure_chapter_grouping(state: dict) -> dict:
         group_size=group_size,
         groups=len(groups),
         narration_scheme=scheme.key,
+        narration_perspective=narration_perspective,
     )
     return {
         "chapter_group_size": group_size,
@@ -209,6 +221,7 @@ def configure_chapter_grouping(state: dict) -> dict:
         "chapters_status": {gid: "pending" for gid in groups},
         "narration_scheme": scheme.key,
         "narration_templates": narration_templates,
+        "narration_perspective": narration_perspective,
         "learned_rules_text": learned_rules_text,
     }
 

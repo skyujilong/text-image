@@ -21,7 +21,7 @@ from novel2media.prompts.chapter_prompts import (
     build_scene_change_prompt,
     build_scene_prompt_for_shots,
 )
-from novel2media.prompts.narration_schemes import get_scheme
+from novel2media.prompts.narration_schemes import get_scheme, resolve_perspective_tokens
 from novel2media_logging import get_logger
 
 log = get_logger("chapter_nodes")
@@ -280,6 +280,10 @@ def adapt_script(state: dict) -> dict:
         template=_resolve_narration_template(state, "adapt_script"),
         worldview=state.get("worldview", ""),
         learned_rules=learned_rules_text.get("adapt_script", ""),
+        # 人称视角：按所选方案+人称取 %%PERSP_*%% 取值注入（方案不支持人称时为空 no-op）。
+        perspective_tokens=resolve_perspective_tokens(
+            state.get("narration_scheme"), state.get("narration_perspective")
+        ),
     )
     script = invoke_llm_json_array(prompt, node="adapt_script", label="adapt_script")  # [{"text","action","speaker"}]
 

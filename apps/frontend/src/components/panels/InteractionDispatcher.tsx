@@ -117,6 +117,7 @@ function InteractionBody({ runId, interaction }: { runId: string; interaction: A
           maxGroupSize={p.max_group_size as number | undefined}
           schemes={p.schemes as NarrationSchemePreset[] | undefined}
           defaultScheme={p.default_scheme as string | undefined}
+          defaultPerspective={p.default_perspective as string | undefined}
         />
       )
     case 'final_decision':

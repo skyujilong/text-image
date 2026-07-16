@@ -1,20 +1,30 @@
 """解说方案（narration scheme）注册表 + 模板渲染/校验测试。"""
 
+import pathlib
+
 import pytest
+from novel2media.prompts import narration_schemes as ns
 from novel2media.prompts.chapter_prompts import (
     build_adapt_script_prompt,
     build_scene_change_prompt,
 )
 from novel2media.prompts.narration_schemes import (
+    DEFAULT_PERSPECTIVE_KEY,
     DEFAULT_SCHEME_KEY,
+    NARRATION_PERSPECTIVES,
     NARRATION_SCHEMES,
     NarrationTemplateError,
     default_templates,
     get_scheme,
     list_scheme_presets,
     render_template,
+    resolve_perspective_tokens,
+    scheme_perspectives,
+    validate_perspective,
     validate_templates,
 )
+
+_FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
 
 def test_render_template_replaces_tokens_and_ignores_braces():
@@ -55,10 +65,20 @@ def test_list_scheme_presets_shape():
             "description",
             "adapt_script_template",
             "scene_change_template",
+            "perspectives",
         }
         # 每个预设都保留必需占位符
         assert "%%CHAPTER_TEXT%%" in p["adapt_script_template"]
         assert "%%SCRIPT_LINES%%" in p["scene_change_template"]
+    # 仅 horror_viral 下发三种人称，其余方案为空（前端据此决定是否显示人称开关）
+    by_key = {p["key"]: p for p in presets}
+    assert [x["key"] for x in by_key["horror_viral"]["perspectives"]] == [
+        "third_person",
+        "first_person_full",
+        "first_person_semi",
+    ]
+    assert by_key["horror_suspense"]["perspectives"] == []
+    assert by_key["general"]["perspectives"] == []
 
 
 def test_get_scheme_fallback_on_unknown():
@@ -131,3 +151,119 @@ def test_plain_narration_keeps_hooks_but_lightens_body():
     assert "轻量改编" in scheme.adapt_script_template
     # 换图从正反打改成解说配图节奏
     assert "不走正反打" in scheme.scene_change_template
+
+
+# ── 人称视角（narration perspective）─────────────────────────────────────────
+
+
+def test_third_person_render_is_byte_identical_to_golden():
+    """第三人称零回归铁律：token 化后按 third_person 渲染必须与改造前模板逐字节相同。
+
+    golden = 改造前 _HORROR_VIRAL_ADAPT_SCRIPT 原文快照（仍含 %%CHAPTER_TEXT%% 等非人称 token）。
+    third_person 的 PERSP_* 取值 = 从模板抠出的原文，故填回后应与 golden 完全一致。
+    """
+    golden = (_FIXTURES / "horror_viral_adapt_third_person.golden.txt").read_text(encoding="utf-8")
+    rendered = render_template(ns._HORROR_VIRAL_ADAPT_SCRIPT, ns._HV_PERSP_THIRD)
+    assert rendered == golden
+    # 第三人称渲染后不应残留任何未填的 %%PERSP_*%% token
+    assert "%%PERSP_" not in rendered
+
+
+def test_horror_viral_template_person_words_are_tokenized():
+    """人称硬编码句已全部抠成 token：模板骨架（不填 PERSP）里不再有裸露的人称词。"""
+    skeleton = ns._HORROR_VIRAL_ADAPT_SCRIPT
+    for word in ("第三人称", "上帝视角", "第一人称"):
+        assert word not in skeleton, f"模板骨架仍裸露人称词「{word}」，应 token 化"
+    # 7 个人称 token 齐全
+    for tok in ("STANCE", "MATERIAL", "MONOLOGUE", "ENDING", "HOOK", "CRISIS", "EXAMPLE"):
+        assert f"%%PERSP_{tok}%%" in skeleton
+
+
+def test_first_person_full_render():
+    """完全第一人称：出现主角「我」自述，且不含第三人称排他句、无残留 token。"""
+    tokens = resolve_perspective_tokens("horror_viral", "first_person_full")
+    rendered = build_adapt_script_prompt(
+        "原文", {"陈默": {}},
+        template=NARRATION_SCHEMES["horror_viral"].adapt_script_template,
+        perspective_tokens=tokens,
+    )
+    assert "「我」" in rendered
+    # 排他的第三人称指令不应残留（否则与第一人称矛盾）
+    assert "不第一人称独白" not in rendered
+    assert "不做第一人称独白" not in rendered
+    assert "%%PERSP_" not in rendered
+
+
+def test_first_person_semi_render():
+    """半第一人称：旁白仍第三人称，但主角内心独白改第一人称「我」。"""
+    tokens = resolve_perspective_tokens("horror_viral", "first_person_semi")
+    rendered = build_adapt_script_prompt(
+        "原文", {"陈默": {}},
+        template=NARRATION_SCHEMES["horror_viral"].adapt_script_template,
+        perspective_tokens=tokens,
+    )
+    # 旁白视角保留第三人称
+    assert "以第三人称旁白推进剧情" in rendered
+    # 主角心声第一人称
+    assert "保留第一人称「我」的心声" in rendered
+    assert "%%PERSP_" not in rendered
+
+
+def test_perspectives_registry_and_scheme_support():
+    assert DEFAULT_PERSPECTIVE_KEY == "third_person"
+    assert set(NARRATION_PERSPECTIVES) == {
+        "third_person",
+        "first_person_full",
+        "first_person_semi",
+    }
+    # 仅 horror_viral 提供人称槽
+    assert NARRATION_SCHEMES["horror_viral"].perspective_slots is not None
+    assert NARRATION_SCHEMES["horror_suspense"].perspective_slots is None
+    assert [p["key"] for p in scheme_perspectives(get_scheme("horror_viral"))] == [
+        "third_person",
+        "first_person_full",
+        "first_person_semi",
+    ]
+    assert scheme_perspectives(get_scheme("general")) == []
+
+
+def test_validate_perspective_fallback():
+    hv = get_scheme("horror_viral")
+    assert validate_perspective(hv, "first_person_full") == "first_person_full"
+    # 未知 key / None → 回退第三人称（不抛错）
+    assert validate_perspective(hv, "nope") == DEFAULT_PERSPECTIVE_KEY
+    assert validate_perspective(hv, None) == DEFAULT_PERSPECTIVE_KEY
+    # 不支持人称的方案：任意 key 都回退第三人称
+    assert validate_perspective(get_scheme("general"), "first_person_full") == DEFAULT_PERSPECTIVE_KEY
+
+
+def test_resolve_perspective_tokens():
+    # horror_viral 各人称返回非空 token dict
+    assert resolve_perspective_tokens("horror_viral", "first_person_full")
+    assert set(resolve_perspective_tokens("horror_viral", "third_person")) == {
+        "PERSP_STANCE",
+        "PERSP_MATERIAL",
+        "PERSP_MONOLOGUE",
+        "PERSP_ENDING",
+        "PERSP_HOOK",
+        "PERSP_CRISIS",
+        "PERSP_EXAMPLE",
+    }
+    # 未知人称 → 回退第三人称取值
+    assert resolve_perspective_tokens("horror_viral", "nope") == ns._HV_PERSP_THIRD
+    # 不支持人称的方案 → 空 dict（注入 no-op）
+    assert resolve_perspective_tokens("general", "first_person_full") == {}
+    assert resolve_perspective_tokens("general", None) == {}
+
+
+def test_non_horror_viral_scheme_unaffected_by_perspective():
+    """其它方案模板不含 PERSP token：传任意 perspective_tokens 都不改变渲染（no-op）。"""
+    base = build_adapt_script_prompt(
+        "XX", {"林辰": {}}, template=NARRATION_SCHEMES["general"].adapt_script_template
+    )
+    with_tokens = build_adapt_script_prompt(
+        "XX", {"林辰": {}},
+        template=NARRATION_SCHEMES["general"].adapt_script_template,
+        perspective_tokens=resolve_perspective_tokens("horror_viral", "first_person_full"),
+    )
+    assert base == with_tokens
