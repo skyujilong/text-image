@@ -86,6 +86,7 @@ _SHARED_FIELDS = frozenset(
         "worldview",
         "character_profiles",
         "characters_profile",
+        "scenes_profile",  # 场景资产档案：detect_new_scenes_llm 收敛写入，plan 子图 storyboard 读挑 scene_id
         "ignored_characters",
         "audio_config",
         "chapters_status",

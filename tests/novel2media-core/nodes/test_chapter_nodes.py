@@ -9,6 +9,7 @@ from novel2media.nodes.chapter_nodes import (
     chapter_advance_decision,
     commit_chapter,
     detect_new_characters_llm,
+    detect_new_scenes_llm,
     export_to_jianying,
     final_decision,
     generate_storyboard,
@@ -441,30 +442,44 @@ def _full_new_char(name="李雷", role="minor"):
     }
 
 
+def _enrich_new(char):
+    """把「完整新角色」包成 stage2 的 resolution=new 记录。"""
+    return {**char, "resolution": "new"}
+
+
 def test_detect_new_characters_writes_setup_queue(tmp_path, monkeypatch):
-    """detect_new_characters_llm：检测到的新角色（六字段齐全）直接写 setup_queue（无单独审阅）。"""
+    """两阶段：stage1 出候选 → stage2 增强产完整档案（六字段齐全）直接写 setup_queue。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {}})
-    new_char = _full_new_char()
-    _mock_llm(monkeypatch, [new_char])
+    candidates = [{"name": "李雷", "role": "minor", "note": "新登场龙套"}]
+    enriched = [_enrich_new(_full_new_char())]
+    _mock_llm_steps(monkeypatch, [candidates, enriched])
 
     result = detect_new_characters_llm(state)
 
-    assert result["setup_queue"] == [new_char]
-    assert result["setup_queue"][0]["role"] == "minor"  # LLM 显式给出的 role 原样透传
-    assert result["setup_queue"][0]["outfit"] == "黑色夹克配牛仔裤"  # outfit 透传进 setup_queue
-    assert "id" not in result["setup_queue"][0]
-    # 不再写 pending_new_characters（直接进 setup_queue）
+    assert len(result["setup_queue"]) == 1
+    char = result["setup_queue"][0]
+    assert char["name"] == "李雷"
+    assert char["role"] == "minor"  # LLM 显式给出的 role 原样透传
+    assert char["outfit"] == "黑色夹克配牛仔裤"  # outfit 透传进 setup_queue
+    assert char["aliases"] == []  # 无别名 → 规范化为空数组
+    assert "id" not in char
+    assert "resolution" not in char  # 分流标签不进档案
     assert "pending_new_characters" not in result
 
 
 def test_detect_new_characters_normalizes_role(tmp_path, monkeypatch):
     """role 缺省/非法 → 归一为 main（不炸 run，前端默认不勾跳过）；合法值原样保留。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {}})
-    no_role = _full_new_char("张三")
+    candidates = [
+        {"name": "张三", "role": "main", "note": ""},
+        {"name": "李四", "role": "minor", "note": ""},
+        {"name": "王五", "role": "minor", "note": ""},
+    ]
+    no_role = _enrich_new(_full_new_char("张三"))
     del no_role["role"]  # LLM 漏输出 role
-    bad_role = _full_new_char("李四", role="extra")  # 非法枚举值
-    good_minor = _full_new_char("王五", role="Minor")  # 大小写 → 归一小写
-    _mock_llm(monkeypatch, [no_role, bad_role, good_minor])
+    bad_role = _enrich_new(_full_new_char("李四", role="extra"))  # 非法枚举值
+    good_minor = _enrich_new(_full_new_char("王五", role="Minor"))  # 大小写 → 归一小写
+    _mock_llm_steps(monkeypatch, [candidates, [no_role, bad_role, good_minor]])
 
     queue = detect_new_characters_llm(state)["setup_queue"]
 
@@ -474,9 +489,10 @@ def test_detect_new_characters_normalizes_role(tmp_path, monkeypatch):
 
 
 def test_detect_new_characters_raises_on_missing_field(tmp_path, monkeypatch):
-    """新角色缺六字段任一 → 抛错暴露（不静默接受）。"""
+    """stage2 的 new 角色缺六字段任一 → 抛错暴露（不静默接受）。"""
     state = _make_chapter_state(tmp_path)
-    _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发"}])
+    candidates = [{"name": "李雷", "role": "minor", "note": ""}]
+    _mock_llm_steps(monkeypatch, [candidates, [{"resolution": "new", "name": "李雷", "appearance": "黑发"}]])
     try:
         detect_new_characters_llm(state)
     except ValueError:
@@ -484,26 +500,124 @@ def test_detect_new_characters_raises_on_missing_field(tmp_path, monkeypatch):
     raise AssertionError("应抛 ValueError（新角色缺必填字段）")
 
 
-def test_detect_new_characters_excludes_known(tmp_path, monkeypatch):
-    """LLM 误报已知角色为新角色时，防御性剔除、不入 setup_queue。"""
-    state = _make_chapter_state(tmp_path, profile={"主角": {"visual_trait": "hero"}})
-    # LLM 把已知「主角」也当新角色返回（缺字段也无妨，应在校验前被剔除）
-    known_dup = {"name": "主角", "appearance": "x"}
-    new_char = _full_new_char("李雷")
-    _mock_llm(monkeypatch, [known_dup, new_char])
+def test_detect_new_characters_excludes_known_alias(tmp_path, monkeypatch):
+    """stage1 别名感知排除：LLM 把已知角色的别名当新候选 → 过滤后无候选 → 跳过 stage2、空队列。"""
+    state = _make_chapter_state(tmp_path, profile={"帽兜男": {"visual_trait": "hooded man", "aliases": ["陆沉"]}})
+    # LLM 把已知「帽兜男」的别名「陆沉」当新角色返回 → 应被排除集（含别名）过滤掉
+    _mock_llm(monkeypatch, [{"name": "陆沉", "role": "main", "note": "帽兜男的别名"}])
 
     result = detect_new_characters_llm(state)
 
-    # 已知角色被剔除，只保留真正的新角色
-    assert result["setup_queue"] == [new_char]
+    assert result["setup_queue"] == []
+    assert "characters_profile" not in result  # 无候选，未触发归并/落盘
+
+
+def test_detect_new_characters_alias_reconcile(tmp_path, monkeypatch):
+    """stage2 归并：候选其实是已知角色的真名 → alias_of 补进既有档案 aliases + 落盘，不重复建档。"""
+    profile = {"帽兜男": {"visual_trait": "hooded man", "character_trait": "黑袍兜帽男", "aliases": []}}
+    state = _make_chapter_state(tmp_path, profile=profile)
+    candidates = [{"name": "陆沉", "role": "main", "note": "疑似帽兜男真名"}]
+    reconciled = [{"resolution": "alias_of", "canonical": "帽兜男", "alias": "陆沉"}]
+    _mock_llm_steps(monkeypatch, [candidates, reconciled])
+
+    result = detect_new_characters_llm(state)
+
+    assert result["setup_queue"] == []  # 无新角色（归并到已有）
+    assert result["characters_profile"]["帽兜男"]["aliases"] == ["陆沉"]
+    # 落盘：characters_profile.json 已写入别名
+    out_file = tmp_path / "novel" / "characters" / "characters_profile.json"
+    assert out_file.exists()
+    assert "陆沉" in out_file.read_text(encoding="utf-8")
+
+
+def test_detect_new_characters_new_carries_aliases(tmp_path, monkeypatch):
+    """stage2 的 new 角色带 aliases（窗口内收集的其它称呼）→ 规范化后进 setup_queue。"""
+    state = _make_chapter_state(tmp_path, profile={"主角": {}})
+    candidates = [{"name": "陆沉", "role": "main", "note": ""}]
+    enriched = [{**_full_new_char("陆沉", role="main"), "resolution": "new", "aliases": ["帽兜男", "陆沉", ""]}]
+    _mock_llm_steps(monkeypatch, [candidates, enriched])
+
+    char = detect_new_characters_llm(state)["setup_queue"][0]
+
+    assert char["name"] == "陆沉"
+    # 去空、去与 name 重复项
+    assert char["aliases"] == ["帽兜男"]
 
 
 def test_detect_new_characters_empty_when_none(tmp_path, monkeypatch):
-    """本章无新角色 → setup_queue 为空（路由将直接进 generate_storyboard）。"""
+    """本组无新角色候选 → 跳过 stage2、setup_queue 为空（路由直接进 generate_storyboard）。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {}})
-    _mock_llm(monkeypatch, [])
+    _mock_llm(monkeypatch, [])  # stage1 空候选 → 只一次调用
     result = detect_new_characters_llm(state)
     assert result["setup_queue"] == []
+
+
+# ── 场景检测 detect_new_scenes_llm（两阶段 + 触发式后瞻，镜像角色检测）───────────
+
+
+def _scene_state(tmp_path, text="原文内容", scenes=None):
+    """场景检测用 state：单章 + scenes_profile。"""
+    state = _make_chapter_state(tmp_path, text=text)
+    state["scenes_profile"] = scenes or {}
+    return state
+
+
+def test_detect_new_scenes_empty_when_none(tmp_path, monkeypatch):
+    """本组无新地点候选 → 跳过 stage2、返回 {}（不写 scenes_profile）。"""
+    state = _scene_state(tmp_path)
+    _mock_llm(monkeypatch, [])  # stage1 空候选 → 只一次调用
+    assert detect_new_scenes_llm(state) == {}
+
+
+def test_detect_new_scenes_writes_profile(tmp_path, monkeypatch):
+    """两阶段：stage1 出候选 → stage2 建档（build_asset/aliases/ref_image 空）写 scenes_profile + 落盘。"""
+    state = _scene_state(tmp_path)
+    candidates = [{"name": "陆家", "note": "主角家"}]
+    reconciled = [{"resolution": "new", "name": "陆家", "description": "中式老宅客厅",
+                   "aliases": ["陆家客厅", "陆家", ""], "build_asset": True}]
+    _mock_llm_steps(monkeypatch, [candidates, reconciled])
+
+    prof = detect_new_scenes_llm(state)["scenes_profile"]["陆家"]
+
+    assert prof["description"] == "中式老宅客厅"
+    assert prof["aliases"] == ["陆家客厅"]  # 去空、去与 name 重复项
+    assert prof["build_asset"] is True
+    assert prof["ref_image"] == ""  # 空景板待渲染 worker 生成
+    out = tmp_path / "novel" / "scenes" / "scenes_profile.json"
+    assert out.exists() and "陆家" in out.read_text(encoding="utf-8")
+
+
+def test_detect_new_scenes_excludes_known_alias(tmp_path, monkeypatch):
+    """stage1 别名感知排除：已知地点的别称被当新候选 → 过滤后无候选 → 跳过 stage2、返回 {}。"""
+    scenes = {"地下停车场": {"name": "地下停车场", "aliases": ["地库"], "build_asset": True, "ref_image": ""}}
+    state = _scene_state(tmp_path, scenes=scenes)
+    _mock_llm(monkeypatch, [{"name": "地库", "note": "地下停车场的别称"}])
+    assert detect_new_scenes_llm(state) == {}
+
+
+def test_detect_new_scenes_alias_reconcile(tmp_path, monkeypatch):
+    """stage2 同义归并：候选其实是已知地点的别称 → alias_of 补进 aliases + 落盘，不重复建档。"""
+    scenes = {"地下停车场": {"name": "地下停车场", "aliases": [], "build_asset": True, "ref_image": ""}}
+    state = _scene_state(tmp_path, scenes=scenes)
+    candidates = [{"name": "地库", "note": "疑似地下停车场"}]
+    reconciled = [{"resolution": "alias_of", "canonical": "地下停车场", "alias": "地库"}]
+    _mock_llm_steps(monkeypatch, [candidates, reconciled])
+
+    result = detect_new_scenes_llm(state)
+
+    assert result["scenes_profile"]["地下停车场"]["aliases"] == ["地库"]
+    out = tmp_path / "novel" / "scenes" / "scenes_profile.json"
+    assert out.exists() and "地库" in out.read_text(encoding="utf-8")
+
+
+def test_detect_new_scenes_build_asset_false_for_one_off(tmp_path, monkeypatch):
+    """频次过滤：一次性过场地点 build_asset=False（渲染走文本背景、不建空景板）。"""
+    state = _scene_state(tmp_path)
+    candidates = [{"name": "巷口便利店", "note": "只出现一次"}]
+    reconciled = [{"resolution": "new", "name": "巷口便利店", "description": "街角便利店", "build_asset": False}]
+    _mock_llm_steps(monkeypatch, [candidates, reconciled])
+
+    assert detect_new_scenes_llm(state)["scenes_profile"]["巷口便利店"]["build_asset"] is False
 
 
 # ── 段落驱动换图（segment_driven_change，如 plain_paragraph）─────────────────

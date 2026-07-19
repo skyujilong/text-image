@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 from pathlib import Path
 
 from novel2media import render_state
 from novel2media.clients.comfyui import ComfyUIClient
+from novel2media.nodes.setup_nodes import read_scenes_profile, write_scenes_profile
+from novel2media.prompts.chapter_prompts import _SCENE_STYLE_TRIGGER
 from novel2media.workflows import build_workflow
 from novel2media_logging import get_logger
 
@@ -63,6 +66,20 @@ def _build_edit_workflow(prompt: str, image1: str, image2: str | None, seed: int
     return wf
 
 
+def _safe_scene_filename(name: str) -> str:
+    """地点名 → 安全文件名（去路径分隔符/空白/非法字符），空则兜底 'scene'。"""
+    cleaned = re.sub(r'[\\/:*?"<>|\s]+', "_", name).strip("_")
+    return cleaned or "scene"
+
+
+def _build_scene_plate_prompt(description: str) -> str:
+    """空景背景板提示词：纯环境、画面无任何人物（作该地点跨镜风格锚点），末尾拼画风触发词。
+
+    与 scene_prompt 同一套画风触发词，保证空景板与后续带角色的成图风格一致。
+    """
+    return f"{description}，空镜头场景，画面中没有任何人物、没有人，只有环境与场景本身，{_SCENE_STYLE_TRIGGER}"
+
+
 class RenderSession:
     """单个 run 的渲染会话：长驻 worker 持续喂 GPU，逐张落盘 + 推 SSE。
 
@@ -91,6 +108,8 @@ class RenderSession:
         # reroll 也走这个队列。worker drain 时按 workflow 类型聚合。
         self._queue: list[dict] = []
         self._uploaded: dict[str, str] = {}  # 本地参考图路径 → ComfyUI 文件名（同图不重复上传）
+        self._scenes: dict | None = None  # scenes_profile.json 缓存（懒加载）
+        self._scene_ref_paths: dict[str, str] = {}  # scene_id → 空景板绝对路径（已解析/已生成）
         self._worker_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()  # 保护 render_state 读改写串行
         self._stopped = False
@@ -179,6 +198,7 @@ class RenderSession:
             "workflow": shot["workflow"],
             "prompt": effective_prompt,
             "ref_images": shot.get("ref_images", []),
+            "scene_id": shot.get("scene_id", ""),  # 场景锚点在 _apply_scene 补位（reroll 也享受）
         }
         self._queue.insert(0, spec)  # 重新抽卡插队到队首，用户主动操作优先执行
         log.info(
@@ -225,6 +245,9 @@ class RenderSession:
         last_workflow: str | None = None
         log.info("render_session worker 启动 drain", run_id=self.run_id, queued=len(self._queue))
         try:
+            # 会前：为本轮队列涉及的地点一次性生成缺失的空景背景板并注入队列各 job（角色优先、补位、
+            # t2i→edit 升级）。放 drain 之前统一处理，空景板集中以 t2i 生成，避免与 edit 批交错换底模。
+            await self._prepare_queued_scenes()
             while not self._stopped:
                 job = self._take_next_job()
                 if job is None:
@@ -291,6 +314,9 @@ class RenderSession:
         sid = str(shot_id)
         job_start = time.monotonic()
         try:
+            # 场景锚点补位（幂等）：会前 _prepare_queued_scenes 已处理初始队列，此处兜底 reroll
+            # 等 drain 中途入队、未经会前处理的 job。
+            await self._apply_scene(job)
             await self._update_shot(sid, status="rendering")
             await self._emit(shot_id, status="rendering")
 
@@ -363,6 +389,115 @@ class RenderSession:
         image1 = names[0]
         image2 = names[1] if len(names) > 1 else None
         return _build_edit_workflow(job["prompt"], image1, image2, seed, prefix)
+
+    # ─── 场景（地点）背景板：生成一次 + 跨镜复用 ─────────────────
+
+    def _scene_profile(self) -> dict:
+        """懒加载 scenes_profile.json（worker 无 graph state，直接读盘）。"""
+        if self._scenes is None:
+            self._scenes = read_scenes_profile(self.novel_dir)
+        return self._scenes
+
+    async def _prepare_queued_scenes(self) -> None:
+        """会前：为本轮队列涉及的地点生成缺失的空景板，并把锚点注入队列各 job（幂等）。
+
+        统一在 drain 前处理：所有空景板一次性以 t2i 生成，随后队列各 job 的 workflow 已确定，
+        _take_next_job 按类型聚合时不再把「其实要走 edit 的场景镜」误判成 t2i 批。
+        """
+        if not self._scene_profile():
+            return
+        for job in list(self._queue):
+            await self._apply_scene(job)
+
+    async def _apply_scene(self, job: dict) -> None:
+        """把 job 归属地点的空景背景板补进 ref_images（角色 ref 填满后仍有槽位时补位）。幂等。
+
+        补位优先级（2 图预算内）：角色 ref 优先（身份最重要），剩余槽位才补场景锚点：
+        - 0 角色（原 t2i、ref 为空）→ 场景板占 slot1，workflow 升级 qwen_edit。
+        - 1 角色 → 角色 slot1 + 场景板 slot2。
+        - 2 角色（ref 已满）→ 不补场景（本期 2 图预算用尽，等扩到第 3 张参考图）。
+        未知地点 / 一次性地点（build_asset=False）/ 空景板生成失败 → 不补，照旧走文本背景。
+        """
+        if job.get("_scene_applied"):
+            return
+        job["_scene_applied"] = True
+        scene_id = job.get("scene_id")
+        if not scene_id:
+            return
+        refs = list(job.get("ref_images", []))
+        if len(refs) >= 2:
+            return  # 角色已占满 2 图预算，本期不补场景
+        plate = await self._scene_plate_path(scene_id)
+        if not plate:
+            return
+        refs.append(plate)
+        job["ref_images"] = refs
+        job["workflow"] = "qwen_edit"  # 0 角色的 t2i 镜头升级为带空景板的 edit（含角色的本就是 edit）
+        log.info(
+            "render_session 场景锚点补位",
+            run_id=self.run_id,
+            shot_id=job.get("storyboard_id"),
+            scene_id=scene_id,
+            ref_count=len(refs),
+        )
+
+    async def _scene_plate_path(self, scene_id: str) -> str | None:
+        """取该地点空景板绝对路径：已生成→复用；build_asset 且未生成→即时生成一次；否则 None。"""
+        if scene_id in self._scene_ref_paths:
+            return self._scene_ref_paths[scene_id]
+        entry = self._scene_profile().get(scene_id)
+        if not isinstance(entry, dict) or not entry.get("build_asset"):
+            return None  # 未知地点 / 一次性地点 → 不补，走文本背景兜底
+        ref_rel = entry.get("ref_image") or ""
+        if ref_rel:
+            abs_path = str((Path(self.novel_dir) / ref_rel).resolve())
+            if Path(abs_path).exists():
+                self._scene_ref_paths[scene_id] = abs_path
+                return abs_path  # 已有空景板（含跨章/重跑复用）
+        abs_path = await self._generate_scene_plate(scene_id, entry)
+        if abs_path:
+            self._scene_ref_paths[scene_id] = abs_path
+        return abs_path
+
+    async def _generate_scene_plate(self, scene_id: str, entry: dict) -> str | None:
+        """为地点生成一张空景背景板（纯环境无人物 t2i），落盘 <novel_dir>/scenes/ 并回写 scenes_profile.json。
+
+        生成失败不拖垮渲染：记录暴露，返回 None（该地点本轮走文本背景兜底）。每地点仅生成一次
+        （ref_image 落盘后被 _scene_plate_path 短路复用）。
+        """
+        description = (entry.get("description") or scene_id).strip()
+        prompt = _build_scene_plate_prompt(description)
+        seed = random.randint(0, 2**32 - 1)
+        prefix = f"scene_{_safe_scene_filename(scene_id)}"
+        wf = _build_t2i_workflow(prompt, seed, prefix)
+        try:
+            prompt_id = await asyncio.to_thread(self._client.submit, wf)
+            images = await asyncio.to_thread(self._client._wait_for_output, prompt_id, self._candidate_timeout)
+            if not images:
+                raise RuntimeError("空景板未产出图片")
+            img = images[0]
+            data = await asyncio.to_thread(self._client.download_image, img["filename"], img.get("subfolder", ""))
+        except Exception as exc:
+            log.error("render_session 空景板生成失败", run_id=self.run_id, scene_id=scene_id, error=str(exc))
+            return None
+
+        out_dir = Path(self.novel_dir) / "scenes"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ext = Path(img["filename"]).suffix or ".png"
+        dest = out_dir / f"{_safe_scene_filename(scene_id)}{ext}"
+        dest.write_bytes(data)
+        rel = f"scenes/{dest.name}"
+        # 回写 ref_image：锁内重读盘上最新档案再写，避免覆盖 detect 阶段的并发更新
+        async with self._lock:
+            latest = read_scenes_profile(self.novel_dir)
+            if isinstance(latest.get(scene_id), dict):
+                latest[scene_id]["ref_image"] = rel
+                write_scenes_profile(self.novel_dir, latest)
+                self._scenes = latest
+            else:
+                entry["ref_image"] = rel  # 档案无此 scene_id（异常）→ 至少本会话缓存
+        log.info("render_session 空景板生成", run_id=self.run_id, scene_id=scene_id, ref_image=rel)
+        return str(dest.resolve())
 
     # ─── render_state 维护（串行写）─────────────────────────────
 

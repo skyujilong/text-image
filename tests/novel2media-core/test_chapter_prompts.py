@@ -4,24 +4,28 @@ from unittest.mock import MagicMock
 
 from novel2media.prompts.chapter_prompts import (
     _build_character_roster,
+    _build_scene_roster,
     build_adapt_script_prompt,
-    build_detect_new_characters_prompt,
+    build_candidate_scan_prompt,
+    build_enrich_characters_prompt,
+    build_reconcile_scenes_prompt,
+    build_scene_candidate_scan_prompt,
     build_scene_change_prompt,
     build_scene_prompt_for_shots,
 )
 
 
 def test_build_character_roster_injects_visual_trait_and_outfit():
-    """花名册注入 外观(visual_trait)+服饰(outfit)；字段缺失（老 checkpoint）时各自省略、不阻塞。"""
+    """花名册注入 外观(visual_trait)+服饰(outfit)+别名(aliases)；字段缺失（老 checkpoint）时各自省略、不阻塞。"""
     roster = _build_character_roster(
         {
-            "全": {"visual_trait": "tall man", "outfit": "黑风衣配军靴"},  # 两字段齐全
+            "全": {"visual_trait": "tall man", "outfit": "黑风衣配军靴", "aliases": ["老大", "疤脸"]},  # 三字段齐全
             "无服饰": {"visual_trait": "petite girl"},  # 老档案：只有 visual_trait
             "无外观": {"outfit": "白大褂"},  # 只有 outfit
             "空档案": {},  # 都缺 → 只列名字
         }
     )
-    assert "全（外观：tall man；服饰：黑风衣配军靴）" in roster
+    assert "全（外观：tall man；服饰：黑风衣配军靴；别名：老大、疤脸）" in roster
     assert "无服饰（外观：petite girl）" in roster
     assert "无外观（服饰：白大褂）" in roster
     # 都缺时只列名字，不带空括号
@@ -95,6 +99,49 @@ def test_scene_prompt_for_shots_has_anchor_id_and_rules():
     assert "scene_change" not in prompt
     # 告知下游生图模型是 Qwen-Image，引导 LLM 写自然语言描述
     assert "Qwen-Image" in prompt
+
+
+def test_scene_prompt_for_shots_injects_scene_roster_and_requires_scene_id():
+    """注入场景花名册（地点名+描述）+ 输出 schema 要求 scene_id（storyboard 从收敛清单里挑地点）。"""
+    scenes = {"陆家": {"name": "陆家", "description": "中式老宅客厅"}}
+    prompt = build_scene_prompt_for_shots(
+        [{"anchor_id": 0, "text": "x", "coverage": "x"}], "原文", {}, scenes_profile=scenes
+    )
+    assert "陆家" in prompt
+    assert "中式老宅客厅" in prompt
+    assert "scene_id" in prompt  # 输出 schema + 挑地点要求
+    assert "不要新造地点名" in prompt  # 收敛铁律
+
+
+def test_scene_prompt_for_shots_no_scenes_placeholder():
+    """无场景库时注入占位（不强制 scene_id），scene_id 仍在输出 schema 里（挑不到则空串）。"""
+    prompt = build_scene_prompt_for_shots([{"anchor_id": 0, "text": "x", "coverage": "x"}], "原文", {})
+    assert "暂无已知地点" in prompt
+    assert "scene_id" in prompt
+
+
+def test_scene_roster_lists_name_and_description():
+    """场景花名册：`地点名（描述）`，供 storyboard 挑 scene_id。"""
+    roster = _build_scene_roster({"陆家": {"name": "陆家", "description": "中式老宅"}})
+    assert "陆家（中式老宅）" in roster
+    assert _build_scene_roster({}) == "（暂无已知地点）"
+
+
+def test_scene_candidate_scan_prompt_lightweight_and_alias_aware():
+    """场景 stage1：粗粒度、别名感知排除、输出极小（name+note）。"""
+    prompt = build_scene_candidate_scan_prompt("原文", {"陆家", "陆家客厅"})
+    assert "陆家" in prompt  # 已知地点（含别名）列入排除
+    assert "粗粒度" in prompt
+    assert "note" in prompt
+
+
+def test_reconcile_scenes_prompt_has_new_and_alias_branches():
+    """场景 stage2：同义归并（alias_of）+ 新地点建档（new，含 build_asset 频次过滤）。"""
+    prompt = build_reconcile_scenes_prompt("窗口原文", [{"name": "地库", "note": ""}], {"地下停车场": {"name": "地下停车场"}})
+    assert "alias_of" in prompt
+    assert "build_asset" in prompt  # 频次过滤字段
+    assert "地下停车场" in prompt  # 已知地点花名册注入
+    assert "粗粒度大场所" in prompt  # 收敛：大场所归纳
 
 
 def test_scene_prompt_for_shots_restores_name_embedded_traits():
@@ -205,31 +252,41 @@ def test_no_warn_when_no_learned_rules(monkeypatch):
     mock_log.warning.assert_not_called()
 
 
-def test_detect_new_characters_prompt_extracts_minor_and_alias():
-    """检测 prompt：龙套/无名指代都要提取并标 role；泛指仍排除；输出示例含 role。"""
-    prompt = build_detect_new_characters_prompt("章节原文", existing_names={"主角"})
-    # 不再限定「只提取有名字的角色」，龙套也要提取
+def test_candidate_scan_prompt_lightweight_and_alias_aware():
+    """Stage1 候选扫描：龙套/无名指代都列，泛指排除，已知名(含别名)注入排除名单，只输出轻量字段。"""
+    prompt = build_candidate_scan_prompt("章节原文", known_names={"帽兜男", "陆沉"})
+    # 龙套 + 无名稳定指代都要列
     assert "龙套" in prompt
-    # 无名但有稳定指代 → 用指代作 name
     assert "稳定指代" in prompt
-    # role 字段规则 + 两个合法枚举值
-    assert "role" in prompt
-    assert '"main"' in prompt and '"minor"' in prompt
-    # outfit 字段规则（标志性默认服饰）+ 与立绘一致约束
-    assert "outfit" in prompt
-    assert "标志性默认服饰" in prompt
-    assert "与 tri_view_prompt / appearance 里的服饰完全一致" in prompt
+    # 只输出轻量三字段
+    assert "role" in prompt and "note" in prompt
+    # 明确不产外观/三视图详细字段（交给 stage2）
+    assert "不要输出外观" in prompt
     # 纯泛指群体仍在排除清单
     assert "路人甲乙" in prompt
-    # 输出示例带 role + outfit
-    assert '"role": "minor"' in prompt
-    assert '"outfit":' in prompt
-    # 已有角色列表注入排除名单
-    assert "主角" in prompt
+    # 已知名（含别名）注入排除名单
+    assert "帽兜男" in prompt and "陆沉" in prompt
 
 
-def test_detect_new_characters_prompt_rule_numbers_contiguous():
-    """规则编号连续（role=8、outfit=9，尾部规则顺延为 10/11/12，无重号/断号）。"""
-    prompt = build_detect_new_characters_prompt("原文", existing_names=set())
-    for n in range(1, 13):  # 规则 1~12
-        assert f"{n}. " in prompt
+def test_enrich_prompt_has_new_and_alias_branches():
+    """Stage2 增强+归并：resolution 两分支、aliases 字段、六必填字段与 outfit 规则、归并花名册与后瞻窗口说明。"""
+    characters_profile = {
+        "帽兜男": {"character_trait": "黑袍兜帽男", "appearance": "一身黑袍，兜帽遮脸", "aliases": []},
+    }
+    candidates = [{"name": "陆沉", "role": "main", "note": "疑似帽兜男真名"}]
+    prompt = build_enrich_characters_prompt("窗口原文", candidates, characters_profile)
+    # resolution 两分支
+    assert '"alias_of"' in prompt and '"new"' in prompt
+    assert "canonical" in prompt and "alias" in prompt
+    # aliases 字段规则
+    assert "aliases" in prompt
+    # 六必填字段仍在（与 init 角色模型一致）
+    for field in ("appearance", "character_trait", "visual_trait", "tri_view_prompt", "tri_view_prompt_cn"):
+        assert field in prompt
+    # outfit 与立绘一致约束
+    assert "outfit" in prompt
+    assert "与 tri_view_prompt / appearance 的服饰完全一致" in prompt
+    # 归并花名册注入已知角色；候选注入；后瞻窗口说明
+    assert "帽兜男" in prompt
+    assert "陆沉" in prompt
+    assert "后瞻" in prompt

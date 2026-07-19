@@ -1,9 +1,12 @@
 """章节分组契约层纯函数测试（build_chapter_groups / group_label / read_group_text 等）。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 from novel2media.chapters import (
     build_chapter_groups,
     chapter_pad_width,
+    forward_chapter_paths,
     group_id_for,
     group_label,
     list_chapter_files,
@@ -162,6 +165,50 @@ def test_list_chapter_files_missing_dir_returns_empty(tmp_path):
     assert list_chapter_files(tmp_path) == []
     (tmp_path / "chapters").mkdir()
     assert list_chapter_files(tmp_path) == []
+
+
+# ── forward_chapter_paths：新角色触发式后瞻窗口 ──────────────────────────────
+
+
+def _make_chapters(tmp_path, count):
+    chapters_dir = tmp_path / "chapters"
+    chapters_dir.mkdir()
+    for i in range(1, count + 1):
+        (chapters_dir / f"chapter_{i:03d}_t.txt").write_text(f"第{i}章", encoding="utf-8")
+    return chapters_dir
+
+
+def test_forward_chapter_paths_slices_next_k(tmp_path):
+    """取当前组末章之后的 K 章路径（re-glob 现盘）。"""
+    _make_chapters(tmp_path, 6)
+    paths = forward_chapter_paths(tmp_path, ["chapter_002_t"], 3)
+    assert [Path(p).stem for p in paths] == ["chapter_003_t", "chapter_004_t", "chapter_005_t"]
+    # 拼读得到后续三章内容
+    assert read_group_text(paths) == "第3章\n\n第4章\n\n第5章"
+
+
+def test_forward_chapter_paths_multi_member_group_uses_last(tmp_path):
+    """当前组多章时按最大章号定位，取其后 K 章。"""
+    _make_chapters(tmp_path, 6)
+    paths = forward_chapter_paths(tmp_path, ["chapter_001_t", "chapter_002_t", "chapter_003_t"], 2)
+    assert [Path(p).stem for p in paths] == ["chapter_004_t", "chapter_005_t"]
+
+
+def test_forward_chapter_paths_tail_and_zero_k(tmp_path):
+    """到全书末尾不足 K → 截断；k<=0 或空成员 → []。"""
+    _make_chapters(tmp_path, 4)
+    assert [Path(p).stem for p in forward_chapter_paths(tmp_path, ["chapter_003_t"], 3)] == ["chapter_004_t"]
+    assert forward_chapter_paths(tmp_path, ["chapter_004_t"], 3) == []  # 已是末章
+    assert forward_chapter_paths(tmp_path, ["chapter_001_t"], 0) == []  # 关闭后瞻
+    assert forward_chapter_paths(tmp_path, [], 3) == []  # 空成员
+
+
+def test_forward_chapter_paths_prefers_ordered_stems(tmp_path):
+    """优先用传入的 ordered_stems（chapter_groups 展平）定位，不依赖现盘 glob。"""
+    (tmp_path / "chapters").mkdir()  # 目录存在但为空，证明未走 glob
+    ordered = ["chapter_001_a", "chapter_002_b", "chapter_003_c", "chapter_004_d"]
+    paths = forward_chapter_paths(tmp_path, ["chapter_002_b"], 5, ordered_stems=ordered)
+    assert [Path(p).stem for p in paths] == ["chapter_003_c", "chapter_004_d"]
 
 
 # ── _discover_new_single_chapter_groups：id 碰撞不覆盖既有组 ──────────────────

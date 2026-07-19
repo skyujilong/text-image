@@ -159,3 +159,36 @@ def list_chapter_files(novel_dir: str | Path) -> list[ChapterFileInfo]:
         {"stem": stem, "number": chapter_number(stem), "label": group_label([stem])}
         for stem in stems
     ]
+
+
+def forward_chapter_paths(
+    novel_dir: str | Path,
+    current_members: list[str],
+    k: int,
+    *,
+    ordered_stems: list[str] | None = None,
+) -> list[str]:
+    """当前处理组之后的 K 个章节文件绝对路径（供「新角色触发式后瞻」读原文）。
+
+    用途：检测到本组有新角色时，多读后续 K 章上下文，让首建档的外观/真名/别名更完整
+    （见 detect_new_characters_llm）。到全书末尾或 k<=0 时返回 []。
+
+    - current_members：当前组成员 stem（load_chapter 存的 current_chapter_member_paths 取 .stem）。
+    - ordered_stems：全书有序 stem 列表。**优先由调用方从 shared 的 chapter_groups 展平传入**
+      （chapter_files/chapter_order 不在 _SHARED_FIELDS、进不了 plan 子图）；None 时回退
+      glob `<novel_dir>/chapters` 现盘（list_chapter_files）。
+    - 定位方式按章号：取当前组最大章号，选章号更大的前 K 个 stem（对多章组、非连续章号都稳）。
+    - 返回 `<novel_dir>/chapters/<stem>.txt` 绝对路径，交给 read_group_text 拼读。
+    """
+    if k <= 0 or not current_members:
+        return []
+    if ordered_stems is None:
+        ordered = [info["stem"] for info in list_chapter_files(novel_dir)]
+    else:
+        ordered = sorted(ordered_stems, key=chapter_sort_key)
+
+    current_last_num = max(chapter_number(m) for m in current_members)
+    after = [s for s in ordered if chapter_number(s) > current_last_num][:k]
+
+    chapters_dir = Path(novel_dir) / "chapters"
+    return [str(chapters_dir / f"{stem}.txt") for stem in after]

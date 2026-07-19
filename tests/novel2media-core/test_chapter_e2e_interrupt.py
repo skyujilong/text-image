@@ -58,15 +58,23 @@ def _planning_payloads(new_characters):
     """一次完整规划的 LLM 输出序列（各自独立调用，均为 JSON 数组）。
 
     - adapt_script：口播脚本数组（只出脚本，不含新角色）。
-    - detect_new_characters_llm：新角色数组（独立节点，放分镜之前）。
+    - detect_new_characters_llm 两阶段：stage1 候选扫描 + （有候选时）stage2 增强/归并。
+    - detect_new_scenes_llm：stage1 地点候选扫描（此处恒空 [] → 跳过 stage2，不建场景）。
     - generate_storyboard 两步法：换图点下标列表 + 换图点画面数组。
     """
-    return [
+    candidates = [{"name": c["name"], "role": "main", "note": "新登场"} for c in new_characters]
+    payloads = [
         [{"text": "主角挥手示意", "action": "主角挥手", "speaker": "主角"}],  # adapt_script
-        new_characters,  # detect_new_characters_llm
-        [0],  # 分镜第一步：换图点下标列表（单条，首条强制 True）
-        [{"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "a room"}],  # 分镜第二步：换图点画面
+        candidates,  # 角色 detect stage1：候选轻量扫描
     ]
+    if candidates:  # 有候选才触发 stage2（新角色触发式后瞻）：增强产 resolution=new 完整档案
+        payloads.append([{**c, "resolution": "new"} for c in new_characters])
+    payloads += [
+        [],  # 场景 detect stage1：无地点候选（跳过后瞻/建档，专注验证 interrupt 流程）
+        [0],  # 分镜第一步：换图点下标列表（单条，首条强制 True）
+        [{"anchor_id": 0, "subjects": ["主角"], "scene_prompt": "a room", "scene_id": ""}],  # 分镜第二步：换图点画面
+    ]
+    return payloads
 
 
 @pytest.mark.asyncio

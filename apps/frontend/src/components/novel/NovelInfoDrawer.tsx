@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BookOpen, Globe, Users } from 'lucide-react'
+import { BookOpen, Globe, MapPin, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   Sheet,
@@ -10,8 +10,9 @@ import {
 import ChapterReader from './ChapterReader'
 import WorldviewPanel from './WorldviewPanel'
 import CharacterReader from './CharacterReader'
+import SceneReader from './SceneReader'
 
-type NovelTab = 'chapters' | 'worldview' | 'characters'
+type NovelTab = 'chapters' | 'worldview' | 'characters' | 'scenes'
 
 interface NovelInfoDrawerProps {
   runId: string
@@ -23,6 +24,7 @@ const TABS = [
   { key: 'chapters' as const, label: '章节', Icon: BookOpen },
   { key: 'worldview' as const, label: '世界观', Icon: Globe },
   { key: 'characters' as const, label: '人物', Icon: Users },
+  { key: 'scenes' as const, label: '场景', Icon: MapPin },
 ]
 
 /** 「小说信息」左抽屉：章节原文 / 世界观 / 人物，Tab 常驻切换。 */
@@ -58,6 +60,7 @@ export default function NovelInfoDrawer({ runId, open, onOpenChange }: NovelInfo
           {tab === 'chapters' && <ChapterReader runId={runId} />}
           {tab === 'worldview' && <WorldviewPanel runId={runId} />}
           {tab === 'characters' && <CharacterReader runId={runId} />}
+          {tab === 'scenes' && <SceneReader runId={runId} />}
         </div>
       </SheetContent>
     </Sheet>

@@ -24,6 +24,48 @@ def _load_config(state: dict):
     return ServicesConfig.from_file(cfg_path)
 
 
+def write_characters_profile(novel_dir: str | Path, profile: dict) -> Path:
+    """把角色档案落盘到 `<novel_dir>/characters/characters_profile.json`（单一真相）。
+
+    batch_fix_profiles 与 detect_new_characters_llm 的别名补丁共用——保证「只补别名、
+    无新角色、不进 setup 子图」时档案也持久化，不只留在 checkpoint。
+    """
+    out_dir = Path(novel_dir) / "characters"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "characters_profile.json"
+    out_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2))
+    return out_path
+
+
+def write_scenes_profile(novel_dir: str | Path, profile: dict) -> Path:
+    """把场景（地点）档案落盘到 `<novel_dir>/scenes/scenes_profile.json`（单一真相）。
+
+    detect_new_scenes_llm 收敛写入；渲染 worker 生成空景板后回写 ref_image。镜像
+    write_characters_profile——同一份 json 承载「地点清单 + 别名 + 空景板路径」。
+    """
+    out_dir = Path(novel_dir) / "scenes"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "scenes_profile.json"
+    out_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2))
+    return out_path
+
+
+def read_scenes_profile(novel_dir: str | Path) -> dict:
+    """读 `<novel_dir>/scenes/scenes_profile.json`，不存在 / 解析失败 → 返回 {}。
+
+    渲染 worker 无 graph state，直接从盘上读场景档案（scene_id → build_asset/ref_image）
+    决定空景板生成与参考图补位。
+    """
+    path = Path(novel_dir) / "scenes" / "scenes_profile.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def setup_dispatcher(state: dict) -> dict:
     """判断 setup_queue 是否为空：空→返回空队列供条件边退出子图；非空→透传供 batch 节点读取。
 
@@ -97,10 +139,6 @@ def batch_fix_profiles(state: dict) -> dict:
             raise ValueError(f"batch_fix_profiles: 角色缺 name 字段: {char!r}")
         profile[char_name] = {k: v for k, v in char.items() if k != "id"}
 
-    novel_dir = Path(state.get("novel_dir", "."))
-    out_dir = novel_dir / "characters"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "characters_profile.json"
-    out_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2))
+    write_characters_profile(state.get("novel_dir", "."), profile)
     log.info("batch_fix_profiles: 角色档案已批量更新", count=len(queue))
     return {"characters_profile": profile, "setup_queue": []}

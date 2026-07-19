@@ -55,9 +55,27 @@ class CharacterProfile(CharacterProfileRequired, total=False):
     """角色完整档案。tri_view/voice_params 为 setup 阶段逐步补齐的可选字段。"""
 
     role: str  # 角色重要度："main"=主要角色 / "minor"=龙套。缺省视同 "main"（老档案/老 checkpoint 兼容）。前端三视图面板据此对 minor 默认勾选「跳过」
+    aliases: list[str]  # 角色别名（外号/小名/真名/代称，与 name 同指一人）。render 按别名归一到同一张 tri_view 参考图、检测排除也覆盖别名——解「早期占位名（帽兜男）后续揭真名（陆沉）前后形象对不上/重复建档」。缺省（老档案兼容）视同无别名
     outfit: str  # 标志性默认服饰（中文短语，= 立绘/tri_view 穿的那套）。分镜花名册注入此字段作跨镜服饰锚点；缺省（老档案兼容）时花名册只列 visual_trait
     tri_view: str  # 三视图本地相对路径。三态语义：非空路径=已上传（渲染走参考图生图）/ 空串=主动跳过（小角色，走 appearance 文本兜底）/ 字段缺省=未处理（异常态，渲染应暴露）
     voice_params: dict  # 音色参数（保留字段；setup 不再写入，留作未来 per-character 扩展）
+
+
+class SceneProfile(TypedDict, total=False):
+    """场景（地点）资产档案。key=标准地点名。
+
+    解「背景随机」：每个复现地点绑定一张空景背景板作跨镜风格锚点（渲染时补进参考图，
+    与角色三视图同为 ComfyUI 条件参考图）。收敛靠 detect_new_scenes_llm：同义归一（aliases）
+    + 粗粒度大场所命名 + 频次判定（build_asset）+ 后瞻窗口覆盖提炼。全 total=False，
+    缺省（老 checkpoint / 未处理）不阻塞渲染，走 scene_prompt 文本背景兜底。
+    """
+
+    name: str  # 标准地点名（= scenes_profile 的 key，粗粒度大场所，如「陆家」；value 内冗余保留便于序列化/展示）
+    description: str  # 一句地点描述（供场景花名册 + 空景板 t2i prompt）
+    aliases: list[str]  # 同义地点名归并（客厅/陆家客厅/明亮的客厅…→本场景，与 name 同指一地）
+    hit_count: int  # 已见换图点数（观测用，非关键路径；缺省 0）
+    build_asset: bool  # 是否建参考图：复现地点=True（生成空景板）；一次性/过场地点=False（走文本背景）
+    ref_image: str  # 空景板本地相对路径。三态：非空=已生成（渲染复用）/ 空串=待生成 / 字段缺省=未处理
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +107,9 @@ class SharedGraphState(TypedDict):
     # 角色管理（init 写入，plan/render 只读）
     characters_profile: dict[str, CharacterProfile]  # 角色完整档案（唯一真相），key 为角色名
     ignored_characters: list[str]  # 已忽略角色名列表
+
+    # 场景（地点）资产（detect_new_scenes_llm 收敛写入，storyboard 只读挑 scene_id，render worker 生成/复用空景板）
+    scenes_profile: dict[str, SceneProfile]  # 场景完整档案（唯一真相），key 为标准地点名
 
     # 全局音频配置（单播：整本书一份音色参数，渲染阶段共用）
     audio_config: dict  # dots.tts 生成旋钮 {language, guidance_scale, speaker_scale} + 音色 voice_name

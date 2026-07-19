@@ -22,6 +22,26 @@ def _resolve_tri_view(novel_dir: str | Path, tri_view: str) -> str:
     return str((Path(novel_dir) / tri_view).resolve())
 
 
+def _build_alias_index(characters_profile: dict) -> dict[str, str]:
+    """别名/角色名 → 标准 key（角色名）的归一索引。
+
+    解「早期占位名（帽兜男）后续揭真名（陆沉）」：storyboard subjects 无论输出真名还是外号，
+    都能归一回同一角色 key，取到那张一次性上传的 tri_view，跨镜参考图一致。
+    - 标准名（characters_profile 的 key）永远指向自身。
+    - 各档案 aliases 补进索引，用 setdefault 让「已是某角色标准名」的词不被别名覆盖（标准名优先）。
+    """
+    index: dict[str, str] = {}
+    for cname in characters_profile:
+        index[cname] = cname
+    for cname, cprofile in characters_profile.items():
+        if not isinstance(cprofile, dict):
+            continue
+        for alias in cprofile.get("aliases", []) or []:
+            if alias:
+                index.setdefault(alias, cname)
+    return index
+
+
 def build_shot_specs(
     storyboard: list[dict],
     characters_profile: dict,
@@ -39,6 +59,7 @@ def build_shot_specs(
     }
     仅返回 scene_change=True 的镜头（非换图点不出图）。
     """
+    alias_index = _build_alias_index(characters_profile)
     specs: list[dict] = []
     for entry in storyboard:
         if not entry.get("scene_change"):
@@ -50,7 +71,9 @@ def build_shot_specs(
         # 收集带 tri_view（非空路径）的主体角色参考图，最多 2 张
         ref_images: list[str] = []
         for name in subjects:
-            char = characters_profile.get(name)
+            # 先按别名归一到标准角色 key，再取档案：subjects 里若是别名/揭示后的真名也能命中同一张立绘
+            canonical = alias_index.get(name, name)
+            char = characters_profile.get(canonical)
             if not char:
                 continue
             tri_view = char.get("tri_view")
@@ -69,6 +92,9 @@ def build_shot_specs(
                 "prompt": prompt,
                 "ref_images": ref_images,
                 "subjects": subjects,
+                # 该镜归属地点（storyboard 挑的标准 scene_id）。渲染 worker 据此补该地点的空景
+                # 背景板作参考图（角色 ref 填满后仍有槽位时补位；0 角色则 t2i→edit 升级）。
+                "scene_id": entry.get("scene_id", "") or "",
             }
         )
     return specs

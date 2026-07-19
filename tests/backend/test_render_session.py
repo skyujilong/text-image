@@ -1,6 +1,9 @@
 """RenderSession 单测：聚焦不触发真实 GPU worker 的纯逻辑分支。"""
 
+from pathlib import Path
+
 from novel2media import render_state
+from novel2media.nodes.setup_nodes import write_scenes_profile
 
 
 def _make_session(tmp_path, monkeypatch):
@@ -220,6 +223,84 @@ async def test_ensure_render_session_returns_none_when_not_rendering(tmp_path, m
     monkeypatch.setattr(render_ep.runner, "get_current_run_state", _get_state)
 
     assert await render_ep._ensure_render_session("run-y") is None
+
+
+# ─── 场景锚点补位 _apply_scene（角色优先、2 图预算、幂等）──────────────────────
+
+
+def _seed_scene_plate(novel_dir, scene_id="陆家", build_asset=True):
+    """落一张已生成的空景板 + scenes_profile（ref_image 非空 → _apply_scene 复用不生成）。"""
+    scenes_dir = Path(novel_dir) / "scenes"
+    scenes_dir.mkdir(parents=True, exist_ok=True)
+    (scenes_dir / f"{scene_id}.png").write_bytes(b"plate")
+    write_scenes_profile(
+        novel_dir,
+        {scene_id: {"name": scene_id, "build_asset": build_asset, "ref_image": f"scenes/{scene_id}.png"}},
+    )
+
+
+async def test_apply_scene_upgrades_t2i_to_edit_when_no_chars(tmp_path, monkeypatch):
+    """0 角色镜头：场景锚点占 slot1 → workflow 升级 qwen_edit；幂等不重复补。"""
+    session, novel_dir = _make_session(tmp_path, monkeypatch)
+    _seed_scene_plate(novel_dir)
+
+    job = {"storyboard_id": 0, "workflow": "qwen_t2i", "ref_images": [], "scene_id": "陆家"}
+    await session._apply_scene(job)
+
+    assert job["workflow"] == "qwen_edit"
+    assert len(job["ref_images"]) == 1
+    assert job["ref_images"][0].endswith("/scenes/陆家.png")
+
+    await session._apply_scene(job)  # 幂等
+    assert len(job["ref_images"]) == 1
+
+
+async def test_apply_scene_char_first_scene_fills_second_slot(tmp_path, monkeypatch):
+    """1 角色镜头：角色 ref 优先占 slot1，场景锚点补 slot2。"""
+    session, novel_dir = _make_session(tmp_path, monkeypatch)
+    _seed_scene_plate(novel_dir)
+
+    job = {"storyboard_id": 1, "workflow": "qwen_edit", "ref_images": ["/char.png"], "scene_id": "陆家"}
+    await session._apply_scene(job)
+
+    assert len(job["ref_images"]) == 2
+    assert job["ref_images"][0] == "/char.png"  # 角色仍在 slot1
+    assert job["ref_images"][1].endswith("/scenes/陆家.png")  # 场景补 slot2
+
+
+async def test_apply_scene_no_slot_when_two_chars(tmp_path, monkeypatch):
+    """2 角色镜头：2 图预算用尽 → 本期不补场景（等扩到第 3 张参考图）。"""
+    session, novel_dir = _make_session(tmp_path, monkeypatch)
+    _seed_scene_plate(novel_dir)
+
+    job = {"storyboard_id": 2, "workflow": "qwen_edit", "ref_images": ["/a.png", "/b.png"], "scene_id": "陆家"}
+    await session._apply_scene(job)
+
+    assert job["ref_images"] == ["/a.png", "/b.png"]  # 不变
+
+
+async def test_apply_scene_skips_non_build_asset(tmp_path, monkeypatch):
+    """一次性地点（build_asset=False）：不补场景锚点，照旧走文本背景。"""
+    session, novel_dir = _make_session(tmp_path, monkeypatch)
+    _seed_scene_plate(novel_dir, build_asset=False)
+
+    job = {"storyboard_id": 3, "workflow": "qwen_t2i", "ref_images": [], "scene_id": "陆家"}
+    await session._apply_scene(job)
+
+    assert job["workflow"] == "qwen_t2i"
+    assert job["ref_images"] == []
+
+
+async def test_apply_scene_noop_without_scene_id(tmp_path, monkeypatch):
+    """无 scene_id（老稿件/纯特写）：不补场景锚点。"""
+    session, novel_dir = _make_session(tmp_path, monkeypatch)
+    _seed_scene_plate(novel_dir)
+
+    job = {"storyboard_id": 4, "workflow": "qwen_t2i", "ref_images": [], "scene_id": ""}
+    await session._apply_scene(job)
+
+    assert job["workflow"] == "qwen_t2i"
+    assert job["ref_images"] == []
 
 
 async def test_commit_candidate_increments_index_and_default_selects(tmp_path, monkeypatch):

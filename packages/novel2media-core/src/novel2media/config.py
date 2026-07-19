@@ -20,6 +20,8 @@ class ServicesConfig:
     silence_ms: int
     lufs: int
     prev_chapters: int
+    lookahead_chapters: int  # 新角色触发式后瞻窗口：检测到新角色时额外后读的章节数（0=关闭后瞻）
+    lookahead_chapters_for_scenes: int  # 新场景触发式后瞻窗口：检测到新地点时额外后读的章节数（多章覆盖提炼；0=关闭）
     pose_images: dict
     standing_pose_image: str
     default_preview_text: str
@@ -50,6 +52,10 @@ class ServicesConfig:
             silence_ms=data["audio"]["silence_between_speakers_ms"],
             lufs=data["audio"]["target_loudness_lufs"],
             prev_chapters=data["llm_context"]["prev_chapters_for_script"],
+            # 老 json 无此键时缺省 3（不破已入库配置）；后瞻窗口只影响新角色首建档增强，非关键路径
+            lookahead_chapters=data["llm_context"].get("lookahead_chapters_for_detection", 3),
+            # 场景后瞻窗口（多章覆盖提炼）：老 json 无此键时缺省 3（不破已入库配置）
+            lookahead_chapters_for_scenes=data["llm_context"].get("lookahead_chapters_for_scenes", 3),
             pose_images=data.get("pose_images", {}),
             standing_pose_image=data.get("standing_pose_image", "poses/standing_512x768.png"),
             default_preview_text=data["default_preview_text"],

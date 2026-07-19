@@ -100,12 +100,13 @@ def build_adapt_script_prompt(
 
 
 def _build_character_roster(characters_profile: dict) -> str:
-    """构造"角色名（外观特征 + 标志服饰）"花名册：供 LLM 在 scene_prompt 中用特征替代姓名 + 锚定服饰。
+    """构造"角色名（外观特征 + 标志服饰 + 别名）"花名册：供 LLM 在 scene_prompt 中用特征替代姓名 + 锚定服饰。
 
-    每项格式：`角色名（外观：visual_trait；服饰：outfit）`。
+    每项格式：`角色名（外观：visual_trait；服饰：outfit；别名：a、b）`。
     - visual_trait（英文体貌特征，不含服饰）：角色入画时的外观译述来源。
     - outfit（中文标志性默认服饰）：角色入画时默认穿的那套，跨镜辨识 + 一致性锚点。
-    两字段缺失（旧 checkpoint 兼容）时各自省略；都缺则只列名字，不阻塞分镜生成。
+    - 别名（外号/小名/真名/代称）：让 LLM 把原文别称归一到标准名，subjects 用标准名（render 也按别名兜底归一）。
+    字段缺失（旧 checkpoint 兼容）时各自省略；都缺则只列名字，不阻塞分镜生成。
     """
     if not characters_profile:
         return "（暂无已知角色）"
@@ -116,11 +117,14 @@ def _build_character_roster(characters_profile: dict) -> str:
             continue
         vt = (cprofile.get("visual_trait") or "").strip()
         outfit = (cprofile.get("outfit") or "").strip()
+        aliases = "、".join(a for a in (cprofile.get("aliases") or []) if a)
         parts = []
         if vt:
             parts.append(f"外观：{vt}")
         if outfit:
             parts.append(f"服饰：{outfit}")
+        if aliases:
+            parts.append(f"别名：{aliases}")
         roster.append(f"{cname}（{'；'.join(parts)}）" if parts else cname)
     return "、".join(roster)
 
@@ -181,6 +185,7 @@ def build_scene_prompt_for_shots(
     feedback: str = "",
     batch_info: tuple[int, int] | None = None,
     worldview: str = "",
+    scenes_profile: dict | None = None,
 ) -> str:
     """构造分镜第二步「画面生成」提示词：只为换图点生成 subjects + scene_prompt。
 
@@ -192,14 +197,18 @@ def build_scene_prompt_for_shots(
     - text：该换图点对应口播文案（画面参考）。
     - coverage：从本换图点到下一个换图点之间所有口播的剧情拼接（这张图要覆盖的剧情范围）。
 
-    输出 schema：JSON 数组，每元素 {{"anchor_id": int, "subjects": list[str], "scene_prompt": str}}。
+    输出 schema：JSON 数组，每元素 {{"anchor_id": int, "subjects": list[str], "scene_prompt": str, "scene_id": str}}。
+    scene_id：该换图点发生在哪个已知地点（从场景花名册里挑标准名，收敛用；无场景库/不属任何地点则 ""）。
 
     batch_info 非 None（如 (2, 4)）时表示当前是整章换图点的第 2/4 批，只为本片段 shots 生成。
     feedback 非空时为上一版分镜的修改意见（可能涉及画面内容），提示 LLM 据此调整。
+    scenes_profile 为已收敛的场景（地点）档案：注入地点花名册，让 LLM 为每个换图点挑一个标准 scene_id
+    （渲染时按 scene_id 补该地点的空景背景板作跨镜风格锚点）；缺省/空时不注入、scene_id 恒 ""。
     """
     import json
 
     names = _build_character_roster(characters_profile)
+    scene_names = _build_scene_roster(scenes_profile or {})
     shots_json = json.dumps(shots, ensure_ascii=False, indent=2)
     worldview_block = _build_worldview_block(worldview)
     feedback_block = f"上一版分镜的修改意见（请务必据此调整画面）：{feedback}\n" if feedback and feedback.strip() else ""
@@ -217,6 +226,8 @@ def build_scene_prompt_for_shots(
 参考原始章节原文补充画面细节（景物、神态、动作细节），让画面更准。
 
 {worldview_block}已知角色（括号内「外观：」为该角色英文体貌特征 visual_trait（含性别与身高体型，不含服饰），「服饰：」为该角色标志性默认服饰 outfit；subjects 中列中文名，scene_prompt 中提到该角色时用其外观特征的**中文译述** + 该服饰、不写姓名）：{names}
+
+已知地点（括号内为该地点描述；为每个换图点从中挑一个 scene_id = 该镜发生的地点标准名，用于跨镜复用同一地点的参考背景图）：{scene_names}
 
 {feedback_block}{batch_block}要求：
 1. 为输入的每个换图点生成一条结果，anchor_id 必须原样写回（用于对回），不得修改、不得遗漏、不得新增。
@@ -252,7 +263,11 @@ def build_scene_prompt_for_shots(
      · **有明确焦点人物的群体时刻优先用①、别默认无脸群像**：当这一格的戏眼落在某个具体角色身上（如死人后掌控者的立威、众人惊惧中主角的反应），用①把镜头聚焦到那 1-2 个关键反应者（近景 / 中景 + 正脸神态，其余人虚化成背景人影），比拍一张谁都看不清的「模糊人影」远景更有戏。②的无脸群像留给「纯交代场面 / 无个体焦点」的定场或转场。
    - 大场景、远景、背景群众、无脸剪影不受此限；但 subjects 只列需要保持一致性的近景 / 中景主体角色（至多 2 个），远景群众、背影群像不列入 subjects。
    - subjects 写中文名；scene_prompt 用该角色的外观特征描述，两者必须对应同一批主体角色。
-4. 严格输出合法 JSON 数组，不要 markdown 代码块、不要任何解释文字。
+4. scene_id（该镜发生的地点）：从上方【已知地点】花名册里挑一个**标准地点名**填入，表示这一格画面发生在哪个地点。
+   - 优先命中花名册中的标准名，**不要新造地点名、不要用别称**（收敛铁律：同一地点跨镜共用一张参考背景图）。
+   - 若花名册为空、或该镜确实不属于任何已知地点（如纯人物大特写、抽象/回忆/闪回画面、无法归属的过场），输出空串 scene_id=""。
+   - scene_id 只决定「复用哪张地点参考背景图」，不改变 scene_prompt 的写法——scene_prompt 仍照常把该地点的环境写清楚。
+5. 严格输出合法 JSON 数组，不要 markdown 代码块、不要任何解释文字。
    - 必须是合法 JSON 数组，最外层只能是 []。
    - 所有字段名必须使用英文双引号，例如 "scene_prompt"，不能省略引号。
    - 对象之间必须使用英文逗号分隔；最后一个对象后不要尾随逗号。
@@ -260,14 +275,14 @@ def build_scene_prompt_for_shots(
    - 所有字符串必须单行输出，字符串内部不要换行；scene_prompt 常规控制在 70-100 字，双人 / 信息量大的镜头可适当延长，但最多不超过 120 字（避免超长字符串导致 JSON 断裂）。内容装不下时优先保留「景别机位朝向 + 主体外观 + **一句可辨识的场景环境** + 影调光源」这几样核心，再酌情精简微表情与修饰细节——**场景环境是必保项，绝不许为省字数把背景砍成空洞黑底**。
    - 不要输出注释、解释文字、单引号、尾随逗号或多余字段。
 
-输出格式示例（示范六种镜头语言：定场大远景 / 仰拍威胁 / 俯拍死亡 / 过肩对峙 / 侧面跑步 / 侧面翻越降级——别全用平视中景）：
+输出格式示例（示范六种镜头语言：定场大远景 / 仰拍威胁 / 俯拍死亡 / 过肩对峙 / 侧面跑步 / 侧面翻越降级——别全用平视中景；scene_id 示例假设花名册中有「古宅主殿」「后巷」两个地点）：
 [
-  {{"anchor_id": 0, "subjects": [], "scene_prompt": "大远景，平视略俯，昏暗古宅主殿全景定场，斑驳房梁垂着蛛网，供桌与几道模糊人影散布殿内，冷青幽光弥漫，尘灰浮在光柱里，低调暗调，压抑死寂"}},
-  {{"anchor_id": 3, "subjects": ["林辰"], "scene_prompt": "大特写，仰拍，高挑清瘦、金色卷发、戴圆框眼镜的青年男性，怒容，瞳孔收缩，下颌紧咬，攥紧的指节发白，冷冷的手机屏光从下方打上来，背景深暗虚化"}},
-  {{"anchor_id": 5, "subjects": [], "scene_prompt": "俯拍，高角度往下，青石板上仰面倒着的中年男性尸体，西装沾灰，四肢摊开显得渺小无助，周围一圈人的脚与拉长投影，顶光打在尸身，低调冷调"}},
-  {{"anchor_id": 8, "subjects": ["周凯", "苏晚"], "scene_prompt": "过肩镜头，从魁梧刀疤男的肩后拍向对面，前景他宽厚的肩背虚化，后景娇小白裙女性正面朝镜头、惊惧后缩，昏暗厅堂供桌前，冷青侧光，低调暗调"}},
-  {{"anchor_id": 11, "subjects": ["林辰"], "scene_prompt": "全身，侧面机位，高挑清瘦、金色卷发、戴圆框眼镜的青年男性迈出最大步幅狂奔，身体大幅前倾，四肢前后拉开，衣摆向后飘扬，昏暗巷道两侧墙壁延伸成透视线，冷青月光从巷口斜照，低调暗调，急迫压迫"}},
-  {{"anchor_id": 14, "subjects": ["苏晚"], "scene_prompt": "全身，侧面低角度机位，娇小黑长发大眼的年轻女性单脚蹬上矮墙墙沿、身体斜倾，双手刚攀住墙顶边缘，白色连衣裙裙摆随风扬起，墙根杂草稀疏，背后巷弄隐入暗部，冷白月光从左侧45度打亮轮廓，低调暗调，利落紧张"}}
+  {{"anchor_id": 0, "subjects": [], "scene_id": "古宅主殿", "scene_prompt": "大远景，平视略俯，昏暗古宅主殿全景定场，斑驳房梁垂着蛛网，供桌与几道模糊人影散布殿内，冷青幽光弥漫，尘灰浮在光柱里，低调暗调，压抑死寂"}},
+  {{"anchor_id": 3, "subjects": ["林辰"], "scene_id": "古宅主殿", "scene_prompt": "大特写，仰拍，高挑清瘦、金色卷发、戴圆框眼镜的青年男性，怒容，瞳孔收缩，下颌紧咬，攥紧的指节发白，冷冷的手机屏光从下方打上来，背景深暗虚化"}},
+  {{"anchor_id": 5, "subjects": [], "scene_id": "古宅主殿", "scene_prompt": "俯拍，高角度往下，青石板上仰面倒着的中年男性尸体，西装沾灰，四肢摊开显得渺小无助，周围一圈人的脚与拉长投影，顶光打在尸身，低调冷调"}},
+  {{"anchor_id": 8, "subjects": ["周凯", "苏晚"], "scene_id": "古宅主殿", "scene_prompt": "过肩镜头，从魁梧刀疤男的肩后拍向对面，前景他宽厚的肩背虚化，后景娇小白裙女性正面朝镜头、惊惧后缩，昏暗厅堂供桌前，冷青侧光，低调暗调"}},
+  {{"anchor_id": 11, "subjects": ["林辰"], "scene_id": "后巷", "scene_prompt": "全身，侧面机位，高挑清瘦、金色卷发、戴圆框眼镜的青年男性迈出最大步幅狂奔，身体大幅前倾，四肢前后拉开，衣摆向后飘扬，昏暗巷道两侧墙壁延伸成透视线，冷青月光从巷口斜照，低调暗调，急迫压迫"}},
+  {{"anchor_id": 14, "subjects": ["苏晚"], "scene_id": "后巷", "scene_prompt": "全身，侧面低角度机位，娇小黑长发大眼的年轻女性单脚蹬上矮墙墙沿、身体斜倾，双手刚攀住墙顶边缘，白色连衣裙裙摆随风扬起，墙根杂草稀疏，背后巷弄隐入暗部，冷白月光从左侧45度打亮轮廓，低调暗调，利落紧张"}}
 ]
 
 换图点列表：
@@ -278,58 +293,261 @@ def build_scene_prompt_for_shots(
 """
 
 
-def build_detect_new_characters_prompt(
-    chapter_text: str, existing_names: set[str], worldview: str = ""
+def build_candidate_scan_prompt(
+    chapter_text: str, known_names: set[str], worldview: str = ""
 ) -> str:
-    """构造新角色检测提示词（独立节点 detect_new_characters_llm，放分镜之前）。
+    """分镜前「新角色候选轻量扫描」（detect stage 1，只看本组原文，输出极小）。
 
-    单独成节点而非并入 adapt_script：合并后单次输出过长会撞 output token 上限被截断
-    （实测长章节 finish_reason=length → JSON 断裂），故拆开各自保持输出小。
-    检测结果直接进 setup_queue → character_setup_subgraph 上传三视图（无单独人工审阅），
-    在 generate_storyboard 之前备好新角色 visual_trait，避免后期图生图角色错乱。
+    只判定「本组是否出现了 known_names 之外的新指代」，不产完整档案——完整档案由 stage 2 的
+    build_enrich_characters_prompt 结合后瞻窗口一次产出（省 token + 拿到更全外观/真名/别名）。
+    无候选时下游直接跳过 stage 2（新角色触发式后瞻：没新人就不花后瞻的 token）。
 
-    输出 schema：JSON 数组，每个元素
-    {{"name": str, "appearance": str, "character_trait": str, "visual_trait": str,
-      "tri_view_prompt": str, "tri_view_prompt_cn": str, "role": "main"|"minor", "outfit": str}}（无 id）。
-    仅输出本章新出现、且不在 existing_names 中的角色。龙套也提取（role="minor"，
-    无名但有稳定指代的用指代作 name）——建档保留特征保证跨镜外观一致，前端三视图
-    面板对 minor 默认勾选跳过（不传参考图，走 appearance 文本兜底）。字段模型与 init
-    阶段 build_parse_initial_characters_prompt 一致：appearance 强调鲜明可辨识特征，
-    character_trait/visual_trait 为中英文特征短语，tri_view_prompt 固定日系动漫画风 +
-    赛璐璐风格 + 白色空白背景 + 画质词，tri_view_prompt_cn 为其中文翻译版。
+    known_names：已有角色的「标准名 ∪ 全部别名」（节点合并传入），据此排除已登记角色/别称。
+
+    输出 schema：JSON 数组，每元素 {{"name": str, "role": "main"|"minor", "note": str}}。
     """
-    existing = "、".join(sorted(existing_names)) if existing_names else "（无）"
+    existing = "、".join(sorted(known_names)) if known_names else "（无）"
     worldview_block = _build_worldview_block(worldview)
-    return f"""你是一个小说角色提取器。从下面的章节原文中，提取本章新出现的角色（主要角色和龙套都要）。
+    return f"""你是一个小说角色识别器。快速扫描下面的章节原文，只找出「本组新出现、且不在已知名单中」的角色候选。
 
-{worldview_block}已有角色（不要重复提取）：{existing}
+{worldview_block}已知角色（含别名，均视为已登记，不要列入候选）：{existing}
 
 要求：
-1. 提取本章新出现的所有具体角色，不论戏份轻重——主要角色和龙套都要提取：
-   - 有明确名字的角色必须提取，哪怕只出现一两句。
-   - 无名但有稳定指代的角色也要提取，用该指代作 name（如"胖子"、"眼镜男"、"刀疤脸"）；同一角色多个指代时选最常用的一个。
-   - 纯泛指群体不提取：如"众人"、"路人"、"路人甲乙"、"人群"、"士兵们"等无个体身份的集体或占位指代；旁白不算角色。
-   - 若已有角色列表中某角色以外号登记（如"胖子"），本章即使揭示其真名，也视为已有角色，不要重复提取。
-2. 每个角色输出 name（角色名）。
-3. appearance（外观描述）：性别、年龄、身高/体型（如高挑清瘦、娇小玲珑、中等身材魁梧等，不同角色身高体型尽量有区分）、发色、发型、是否戴眼镜、瞳色、服饰标志物等；原文未提及则据上下文合理补全。每个角色必须有鲜明、可辨识、与其他角色明显区分的外观特征，不同角色的关键特征（发色/发型/眼镜/身高体型等）尽量不重复，便于后期 ComfyUI 基于特征匹配参考图。年轻女性角色（非明确设定为彪悍 / 健美 / 威猛的）体型默认走柔美向——身材匀称 / 曲线柔和 / 凹凸有致 / 娇美纤秀（对应英文 slender / curvy / graceful / feminine figure），严禁用健壮 / 健硕 / 魁梧 / 肌肉发达（muscular / burly / stocky）等阳刚词，这类词与日系动漫画风冲突、参考图与生图极易崩坏；确需体现力量感的女性用「身形挺拔、气场凌厉」等非肌肉向表达。
-4. character_trait（中文人物特征短语）：把该角色最鲜明的外观特征浓缩成一句中文，须含性别、身高体型与标志性特征，如"高挑清瘦、金色卷发、戴圆框眼镜的少年"。供审核阅读与后期分镜引用。
-5. visual_trait（英文特征短语）：character_trait 的英文版，须包含性别词（man/woman/boy/girl 等）与身高体型词（tall/short/petite/lanky/average height + slim/stocky build 等），如"tall lanky young man with golden curly hair and round glasses"。供分镜 scene_prompt 替换角色名使用，ComfyUI 可直接理解。
-{_TRI_VIEW_PROMPT_RULE}
-7. tri_view_prompt_cn：tri_view_prompt 的中文翻译版，供审核时阅读。
-8. role（角色重要度）：取值只能是 "main" 或 "minor"。
-   - "main"：世界观/已有设定中点名的重要角色，或本章戏份重、明显会持续出场的角色。
-   - "minor"：龙套/一次性配角——本章戏份少、以外号或身份指代、看不出会长期出场的角色。
-   - 拿不准时倾向 "minor"（后续戏份加重可由人工调整）。
-9. outfit（标志性默认服饰）：把该角色本章登场时的默认服装浓缩成一句中文短语，含上衣/下装/鞋（如"白色衬衫配白色运动鞋"、"黑色风衣配军靴"）。这是角色跨镜辨识的服饰锚点，分镜阶段角色入画时默认穿这套。
-   - 必须与 tri_view_prompt / appearance 里的服饰完全一致（三视图立绘穿的就是这套），从 appearance 的服饰部分提炼；不要凭空另编一套，否则与立绘参考图冲突。
-   - 只写默认常穿的那套，不写剧情临时状态（污迹/破损/血迹由分镜阶段按原文另加）。
-10. 不要输出 id 字段。
-11. 若本章无新角色，输出空数组 []。
-12. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
+1. 只列本组新出现的具体角色候选（主要角色和龙套都算）：
+   - 有明确名字的角色要列；无名但有稳定指代的也列，用该指代作 name（如"胖子"、"眼镜男"、"刀疤脸"），同一角色多个指代取最常用的一个。
+   - 纯泛指群体不列：如"众人"、"路人"、"路人甲乙"、"人群"、"士兵们"等无个体身份的集体或占位指代；旁白不算角色。
+2. 每个候选只输出三个字段：name（称呼）、role（"main"/"minor"，拿不准倾向 "minor"）、note（一句话：为何是新角色 / 如何指代；若怀疑其实是某已知角色的新称呼或刚揭示的真名，写明"疑似已有角色X的新称呼"，后续步骤会据此归并）。
+3. 不要输出外观 / 三视图 / 服饰等详细字段——那些由后续步骤统一补全，这一步只做轻量识别、保持输出小。
+4. 本组无新角色则输出空数组 []。
+5. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
 
 输出格式示例：
-[{{"name": "李雷", "appearance": "青年男性，高挑清瘦，金色卷发，戴圆框眼镜，穿白色衬衫，脚踩白色运动鞋", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的青年男性", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, cel shading, cel shaded, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, highly detailed facial features, young male, tall lanky build, golden curly hair, round glasses, white shirt, white sneakers, consistent outfit, hairstyle, footwear and body shape, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，赛璐璐风格，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，青年男性，高挑清瘦身形，金色卷发，圆框眼镜，白色衬衫，白色运动鞋，服饰发型鞋子体型一致，纯白背景，杰作，最高画质，超高细节，高分辨率", "role": "minor", "outfit": "白色衬衫配白色运动鞋"}}]
+[{{"name": "李雷", "role": "minor", "note": "本章新登场的门卫，只出现两句"}}, {{"name": "陆沉", "role": "main", "note": "疑似已有角色帽兜男刚揭示的真名"}}]
 
 章节原文：
 {chapter_text}
 """
+
+
+def _build_reconcile_roster(characters_profile: dict) -> str:
+    """构造身份归并用花名册：`- 角色名（别名：…；特征：character_trait；外观：appearance）`。
+
+    比分镜花名册更偏中文语义（含 appearance/character_trait），供 stage 2 判断某候选是不是
+    已知角色的另一种称呼 / 刚揭示的真名。空档案返回占位串。
+    """
+    if not characters_profile:
+        return "（暂无已知角色）"
+    rows = []
+    for cname, cp in characters_profile.items():
+        if not isinstance(cp, dict):
+            rows.append(f"- {cname}")
+            continue
+        aliases = "、".join(a for a in (cp.get("aliases") or []) if a)
+        trait = (cp.get("character_trait") or "").strip()
+        appearance = (cp.get("appearance") or "").strip()
+        parts = []
+        if aliases:
+            parts.append(f"别名：{aliases}")
+        if trait:
+            parts.append(f"特征：{trait}")
+        if appearance:
+            parts.append(f"外观：{appearance}")
+        rows.append(f"- {cname}（{'；'.join(parts)}）" if parts else f"- {cname}")
+    return "\n".join(rows)
+
+
+def build_enrich_characters_prompt(
+    window_text: str,
+    candidates: list[dict],
+    characters_profile: dict,
+    worldview: str = "",
+) -> str:
+    """分镜前「新角色增强 + 身份归并」（detect stage 2，读本组+后瞻若干章，仅在有候选时触发）。
+
+    对 stage 1 的候选，结合后瞻窗口一次产出完整档案，并把「其实是已知角色的新称呼/真名」归并为别名：
+    - resolution="new"：确为新角色 → 完整档案（含 aliases；窗口内已揭真名则用真名作 name、占位词入 aliases）。
+    - resolution="alias_of"：候选其实是某已知角色 → 只回 {{canonical: 已知角色名, alias: 该新称呼}}，不重复建档。
+
+    字段模型与 init 阶段 build_parse_initial_characters_prompt 一致（appearance/character_trait/
+    visual_trait/tri_view_prompt/tri_view_prompt_cn/role/outfit）；额外多 aliases 与 resolution。
+
+    window_text：当前组原文 + 后瞻 K 章原文（后瞻章仅供补全外观 / 揭示真名的上下文）。
+    candidates：stage 1 的候选列表（name/role/note）。
+    characters_profile：已知角色档案（构造归并花名册，判断候选是否已知角色）。
+    """
+    import json
+
+    worldview_block = _build_worldview_block(worldview)
+    roster = _build_reconcile_roster(characters_profile)
+    candidates_json = json.dumps(candidates, ensure_ascii=False)
+    return f"""你是一个小说角色档案师。下面给出「本组 + 后续若干章」的原文，以及本组扫描出的新角色候选和已知角色花名册。
+请为每个候选判定「是新角色还是已知角色的另一种称呼」，并为新角色产出完整档案。
+
+{worldview_block}已知角色花名册（据此判断候选是否其实是这些角色之一的新称呼 / 刚揭示的真名 / 外号）：
+{roster}
+
+本组新角色候选（只处理这些，不要新增候选之外的角色）：{candidates_json}
+
+【第一步·身份归并】对每个候选，先判断它是不是上面某个已知角色的另一种称呼（外号、小名、刚在原文中揭示的真名、代称）：
+- 是 → 输出 {{"resolution": "alias_of", "canonical": 已知角色的标准名, "alias": 该候选的新称呼}}。这样后续无论原文用哪个名字，都归并到同一角色、同一张参考图，避免前后形象对不上或重复建档。
+- 判断依据：真名揭示（"帽兜男摘下兜帽，原来是陆沉"）、外观特征吻合花名册、上下文明确指同一人。拿不准是否同一人时，宁可当新角色（输出 new），不要乱并。
+
+【第二步·新角色建档】确为新角色的候选，输出 {{"resolution": "new", ...完整档案}}，字段如下：
+1. name（角色名）：优先用真名——若窗口内该角色的真名被揭示，用真名作 name，把之前的占位指代（如"帽兜男"）放进 aliases；若始终无真名，用最稳定的指代作 name。
+2. aliases（别名数组）：该角色在窗口内出现过的其它称呼 / 外号 / 代称（去掉与 name 重复的）；无则输出空数组 []。
+3. appearance（外观描述）：性别、年龄、身高/体型（如高挑清瘦、娇小玲珑、中等身材魁梧等，不同角色尽量有区分）、发色、发型、是否戴眼镜、瞳色、服饰标志物等；**优先采用窗口内（含后瞻章）出现的最完整外观描述**，原文未提及则据上下文合理补全。每个角色须有鲜明、可辨识、与其他角色明显区分的特征（发色/发型/眼镜/身高体型尽量不重复），便于后期 ComfyUI 按特征匹配参考图。年轻女性角色（非明确设定为彪悍/健美/威猛的）体型默认走柔美向——身材匀称/曲线柔和/凹凸有致/娇美纤秀（slender/curvy/graceful/feminine figure），严禁健壮/健硕/魁梧/肌肉发达（muscular/burly/stocky）等阳刚词，与日系动漫画风冲突、参考图与生图极易崩坏；确需力量感的女性用「身形挺拔、气场凌厉」等非肌肉向表达。
+4. character_trait（中文人物特征短语）：最鲜明外观特征浓缩成一句中文，含性别、身高体型与标志特征，如"高挑清瘦、金色卷发、戴圆框眼镜的青年男性"。
+5. visual_trait（英文特征短语）：character_trait 的英文版，含性别词（man/woman/boy/girl）与身高体型词（tall/short/petite/lanky + slim/stocky build），如"tall lanky young man with golden curly hair and round glasses"。供分镜 scene_prompt 替换角色名。
+{_TRI_VIEW_PROMPT_RULE}
+7. tri_view_prompt_cn：tri_view_prompt 的中文翻译版，供审核阅读。
+8. role（角色重要度）：只能是 "main" 或 "minor"（沿用候选的 role 判断，拿不准倾向 "minor"）。
+9. outfit（标志性默认服饰）：默认服装浓缩成一句中文短语，含上衣/下装/鞋（如"白色衬衫配白色运动鞋"）。必须与 tri_view_prompt / appearance 的服饰完全一致（从 appearance 服饰部分提炼，不要凭空另编），只写默认常穿那套（污迹/破损由分镜阶段另加）。
+10. 不要输出 id 字段。
+
+输出规则：
+- 严格输出 JSON 数组，每元素是「resolution=new 的完整档案」或「resolution=alias_of 的归并记录」二选一。
+- 不要 markdown 代码块、不要任何解释文字；字符串内严禁英文双引号（用中文引号「」或《》）。
+
+输出格式示例：
+[
+  {{"resolution": "alias_of", "canonical": "帽兜男", "alias": "陆沉"}},
+  {{"resolution": "new", "name": "李雷", "aliases": [], "appearance": "青年男性，高挑清瘦，金色卷发，戴圆框眼镜，穿白色衬衫，脚踩白色运动鞋", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的青年男性", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, cel shading, cel shaded, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, highly detailed facial features, young male, tall lanky build, golden curly hair, round glasses, white shirt, white sneakers, consistent outfit, hairstyle, footwear and body shape, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，赛璐璐风格，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，青年男性，高挑清瘦身形，金色卷发，圆框眼镜，白色衬衫，白色运动鞋，服饰发型鞋子体型一致，纯白背景，杰作，最高画质，超高细节，高分辨率", "role": "minor", "outfit": "白色衬衫配白色运动鞋"}}
+]
+
+原文（当前组 + 后瞻章；后瞻章仅供补全外观 / 揭示真名，不要把后瞻章剧情当本组内容）：
+{window_text}
+"""
+
+
+# ─── 场景（地点）检测：收集 → 收敛（detect_new_scenes_llm，镜像角色检测两阶段）──────────────
+
+
+def build_scene_candidate_scan_prompt(
+    chapter_text: str, known_scenes: set[str], worldview: str = ""
+) -> str:
+    """分镜前「新地点候选轻量扫描」（scene detect stage 1，只看本组原文，输出极小）。
+
+    只判定「本组是否出现了 known_scenes 之外的新地点」，不产完整档案 / 不建图——收敛与建档由
+    stage 2 的 build_reconcile_scenes_prompt 结合后瞻窗口一次产出。无候选时下游跳过 stage 2
+    （新场景触发式后瞻：没新地点就不花后瞻的 token）。
+
+    known_scenes：已知场景的「标准名 ∪ 全部别名」（节点合并传入），据此排除已登记地点/别称。
+
+    输出 schema：JSON 数组，每元素 {{"name": str, "note": str}}。
+    """
+    existing = "、".join(sorted(known_scenes)) if known_scenes else "（无）"
+    worldview_block = _build_worldview_block(worldview)
+    return f"""你是一个小说场景（地点）识别器。快速扫描下面的章节原文，只找出「本组新出现、且不在已知地点名单中」的地点候选。
+
+{worldview_block}已知地点（含别名，均视为已登记，不要列入候选）：{existing}
+
+要求：
+1. 只列本组新出现的**具体地点/场所**候选（人物活动、剧情发生的空间）：如某人家中、办公室、地下停车场、宗祠、医院走廊、山间小径、废弃工厂等。
+   - **粗粒度**：按「大场所」识别（如「陆家」，而不是把客厅/卧室/厨房拆成三个）；同一栋建筑/院落算一个地点。
+   - 用最自然的中文地点名作 name；同一地点原文有多种称呼时取最常用的一个。
+2. 每个候选只输出两个字段：name（地点名）、note（一句话：这是什么地方 / 如何指代；若怀疑其实是某已知地点的另一种叫法，写明"疑似已有地点X的别称"，后续步骤会据此归并）。
+3. 不列纯泛化 / 不可辨识的空间：如"路上"、"远处"、"某个角落"、"周围"等无明确场所身份的模糊指代。
+4. 不要输出描述 / 别名 / 是否建图等字段——那些由后续步骤统一补全，这一步只做轻量识别、保持输出小。
+5. 本组无新地点则输出空数组 []。
+6. 严格输出 JSON 数组，不要 markdown 代码块、不要任何解释文字。
+
+输出格式示例：
+[{{"name": "陆家", "note": "主角家，本章多次出现的宅院"}}, {{"name": "地下停车场", "note": "疑似上一章'地库'的另一种叫法"}}]
+
+章节原文：
+{chapter_text}
+"""
+
+
+def _build_scene_reconcile_roster(scenes_profile: dict) -> str:
+    """构造地点归并用花名册：`- 地点名（别名：…；描述：…）`，供 stage 2 判断候选是否已知地点的别称。"""
+    if not scenes_profile:
+        return "（暂无已知地点）"
+    rows = []
+    for sname, sp in scenes_profile.items():
+        if not isinstance(sp, dict):
+            rows.append(f"- {sname}")
+            continue
+        aliases = "、".join(a for a in (sp.get("aliases") or []) if a)
+        desc = (sp.get("description") or "").strip()
+        parts = []
+        if aliases:
+            parts.append(f"别名：{aliases}")
+        if desc:
+            parts.append(f"描述：{desc}")
+        rows.append(f"- {sname}（{'；'.join(parts)}）" if parts else f"- {sname}")
+    return "\n".join(rows)
+
+
+def build_reconcile_scenes_prompt(
+    window_text: str,
+    candidates: list[dict],
+    scenes_profile: dict,
+    worldview: str = "",
+) -> str:
+    """分镜前「新地点收敛 + 建档」（scene detect stage 2，读本组+后瞻若干章，仅在有候选时触发）。
+
+    对 stage 1 的候选，结合后瞻窗口一次收敛：把「其实是已知地点的别称」归并为别名，为真新地点建档，
+    并判定是否值得建参考图（频次过滤）：
+    - resolution="alias_of"：候选其实是某已知地点 → {{canonical: 已知地点名, alias: 该新称呼}}，不重复建档。
+    - resolution="new"：确为新地点 → {{name（粗粒度大场所名）, description, aliases, build_asset}}。
+
+    收敛四手段全在此落地：① 同义归一（alias_of）；② 粗粒度大场所（name 取大场所、合并房间）；
+    ③ 频次过滤（build_asset：仅在窗口内复现的地点为 true）；④ 多章覆盖提炼（window_text 含后瞻章，
+    跨章看全后再归一/判频次）。
+    """
+    import json
+
+    worldview_block = _build_worldview_block(worldview)
+    roster = _build_scene_reconcile_roster(scenes_profile)
+    candidates_json = json.dumps(candidates, ensure_ascii=False)
+    return f"""你是一个小说场景（地点）档案师。下面给出「本组 + 后续若干章」的原文，以及本组扫描出的新地点候选和已知地点花名册。
+请为每个候选判定「是新地点还是已知地点的另一种叫法」，为真新地点建档，并判定它是否值得建一张参考背景图。
+
+{worldview_block}已知地点花名册（据此判断候选是否其实是这些地点之一的别称 / 另一种叫法）：
+{roster}
+
+本组新地点候选（只处理这些，不要新增候选之外的地点）：{candidates_json}
+
+【第一步·同义归并】对每个候选，先判断它是不是上面某个已知地点的另一种叫法（别称、简称、跨章换了个说法）：
+- 是 → 输出 {{"resolution": "alias_of", "canonical": 已知地点的标准名, "alias": 该候选的新称呼}}。这样后续无论原文怎么叫，都归并到同一地点、同一张参考图，避免地点裂成一堆。
+- 判断依据：同一空间的不同叫法（"地库"="地下停车场"）、上下文明确指同一处。拿不准是否同一处时，宁可当新地点（输出 new），不要乱并。
+
+【第二步·新地点建档（务必收敛）】确为新地点的候选，输出 {{"resolution": "new", ...}}，字段如下：
+1. name（标准地点名）：**粗粒度大场所**——同一栋建筑/院落/场所用一个名字（如「陆家」涵盖其客厅/卧室/书房；「市医院」涵盖各科室走廊病房），不要按房间拆分。用最自然、最稳定的中文地点名。
+2. description（一句地点描述）：这个地方长什么样——空间类型 + 关键环境特征 + 氛围/色调/材质/光气（如「老式宅院的中式客厅，深色木质家具，昏黄暖光，陈旧压抑」）。供后续生成一张**空景背景板**（画面里无任何人物）用，越具体越稳。不写人物。
+3. aliases（别名数组）：该地点在窗口内出现过的其它叫法 / 简称（去掉与 name 重复的）；无则 []。
+4. build_asset（是否建参考图，布尔）：**频次过滤**——只有在窗口内**复现**（跨多个镜头/段落、多次作为剧情发生地）的地点才 true；只出现一次的过场地点 / 一次性背景为 false（省资源，走文本背景即可）。判断时结合后瞻章：后续章节还会用到的地点也算复现 → true。
+
+输出规则：
+- 严格输出 JSON 数组，每元素是「resolution=new 的建档」或「resolution=alias_of 的归并记录」二选一。
+- 不要 markdown 代码块、不要任何解释文字；字符串内严禁英文双引号（用中文引号「」或《》）。
+
+输出格式示例：
+[
+  {{"resolution": "alias_of", "canonical": "地下停车场", "alias": "地库"}},
+  {{"resolution": "new", "name": "陆家", "description": "老式宅院的中式客厅，深色雕花木家具，供桌与八仙椅，昏黄暖光透过窗棂，陈旧压抑的氛围", "aliases": ["陆家客厅", "陆宅"], "build_asset": true}},
+  {{"resolution": "new", "name": "巷口便利店", "description": "夜间街角的小便利店，冷白灯管，货架拥挤，玻璃门映着霓虹", "aliases": [], "build_asset": false}}
+]
+
+原文（当前组 + 后瞻章；后瞻章仅供跨章判断同一地点 / 是否复现，不要把后瞻章剧情当本组内容）：
+{window_text}
+"""
+
+
+def _build_scene_roster(scenes_profile: dict) -> str:
+    """构造分镜用地点花名册：`地点名（描述）`，供 storyboard 第二步为每个换图点挑 scene_id。
+
+    只列已收敛的标准地点（storyboard 从中挑，不新造），description 帮 LLM 判断哪个换图点属于哪个地点。
+    空档案返回占位串（此时 storyboard 不强制 scene_id）。
+    """
+    if not scenes_profile:
+        return "（暂无已知地点）"
+    rows = []
+    for sname, sp in scenes_profile.items():
+        if not isinstance(sp, dict):
+            rows.append(sname)
+            continue
+        desc = (sp.get("description") or "").strip()
+        rows.append(f"{sname}（{desc}）" if desc else sname)
+    return "、".join(rows)

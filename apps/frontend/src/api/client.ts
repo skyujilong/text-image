@@ -121,6 +121,17 @@ export interface CharacterInfo {
   portrait_path: string | null
 }
 
+/** 场景（地点）资产（GET /runs/{id}/scenes）：收敛后的地点清单 + 空景背景板。 */
+export interface SceneInfo {
+  name: string
+  description: string
+  aliases: string[]
+  /** 是否建了参考背景图（复现地点=true；一次性地点=false 走文本背景）。 */
+  build_asset: boolean
+  /** 空景背景板绝对路径（已生成且文件存在时非空，供 /files 服务展示）。 */
+  plate_path: string | null
+}
+
 /** 音频合成状态（GET /runs/{id}/render/chapter/{ch_id}/audio）。 */
 export interface AudioStatus {
   chapter_id: string
@@ -432,6 +443,10 @@ export const api = {
   // 人物档案列表
   getRunCharacters: (runId: string) =>
     request<CharacterInfo[]>(`/runs/${runId}/characters`),
+
+  // 场景（地点）资产列表
+  getRunScenes: (runId: string) =>
+    request<SceneInfo[]>(`/runs/${runId}/scenes`),
 
   // ─── 渲染工作台 ─────────────────────────────────────────────
   // 章节列表 + 渲染状态（后端返回 {chapters: [...]}，解包为裸数组）
