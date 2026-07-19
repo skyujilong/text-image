@@ -159,6 +159,7 @@ def test_configure_chapter_grouping_payload_exposes_schemes(monkeypatch):
         "romance_sweet",
         "general",
         "plain_narration",
+        "plain_paragraph",
     ]
 
 

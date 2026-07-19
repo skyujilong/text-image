@@ -45,6 +45,7 @@ def test_builtin_schemes_registered():
         "romance_sweet",
         "general",
         "plain_narration",
+        "plain_paragraph",
     ]
     assert DEFAULT_SCHEME_KEY == "horror_suspense"
 
@@ -57,6 +58,7 @@ def test_list_scheme_presets_shape():
         "romance_sweet",
         "general",
         "plain_narration",
+        "plain_paragraph",
     ]
     for p in presets:
         assert set(p) == {
@@ -151,6 +153,28 @@ def test_plain_narration_keeps_hooks_but_lightens_body():
     assert "轻量改编" in scheme.adapt_script_template
     # 换图从正反打改成解说配图节奏
     assert "不走正反打" in scheme.scene_change_template
+
+
+def test_plain_paragraph_registered_and_segment_driven():
+    """逐段配图方案：段落驱动换图、仅第三人称、必需占位符齐、头尾钩子 + seg 段号约定在。"""
+    scheme = NARRATION_SCHEMES["plain_paragraph"]
+    # 段落驱动换图（换图点由 adapt 打的 seg 段号纯代码判定，不调 scene_change LLM）
+    assert scheme.segment_driven_change is True
+    # 仅第三人称（不提供人称槽）
+    assert scheme.perspective_slots is None
+    assert scheme_perspectives(scheme) == []
+    # 必需占位符（两个 builder 渲染所依赖）
+    assert "%%CHAPTER_TEXT%%" in scheme.adapt_script_template
+    assert "%%SCRIPT_LINES%%" in scheme.scene_change_template
+    # 头尾钩子保留（开篇钩子 + 拉回过渡）
+    assert "开篇钩子" in scheme.adapt_script_template
+    assert "拉回过渡" in scheme.adapt_script_template
+    # seg 段号约定写进 adapt 模板 + seg 作为输出字段
+    assert "seg" in scheme.adapt_script_template
+    assert "段号" in scheme.adapt_script_template
+    # 其余方案默认非段落驱动（默认值 False，旧 checkpoint 行为不变）
+    assert NARRATION_SCHEMES["horror_suspense"].segment_driven_change is False
+    assert NARRATION_SCHEMES["plain_narration"].segment_driven_change is False
 
 
 # ── 人称视角（narration perspective）─────────────────────────────────────────

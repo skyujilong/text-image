@@ -453,11 +453,41 @@ def _write_storyboard_debug(novel_dir: str, chapter_id: str, payload: dict) -> N
     )
 
 
+def _segment_change_indices(script: list[dict]) -> set[int]:
+    """段落驱动换图：按 adapt 打的 seg 段号算「换图点」下标集（纯函数、不调 LLM）。
+
+    换图点 = seg 相对上一条发生变化的那一条（每个配图段的第一条）。seg 由 adapt_script
+    的段落方案模板逐条输出：同一原文自然段共享一个 seg，长段就地切细、开篇钩子逐条各占一段。
+    缺失/非法 seg（非 int 或 bool）不新起段、沿用上一段，避免因个别漏字段而错切；全缺时返回
+    空集（首条换图由下游 skeleton[0]["scene_change"]=True 兜底），并打 warning 暴露。
+    """
+    changes: set[int] = set()
+    prev: int | None = None
+    missing = 0
+    for i, item in enumerate(script):
+        seg = item.get("seg")
+        if not isinstance(seg, int) or isinstance(seg, bool):
+            missing += 1  # 缺/非法 seg → 沿用上一段，不新起段
+            continue
+        if seg != prev:
+            changes.add(i)
+            prev = seg
+    if missing:
+        log.warning(
+            "segment_change: 部分口播缺 seg 段号，按沿用前段处理",
+            missing=missing,
+            total=len(script),
+        )
+    return changes
+
+
 def generate_storyboard(state: dict) -> dict:
     """LLM 两步生成分镜 → current_storyboard（不落盘，稿件由 commit_chapter 收入 render_batch）。
 
     两步法（避免一次性生成全部 scene_prompt 导致输出 token 截断）：
-    - 第一步「初筛」：LLM 只判定每条口播是否换图点（输出布尔数组，输出量极小，串行单次）。
+    - 第一步「确定换图点」：按 narration_scheme 分两种模式——段落驱动方案（segment_driven_change，
+      如 plain_paragraph）纯代码按 adapt 打的 seg 段号切、不调 LLM；其余方案由 LLM 初筛
+      （只判定哪些口播是换图点，输出下标列表，输出量极小，串行单次）。
     - 第二步「画面生成」：只为换图点生成 subjects + scene_prompt（非换图点下游复用前图、
       不读 scene_prompt，从源头省去无用输出）；换图点过多时按批并行兜底。
 
@@ -480,39 +510,51 @@ def generate_storyboard(state: dict) -> dict:
         log.info("generate_storyboard: 空脚本，跳过", chapter=ch_id)
         return {"current_storyboard": [], "_storyboard_review_feedback": ""}
 
-    # ---- 第一步：初筛换图点（串行单次，输出换图点下标列表）----
-    # 换图点节奏密度默认按 narration_scheme 现取源码（改 .py 即时生效）；用户手改 / 旧 checkpoint
-    # 有 override 才用 override。详见 _resolve_narration_template。
-    # 提示词自进化：换图点阶段的已采纳校正规则注入块；缺省不注入。
-    learned_rules_text = state.get("learned_rules_text") or {}
-    sc_prompt = build_scene_change_prompt(
-        script, chapter_text, feedback,
-        template=_resolve_narration_template(state, "scene_change"),
-        learned_rules=learned_rules_text.get("scene_change", ""),
-    )
-    raw_indices = invoke_llm_json_array(sc_prompt, node="generate_storyboard", label="storyboard_scene_change")
+    # ---- 第一步：确定换图点 ----
+    # 按 narration_scheme 分两种模式：
+    #   ① 段落驱动（segment_driven_change=True，如 plain_paragraph）：换图点由 adapt 打的 seg
+    #      段号纯代码判定（_segment_change_indices），不调 LLM、零漂移——同一原文自然段共用一张图。
+    #   ② LLM 初筛（现状，其余方案）：LLM 只判定哪些口播是换图点（输出下标列表，输出量极小，串行单次）。
+    # 模板/密度默认按 narration_scheme 现取源码（改 .py 即时生效）；用户手改 / 旧 checkpoint 有 override 才用。
+    scheme = get_scheme(state.get("narration_scheme"))
     n_script = len(script)
-    # 输出已从「等长布尔数组」改为「换图点下标列表」：模型不再需要逐条铺满 N 个 bool，
-    # 从根上消除「数组长度对不上」的崩溃。这里只校验下标合法性（整数、在范围内），
-    # 越界/非整数直接抛错暴露，不静默丢弃（否则会与 script 错位、污染音频/字幕对齐）。
-    # 兼容两种输出格式：① 纯下标整数（多数解说方案）；② {"i": 下标, "trigger": 触发类别}
-    # （horror 方案要求每个换图点标注命中的触发类别，用"说得出理由才换"压掉虚假切换，
-    # trigger 分布也进观测日志便于诊断）。两种都归一到下标集合，dict 顺带收集触发标注。
     change_set: set[int] = set()
     change_triggers: dict[int, str] = {}
-    for v in raw_indices:
-        if isinstance(v, dict):
-            idx = v.get("i")
-            trigger = v.get("trigger")
-        else:
-            idx, trigger = v, None
-        if not isinstance(idx, int) or isinstance(idx, bool):
-            raise ValueError(f"换图点初筛结果含非整数下标: {idx!r}（原始元素 {v!r}，应为 0~{n_script - 1} 的整数）")
-        if idx < 0 or idx >= n_script:
-            raise ValueError(f"换图点初筛结果下标越界: {idx}（口播共 {n_script} 条，合法范围 0~{n_script - 1}）")
-        change_set.add(idx)
-        if isinstance(trigger, str) and trigger.strip():
-            change_triggers[idx] = trigger.strip()
+
+    if scheme.segment_driven_change:
+        # ① 段落驱动：纯代码按 seg 段号切换图点，不调 scene_change LLM。
+        change_set = _segment_change_indices(script)
+        change_mode = "segment"
+    else:
+        # ② LLM 初筛换图点（串行单次，输出换图点下标列表）。
+        # 提示词自进化：换图点阶段的已采纳校正规则注入块；缺省不注入。
+        learned_rules_text = state.get("learned_rules_text") or {}
+        sc_prompt = build_scene_change_prompt(
+            script, chapter_text, feedback,
+            template=_resolve_narration_template(state, "scene_change"),
+            learned_rules=learned_rules_text.get("scene_change", ""),
+        )
+        raw_indices = invoke_llm_json_array(sc_prompt, node="generate_storyboard", label="storyboard_scene_change")
+        # 输出已从「等长布尔数组」改为「换图点下标列表」：模型不再需要逐条铺满 N 个 bool，
+        # 从根上消除「数组长度对不上」的崩溃。这里只校验下标合法性（整数、在范围内），
+        # 越界/非整数直接抛错暴露，不静默丢弃（否则会与 script 错位、污染音频/字幕对齐）。
+        # 兼容两种输出格式：① 纯下标整数（多数解说方案）；② {"i": 下标, "trigger": 触发类别}
+        # （horror 方案要求每个换图点标注命中的触发类别，用"说得出理由才换"压掉虚假切换，
+        # trigger 分布也进观测日志便于诊断）。两种都归一到下标集合，dict 顺带收集触发标注。
+        for v in raw_indices:
+            if isinstance(v, dict):
+                idx = v.get("i")
+                trigger = v.get("trigger")
+            else:
+                idx, trigger = v, None
+            if not isinstance(idx, int) or isinstance(idx, bool):
+                raise ValueError(f"换图点初筛结果含非整数下标: {idx!r}（原始元素 {v!r}，应为 0~{n_script - 1} 的整数）")
+            if idx < 0 or idx >= n_script:
+                raise ValueError(f"换图点初筛结果下标越界: {idx}（口播共 {n_script} 条，合法范围 0~{n_script - 1}）")
+            change_set.add(idx)
+            if isinstance(trigger, str) and trigger.strip():
+                change_triggers[idx] = trigger.strip()
+        change_mode = "llm"
 
     # ---- 组装骨架：text/speaker 从 script 对位填充，scene_change 取初筛下标集 ----
     skeleton: list[dict] = []
@@ -534,10 +576,12 @@ def generate_storyboard(state: dict) -> dict:
     trigger_dist: dict[str, int] = {}
     for _trig in change_triggers.values():
         trigger_dist[_trig] = trigger_dist.get(_trig, 0) + 1
-    # 观测（不改行为）：LLM 判定的换图点 vs 强制首条后的最终换图点，看强制项影响
+    # 观测（不改行为）：初筛的换图点 vs 强制首条后的最终换图点，看强制项影响。
+    # mode=segment 时 change_set 是代码按 seg 段号算出的换图点（llm_change_points 即此值）。
     log.info(
         "generate_storyboard.scene_change",
         chapter=ch_id,
+        mode=change_mode,
         lines=n_script,
         llm_change_points=len(change_set),
         forced_first=0 not in change_set,

@@ -23,6 +23,7 @@ from novel2media.nodes.chapter_nodes import (
 from novel2media.nodes.chapter_nodes import (  # 分镜观测辅助（纯函数）
     _resolve_narration_template,
     _scan_scene_prompt,
+    _segment_change_indices,
     _storyboard_change_stats,
 )
 from novel2media.prompts.narration_schemes import DEFAULT_SCHEME_KEY, get_scheme
@@ -503,6 +504,79 @@ def test_detect_new_characters_empty_when_none(tmp_path, monkeypatch):
     _mock_llm(monkeypatch, [])
     result = detect_new_characters_llm(state)
     assert result["setup_queue"] == []
+
+
+# ── 段落驱动换图（segment_driven_change，如 plain_paragraph）─────────────────
+
+
+def test_segment_change_indices_normal_seg():
+    """正常 seg 段号：换图点＝每个配图段的第一条（seg 相对上一条变化的那条）。"""
+    script = [
+        {"seg": 0},  # 0 → 起段，换图
+        {"seg": 0},  # 1 → 同段，沿用
+        {"seg": 1},  # 2 → 新段，换图
+        {"seg": 2},  # 3 → 新段，换图
+        {"seg": 2},  # 4 → 同段，沿用
+    ]
+    assert _segment_change_indices(script) == {0, 2, 3}
+
+
+def test_segment_change_indices_missing_seg_reuses_prev():
+    """部分口播缺 seg：缺条沿用前段、不新起段（不因个别漏字段错切）。"""
+    script = [
+        {"seg": 0},  # 0 → 换图
+        {},          # 1 → 缺 seg，沿用前段
+        {"seg": 0},  # 2 → 与 prev(0) 相同，沿用（不换）
+        {"seg": 1},  # 3 → 新段，换图
+    ]
+    assert _segment_change_indices(script) == {0, 3}
+
+
+def test_segment_change_indices_all_missing_returns_empty():
+    """全章 seg 缺失/无效 → 空集（下游 skeleton[0] 强制首条兜底），bool 不当整数。"""
+    assert _segment_change_indices([{}, {}, {}]) == set()
+    # seg 为 bool 视为无效（isinstance(True, int) 为真，须显式排除）
+    assert _segment_change_indices([{"seg": True}, {"seg": False}]) == set()
+
+
+def test_generate_storyboard_segment_driven_skips_llm_scene_change(tmp_path, monkeypatch):
+    """段落驱动方案：换图点按 adapt 打的 seg 段号纯代码切，不调 scene_change LLM。
+
+    只 mock 一次 LLM（第二步生图）；若第一步误调 scene_change LLM，call_count 会变 2 或
+    side_effect 提前耗尽而报错——以此锁死"段落驱动不走 LLM 初筛"。
+    """
+    state = _make_chapter_state(tmp_path)
+    state["narration_scheme"] = "plain_paragraph"
+    # seg：0（钩子）| 1（桥）| 2,2（同一自然段两条共图）| 3（下一段）
+    state["current_script"] = [
+        {"text": "钩子句", "action": "定场", "speaker": "旁白", "seg": 0},
+        {"text": "而这一切要从头说起", "action": "回拉", "speaker": "旁白", "seg": 1},
+        {"text": "正文第一段首句", "action": "画面a", "speaker": "旁白", "seg": 2},
+        {"text": "正文第一段次句", "action": "画面a续", "speaker": "旁白", "seg": 2},
+        {"text": "正文第二段", "action": "画面b", "speaker": "旁白", "seg": 3},
+    ]
+    # 只需一次 LLM 调用（第二步为 4 个换图点 anchor 0/1/2/4 生图）；第一步不调 LLM
+    mock = _mock_llm_steps(
+        monkeypatch,
+        [
+            [
+                {"anchor_id": 0, "subjects": [], "scene_prompt": "s0"},
+                {"anchor_id": 1, "subjects": [], "scene_prompt": "s1"},
+                {"anchor_id": 2, "subjects": [], "scene_prompt": "s2"},
+                {"anchor_id": 4, "subjects": [], "scene_prompt": "s4"},
+            ],
+        ],
+    )
+
+    result = generate_storyboard(state)
+
+    storyboard = result["current_storyboard"]
+    # 换图点落在 seg 边界：0(段0)、1(段1)、2(段2 首条)、4(段3)；idx3 与 idx2 同段 → 沿用不换
+    assert [e["scene_change"] for e in storyboard] == [True, True, True, False, True]
+    # idx3 非换图点：scene_prompt 留空（下游复用前图）
+    assert storyboard[3]["scene_prompt"] == ""
+    # 关键：只调了一次 LLM（第二步生图）；scene_change 初筛 LLM 未被调用
+    assert mock.call_count == 1
 
 
 def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):

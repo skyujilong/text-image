@@ -29,6 +29,7 @@
 | `romance_sweet` | 甜宠言情解说 | 高甜名场面开篇、强化心动/暧昧张力、关系升温节奏 |
 | `general` | 通用中性解说 | 按原文情绪基调自适应、不强加题材色彩、通用换图节奏 |
 | `plain_narration` | 纯小说解说·轻量改编 | 头尾照上钩子留人，正文忠实原著、只做适度精简、以旁白为主（关键对白保留、不做正反打硬拆）；换图走「解说配图」适中密度 + 景别节奏，主动用空镜/环境图防呆板 |
+| `plain_paragraph` | 纯小说解说·逐段配图 | 正文比 `plain_narration` 还贴原文（近乎顺读）；**换图不走 LLM**——按原文自然段逐段配图，由 `adapt` 打的 `seg` 段号纯代码判定（**段落驱动换图**，见下） |
 
 ## 人称视角（narration perspective，正交于方案）
 
@@ -51,6 +52,45 @@ per-run 全局（与合并粒度 N 同粒度）。取值：
 - **目前仅 `horror_viral` 提供第一人称文案**；其余方案只支持第三人称（UI 不显示人称开关）。扩展到别的题材＝只补它们的 `perspective_slots`，架构不变。
 - **容错**：`validate_perspective(scheme, key)` 对方案不支持/未知 key 回退 `third_person`（不抛错）；`resolve_perspective_tokens` 对无槽方案返回 `{}`。
 - **与覆盖槽的关系**：人称 token 在 render 期注入，独立于 `narration_templates` 覆盖槽——用户手改模板若保留 `%%PERSP_*%%` 则仍受人称开关影响，删了则该字段人称静默失效（高级行为）。
+
+## 段落驱动换图（segment-driven change，`plain_paragraph`）
+
+`plain_paragraph` 是首个**换图不走 LLM** 的方案：换图点由 `adapt_script` 给每条口播打的 `seg`
+**配图段号**纯代码判定，实现「一个原文自然段一张图」，零换图漂移。
+
+- **为什么不靠 LLM 对齐**：口播是 `adapt` 逐句重写的产物，默认不携带「本条取材自原文第几段」，
+  且开篇钩子会把中后段内容提炼重排到最前——让 `scene_change` LLM 事后把「重写后的口播 ↔ 原文
+  自然段」对齐是模糊活、会多切/漏切。故让 `adapt` 阶段的 LLM **顺手给每条口播打 `seg` 段号**，
+  换图阶段纯代码按段号切。
+- **`seg` 语义约定**（写进 `_PLAIN_SEG_ADAPT_SCRIPT` 模板、作为第 4 个输出字段）：单调不减的
+  「配图段序号」整数（0-based），不是原文段绝对下标。开篇钩子每条各占一个 `seg`（保黄金三秒密集
+  换图）、拉回桥单占一个、正文以**原文自然段**为单位共享一个 `seg`（一段一图）、**长段落在 `adapt`
+  就地按画面节拍切成 2+ 个 `seg`**（软阈值一个 `seg` ≲5–6 条口播）、结尾单占一个。
+- **换图判定**（`chapter_nodes._segment_change_indices`，纯函数）：换图点＝`seg` 相对上一条变化的
+  那一条（每个配图段的第一条）。缺/非法 `seg`（非 `int` 或 `bool`）→ 沿用前段、不新起段；全章缺
+  → 空集（首条换图仍由 `skeleton[0]["scene_change"]=True` 兜底）+ `warning` 暴露。**本期不接 LLM
+  兜底**（保持确定性；模型被明确要求输出 `seg`，全缺概率极低）。
+- **分支点**（`generate_storyboard` 第一步）：`get_scheme(...).segment_driven_change` 为真 → 走
+  `_segment_change_indices`、不调 `scene_change` LLM（`mode="segment"`）；否则走原 LLM 初筛
+  （`mode="llm"`）。两模式互斥，一次 run 只一套换图点，不叠加。观测日志
+  `generate_storyboard.scene_change` 带 `mode` 字段区分。
+- **时间对齐自动继承**：`seg` 边界即换图点，逐句 TTS 时间戳前向填充（`expand_image_map`），同一
+  `seg` 内所有口播共用一张图、铺满该段朗读时长——与其它方案同一套机制，无需改 `build_timeline`。
+- **`NarrationScheme.segment_driven_change: bool = False`**：新增字段带默认值，其余 5 个方案保持
+  `False`（走 LLM 路径，旧 run 逐字节不变）；**不进** `list_scheme_presets()` 序列化形状（前端不感知）。
+- **已知瑕疵**：`plain_paragraph` 的 `scene_change` 模板（`_PLAIN_SEG_SCENE_CHANGE`）在前端仍可编辑，
+  但对生成**无效**（段落驱动走代码）。本期接受，未加「隐藏/禁用该编辑器」的前端逻辑（避免动 preset
+  序列化形状）。留作可选后续。
+
+### 与 `plain_narration` 的区别
+
+| 维度 | `plain_narration` | `plain_paragraph` |
+|------|-------------------|-------------------|
+| 正文改编力度 | 轻量改编（忠实 + 适度精简） | 近乎顺读原文（再轻一档） |
+| 换图机制 | `scene_change` LLM 按「解说配图」节奏初筛 | 纯代码按 `adapt` 打的 `seg` 段号切 |
+| 换图粒度 | 叙事/场景/景别节奏（适中密度） | 原文自然段（一段一图，长段就地切细） |
+| `adapt` 输出字段 | `text/action/speaker` | `text/action/speaker/**seg**` |
+| 人称 | 仅第三人称 | 仅第三人称 |
 
 ## 占位符（token）契约
 
@@ -106,7 +146,8 @@ per-run 全局（与合并粒度 N 同粒度）。取值：
 
 | 功能 | 文件 |
 |------|------|
-| 方案注册表（5 预设）+ 人称视角槽 + 渲染/校验 | `packages/novel2media-core/src/novel2media/prompts/narration_schemes.py` |
+| 方案注册表（6 预设）+ 人称视角槽 + 段落驱动标志 + 渲染/校验 | `packages/novel2media-core/src/novel2media/prompts/narration_schemes.py` |
+| 段落驱动换图判定（`_segment_change_indices` + `generate_storyboard` 分支） | `packages/novel2media-core/src/novel2media/nodes/chapter_nodes.py` |
 | 两个 builder 接入 `template` 参数 | `packages/novel2media-core/src/novel2media/prompts/chapter_prompts.py` |
 | 选择/自定义交互（interrupt + resume） | `packages/novel2media-core/src/novel2media/nodes/init_nodes.py::configure_chapter_grouping` |
 | 节点传入 run 内模板 | `packages/novel2media-core/src/novel2media/nodes/chapter_nodes.py`（`adapt_script` / `generate_storyboard`） |
