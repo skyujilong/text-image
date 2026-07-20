@@ -27,7 +27,7 @@ def _make_novel(tmp_path, chapters=("chapter_01.txt",)):
 def _mock_llm(monkeypatch, payload):
     """mock invoke_llm（llm.py 统一封装），返回带 content 的 AIMessage 替身。"""
 
-    def _invoke_llm(prompt, *, node, temperature=0.8, label=None, json_mode=False):
+    def _invoke_llm(system, user=None, *, node, temperature=0.8, label=None, json_mode=False):
         return MagicMock(content=json.dumps(payload, ensure_ascii=False))
 
     monkeypatch.setattr("novel2media.llm.invoke_llm", _invoke_llm)
@@ -152,7 +152,7 @@ async def test_init_resume_revise_loops_back_to_parse(tmp_path, monkeypatch):
     )
     mock = MagicMock()
 
-    def _invoke_llm(prompt, *, node, temperature=0.8, label=None, json_mode=False):
+    def _invoke_llm(system, user=None, *, node, temperature=0.8, label=None, json_mode=False):
         resp = MagicMock()
         resp.content = json.dumps(next(calls), ensure_ascii=False)
         return resp

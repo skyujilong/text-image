@@ -33,7 +33,7 @@ def _mock_llm_sequence(monkeypatch, payloads):
     """按调用顺序返回不同 payload 的 LLM mock（mock invoke_llm 统一封装）。"""
     calls = iter(payloads)
 
-    def _invoke_llm(prompt, *, node, temperature=0.8, label=None, json_mode=False):
+    def _invoke_llm(system, user=None, *, node, temperature=0.8, label=None, json_mode=False):
         resp = MagicMock()
         resp.content = json.dumps(next(calls), ensure_ascii=False)
         return resp

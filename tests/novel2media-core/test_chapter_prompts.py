@@ -45,7 +45,8 @@ def test_scene_change_prompt_requires_indexed_lines_and_trigger_objects():
         {"text": "第二句", "action": "动作2", "speaker": "旁白"},
         {"text": "第三句", "action": "动作3", "speaker": "旁白"},
     ]
-    prompt = build_scene_change_prompt(script, "原文内容")
+    system, user = build_scene_change_prompt(script, "原文内容")
+    prompt = system + user
     # 新契约：每个换图点是 {"i": 下标整数, "trigger": 触发类别} 对象，不再是裸整数数组
     assert '"i"' in prompt
     assert '"trigger"' in prompt
@@ -69,14 +70,16 @@ def test_scene_change_prompt_requires_indexed_lines_and_trigger_objects():
 def test_scene_change_prompt_injects_feedback():
     """第一步初筛：feedback 非空时拼入修改意见。"""
     script = [{"text": "a", "action": "", "speaker": "旁白"}]
-    prompt = build_scene_change_prompt(script, "原文", feedback="换图太频繁")
+    system, user = build_scene_change_prompt(script, "原文", feedback="换图太频繁")
+    prompt = system + user
     assert "换图太频繁" in prompt
 
 
 def test_scene_change_prompt_no_feedback_block():
     """无 feedback 时不含修改意见段。"""
     script = [{"text": "a", "action": "", "speaker": "旁白"}]
-    prompt = build_scene_change_prompt(script, "原文")
+    system, user = build_scene_change_prompt(script, "原文")
+    prompt = system + user
     assert "修改意见" not in prompt
 
 
@@ -84,7 +87,8 @@ def test_scene_prompt_for_shots_has_anchor_id_and_rules():
     """第二步画面：含 anchor_id 对回说明 + 画面规则（动作定格、AI 构图、subjects 上限）。"""
     shots = [{"anchor_id": 0, "text": "主角挥手", "coverage": "主角挥手（主角站立挥手）"}]
     profile = {"主角": {"visual_trait": "tall young man with black hair", "outfit": "藏青立领风衣配黑靴"}}
-    prompt = build_scene_prompt_for_shots(shots, "原文", profile)
+    system, user = build_scene_prompt_for_shots(shots, "原文", profile)
+    prompt = system + user
     # anchor_id 对回
     assert "anchor_id" in prompt
     # 画面规则关键措辞
@@ -104,9 +108,10 @@ def test_scene_prompt_for_shots_has_anchor_id_and_rules():
 def test_scene_prompt_for_shots_injects_scene_roster_and_requires_scene_id():
     """注入场景花名册（地点名+描述）+ 输出 schema 要求 scene_id（storyboard 从收敛清单里挑地点）。"""
     scenes = {"陆家": {"name": "陆家", "description": "中式老宅客厅"}}
-    prompt = build_scene_prompt_for_shots(
+    system, user = build_scene_prompt_for_shots(
         [{"anchor_id": 0, "text": "x", "coverage": "x"}], "原文", {}, scenes_profile=scenes
     )
+    prompt = system + user
     assert "陆家" in prompt
     assert "中式老宅客厅" in prompt
     assert "scene_id" in prompt  # 输出 schema + 挑地点要求
@@ -115,7 +120,8 @@ def test_scene_prompt_for_shots_injects_scene_roster_and_requires_scene_id():
 
 def test_scene_prompt_for_shots_no_scenes_placeholder():
     """无场景库时注入占位（不强制 scene_id），scene_id 仍在输出 schema 里（挑不到则空串）。"""
-    prompt = build_scene_prompt_for_shots([{"anchor_id": 0, "text": "x", "coverage": "x"}], "原文", {})
+    system, user = build_scene_prompt_for_shots([{"anchor_id": 0, "text": "x", "coverage": "x"}], "原文", {})
+    prompt = system + user
     assert "暂无已知地点" in prompt
     assert "scene_id" in prompt
 
@@ -129,7 +135,8 @@ def test_scene_roster_lists_name_and_description():
 
 def test_scene_candidate_scan_prompt_lightweight_and_alias_aware():
     """场景 stage1：粗粒度、别名感知排除、输出极小（name+note）。"""
-    prompt = build_scene_candidate_scan_prompt("原文", {"陆家", "陆家客厅"})
+    system, user = build_scene_candidate_scan_prompt("原文", {"陆家", "陆家客厅"})
+    prompt = system + user
     assert "陆家" in prompt  # 已知地点（含别名）列入排除
     assert "粗粒度" in prompt
     assert "note" in prompt
@@ -137,7 +144,8 @@ def test_scene_candidate_scan_prompt_lightweight_and_alias_aware():
 
 def test_reconcile_scenes_prompt_has_new_and_alias_branches():
     """场景 stage2：同义归并（alias_of）+ 新地点建档（new，含 build_asset 频次过滤）。"""
-    prompt = build_reconcile_scenes_prompt("窗口原文", [{"name": "地库", "note": ""}], {"地下停车场": {"name": "地下停车场"}})
+    system, user = build_reconcile_scenes_prompt("窗口原文", [{"name": "地库", "note": ""}], {"地下停车场": {"name": "地下停车场"}})
+    prompt = system + user
     assert "alias_of" in prompt
     assert "build_asset" in prompt  # 频次过滤字段
     assert "地下停车场" in prompt  # 已知地点花名册注入
@@ -146,7 +154,8 @@ def test_reconcile_scenes_prompt_has_new_and_alias_branches():
 
 def test_scene_prompt_for_shots_restores_name_embedded_traits():
     """主体名字自带外观/服饰特征（如「白衣诡物」）时，规则要求还原进描述——兜底未建档的非人实体。"""
-    prompt = build_scene_prompt_for_shots([{"anchor_id": 0, "text": "x", "coverage": "x"}], "原文", {})
+    system, user = build_scene_prompt_for_shots([{"anchor_id": 0, "text": "x", "coverage": "x"}], "原文", {})
+    prompt = system + user
     assert "白衣诡物" in prompt  # 规则正例
     assert "还原" in prompt
     assert "无论其是否在花名册中" in prompt  # 覆盖没建档的实体
@@ -155,21 +164,24 @@ def test_scene_prompt_for_shots_restores_name_embedded_traits():
 def test_scene_prompt_for_shots_batch_info():
     """第二步画面：batch_info 非 None 时注入分批说明。"""
     shots = [{"anchor_id": 0, "text": "a", "coverage": "a"}]
-    prompt = build_scene_prompt_for_shots(shots, "原文", {}, batch_info=(2, 4))
+    system, user = build_scene_prompt_for_shots(shots, "原文", {}, batch_info=(2, 4))
+    prompt = system + user
     assert "第 2/4 批" in prompt
 
 
 def test_scene_prompt_for_shots_no_batch_info():
     """单批（batch_info=None）时不注入分批说明。"""
     shots = [{"anchor_id": 0, "text": "a", "coverage": "a"}]
-    prompt = build_scene_prompt_for_shots(shots, "原文", {})
+    system, user = build_scene_prompt_for_shots(shots, "原文", {})
+    prompt = system + user
     assert "批片段" not in prompt
 
 
 def test_scene_prompt_for_shots_injects_feedback():
     """第二步画面：feedback 非空时拼入修改意见。"""
     shots = [{"anchor_id": 0, "text": "a", "coverage": "a"}]
-    prompt = build_scene_prompt_for_shots(shots, "原文", {}, feedback="画面太空")
+    system, user = build_scene_prompt_for_shots(shots, "原文", {}, feedback="画面太空")
+    prompt = system + user
     assert "画面太空" in prompt
 
 
@@ -177,21 +189,24 @@ def test_scene_prompt_for_shots_injects_feedback():
 
 def test_adapt_script_injects_learned_rules():
     """adapt_script：learned_rules 非空时渲染进 prompt，且 token 不泄漏。"""
-    prompt = build_adapt_script_prompt("原文", {}, learned_rules="- 旁白控制在15字内")
+    system, user = build_adapt_script_prompt("原文", {}, learned_rules="- 旁白控制在15字内")
+    prompt = system + user
     assert "- 旁白控制在15字内" in prompt
     assert "%%LEARNED_RULES%%" not in prompt
 
 
 def test_adapt_script_no_learned_rules_no_token_leak():
     """adapt_script：默认模板含 %%LEARNED_RULES%% 槽，无规则时渲染为空、token 不泄漏。"""
-    prompt = build_adapt_script_prompt("原文", {})
+    system, user = build_adapt_script_prompt("原文", {})
+    prompt = system + user
     assert "%%LEARNED_RULES%%" not in prompt
 
 
 def test_scene_change_injects_learned_rules():
     """scene_change：learned_rules 非空时渲染进 prompt，且 token 不泄漏。"""
     script = [{"text": "a", "action": "", "speaker": "旁白"}]
-    prompt = build_scene_change_prompt(script, "原文", learned_rules="- 说话人切换即换图")
+    system, user = build_scene_change_prompt(script, "原文", learned_rules="- 说话人切换即换图")
+    prompt = system + user
     assert "- 说话人切换即换图" in prompt
     assert "%%LEARNED_RULES%%" not in prompt
 
@@ -199,7 +214,8 @@ def test_scene_change_injects_learned_rules():
 def test_scene_change_no_learned_rules_no_token_leak():
     """scene_change：默认模板含 %%LEARNED_RULES%% 槽，无规则时渲染为空、token 不泄漏。"""
     script = [{"text": "a", "action": "", "speaker": "旁白"}]
-    prompt = build_scene_change_prompt(script, "原文")
+    system, user = build_scene_change_prompt(script, "原文")
+    prompt = system + user
     assert "%%LEARNED_RULES%%" not in prompt
 
 
@@ -214,7 +230,7 @@ def test_scene_change_warns_when_learned_rules_slot_missing(monkeypatch):
     monkeypatch.setattr("novel2media.prompts.chapter_prompts.log", mock_log)
     script = [{"text": "a", "action": "", "speaker": "旁白"}]
     # 自定义模板保留必需 %%SCRIPT_LINES%% 但删了 %%LEARNED_RULES%%
-    build_scene_change_prompt(
+    system, user = build_scene_change_prompt(
         script, "原文", template="只有换图正文 %%SCRIPT_LINES%%", learned_rules="- 少换图"
     )
     mock_log.warning.assert_called_once()
@@ -225,7 +241,7 @@ def test_adapt_script_warns_when_learned_rules_slot_missing(monkeypatch):
     """adapt_script：同理，手改模板缺槽 + 有自进化规则 → 告警。"""
     mock_log = MagicMock()
     monkeypatch.setattr("novel2media.prompts.chapter_prompts.log", mock_log)
-    build_adapt_script_prompt(
+    system, user = build_adapt_script_prompt(
         "原文", {}, template="改编正文 %%CHAPTER_TEXT%%", learned_rules="- 旁白控制在15字内"
     )
     mock_log.warning.assert_called_once()
@@ -237,8 +253,8 @@ def test_no_warn_when_slot_present(monkeypatch):
     mock_log = MagicMock()
     monkeypatch.setattr("novel2media.prompts.chapter_prompts.log", mock_log)
     script = [{"text": "a", "action": "", "speaker": "旁白"}]
-    build_scene_change_prompt(script, "原文", learned_rules="- 少换图")
-    build_adapt_script_prompt("原文", {}, learned_rules="- 旁白控制在15字内")
+    system, user = build_scene_change_prompt(script, "原文", learned_rules="- 少换图")
+    system2, user2 = build_adapt_script_prompt("原文", {}, learned_rules="- 旁白控制在15字内")
     mock_log.warning.assert_not_called()
 
 
@@ -247,14 +263,15 @@ def test_no_warn_when_no_learned_rules(monkeypatch):
     mock_log = MagicMock()
     monkeypatch.setattr("novel2media.prompts.chapter_prompts.log", mock_log)
     script = [{"text": "a", "action": "", "speaker": "旁白"}]
-    build_scene_change_prompt(script, "原文", template="无槽模板 %%SCRIPT_LINES%%", learned_rules="")
-    build_adapt_script_prompt("原文", {}, template="无槽模板 %%CHAPTER_TEXT%%", learned_rules="   ")
+    system, user = build_scene_change_prompt(script, "原文", template="无槽模板 %%SCRIPT_LINES%%", learned_rules="")
+    system2, user2 = build_adapt_script_prompt("原文", {}, template="无槽模板 %%CHAPTER_TEXT%%", learned_rules="   ")
     mock_log.warning.assert_not_called()
 
 
 def test_candidate_scan_prompt_lightweight_and_alias_aware():
     """Stage1 候选扫描：龙套/无名指代都列，泛指排除，已知名(含别名)注入排除名单，只输出轻量字段。"""
-    prompt = build_candidate_scan_prompt("章节原文", known_names={"帽兜男", "陆沉"})
+    system, user = build_candidate_scan_prompt("章节原文", known_names={"帽兜男", "陆沉"})
+    prompt = system + user
     # 龙套 + 无名稳定指代都要列
     assert "龙套" in prompt
     assert "稳定指代" in prompt
@@ -274,7 +291,8 @@ def test_enrich_prompt_has_new_and_alias_branches():
         "帽兜男": {"character_trait": "黑袍兜帽男", "appearance": "一身黑袍，兜帽遮脸", "aliases": []},
     }
     candidates = [{"name": "陆沉", "role": "main", "note": "疑似帽兜男真名"}]
-    prompt = build_enrich_characters_prompt("窗口原文", candidates, characters_profile)
+    system, user = build_enrich_characters_prompt("窗口原文", candidates, characters_profile)
+    prompt = system + user
     # resolution 两分支
     assert '"alias_of"' in prompt and '"new"' in prompt
     assert "canonical" in prompt and "alias" in prompt

@@ -284,7 +284,7 @@ def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
     # adapt_script 不再写 setup_queue（新角色检测拆到独立节点）
     assert "setup_queue" not in result
     # 无 feedback 时 prompt 不含修改意见段
-    assert "修改意见" not in mock.call_args.args[0]
+    assert "修改意见" not in mock.call_args.args[1]
     # 用完清空 feedback，避免串到下一章
     assert result["_script_review_feedback"] == ""
     # 不落盘：<ch>/script.json 不应存在
@@ -301,8 +301,8 @@ def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
 
     result = adapt_script(state)
 
-    prompt = mock.call_args.args[0]
-    assert "对白太书面、节奏太快" in prompt
+    user_msg = mock.call_args.args[1]
+    assert "对白太书面、节奏太快" in user_msg
     assert result["_script_review_feedback"] == ""
 
 
@@ -355,7 +355,8 @@ def test_adapt_script_uses_override_when_present(tmp_path, monkeypatch):
 
     adapt_script(state)
 
-    prompt = mock.call_args.args[0]
+    args = mock.call_args.args
+    prompt = args[0] + (args[1] if len(args) > 1 else "")
     assert "MARKER_XYZ" in prompt  # 用了 override
     # 未带 override 的源码默认模板特征串不应出现（确认没走源码回落）
     assert "覆盖版改编模板" in prompt
@@ -387,7 +388,8 @@ def test_adapt_script_concatenates_whole_group(tmp_path, monkeypatch):
 
     adapt_script(state)
 
-    prompt = mock.call_args.args[0]
+    args = mock.call_args.args
+    prompt = args[0] + (args[1] if len(args) > 1 else "")
     # 两章原文都拼进了 prompt（整组一次喂 LLM）
     assert "第一章独有文本ALPHA" in prompt
     assert "第二章独有文本BETA" in prompt
@@ -401,7 +403,8 @@ def test_adapt_script_falls_back_to_single_file_for_old_checkpoint(tmp_path, mon
 
     adapt_script(state)
 
-    prompt = mock.call_args.args[0]
+    args = mock.call_args.args
+    prompt = args[0] + (args[1] if len(args) > 1 else "")
     assert "旧checkpoint单文件文本GAMMA" in prompt
 
 
@@ -420,7 +423,8 @@ def test_adapt_script_long_group_token_observation(tmp_path, monkeypatch, caplog
     with caplog.at_level(logging.INFO):
         adapt_script(state)
 
-    prompt = mock.call_args.args[0]
+    args = mock.call_args.args
+    prompt = args[0] + (args[1] if len(args) > 1 else "")
     # 5 章全部拼进 prompt（整组一次喂 LLM）：拼接后长度 >= 5 章原文之和
     concatenated_len = len(per_chapter) * 5 + len("\n\n") * 4
     assert prompt.count("长章节内容") == 200 * 5
@@ -976,9 +980,11 @@ def test_generate_storyboard_passes_review_feedback_to_prompt(tmp_path, monkeypa
 
     result = generate_storyboard(state)
 
-    # feedback 应拼进第一步与第二步两个 prompt
-    first_prompt = mock.call_args_list[0].args[0]
-    second_prompt = mock.call_args_list[1].args[0]
+    # feedback 应拼进第一步与第二步两个 prompt（user message = args[1]，无 split 时退化为 args[0]）
+    first_args = mock.call_args_list[0].args
+    second_args = mock.call_args_list[1].args
+    first_prompt = first_args[0] + (first_args[1] if len(first_args) > 1 else "")
+    second_prompt = second_args[0] + (second_args[1] if len(second_args) > 1 else "")
     assert "分镜太碎、scene_prompt 太简单" in first_prompt
     assert "分镜太碎、scene_prompt 太简单" in second_prompt
     assert result["_storyboard_review_feedback"] == ""

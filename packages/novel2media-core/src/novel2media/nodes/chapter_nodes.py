@@ -277,7 +277,7 @@ def adapt_script(state: dict) -> dict:
     # 有 override 才用 override。详见 _resolve_narration_template。
     # 提示词自进化：已采纳校正规则注入块（web 层按 scheme 载入，随委派进 plan 子图）；缺省不注入。
     learned_rules_text = state.get("learned_rules_text") or {}
-    prompt = build_adapt_script_prompt(
+    sys_msg, usr_msg = build_adapt_script_prompt(
         chapter_text,
         characters_profile,
         feedback,
@@ -289,7 +289,7 @@ def adapt_script(state: dict) -> dict:
             state.get("narration_scheme"), state.get("narration_perspective")
         ),
     )
-    script = invoke_llm_json_array(prompt, node="adapt_script", label="adapt_script")  # [{"text","action","speaker"}]
+    script = invoke_llm_json_array(sys_msg, usr_msg, node="adapt_script", label="adapt_script")  # [{"text","action","speaker"}]
 
     # feedback 记录原文（便于核对 revise 意见是否真拼进 prompt）
     log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=feedback)
@@ -534,12 +534,12 @@ def generate_storyboard(state: dict) -> dict:
         # ② LLM 初筛换图点（串行单次，输出换图点下标列表）。
         # 提示词自进化：换图点阶段的已采纳校正规则注入块；缺省不注入。
         learned_rules_text = state.get("learned_rules_text") or {}
-        sc_prompt = build_scene_change_prompt(
+        sc_sys, sc_usr = build_scene_change_prompt(
             script, chapter_text, feedback,
             template=_resolve_narration_template(state, "scene_change"),
             learned_rules=learned_rules_text.get("scene_change", ""),
         )
-        raw_indices = invoke_llm_json_array(sc_prompt, node="generate_storyboard", label="storyboard_scene_change")
+        raw_indices = invoke_llm_json_array(sc_sys, sc_usr, node="generate_storyboard", label="storyboard_scene_change")
         # 输出已从「等长布尔数组」改为「换图点下标列表」：模型不再需要逐条铺满 N 个 bool，
         # 从根上消除「数组长度对不上」的崩溃。这里只校验下标合法性（整数、在范围内），
         # 越界/非整数直接抛错暴露，不静默丢弃（否则会与 script 错位、污染音频/字幕对齐）。
@@ -603,12 +603,12 @@ def generate_storyboard(state: dict) -> dict:
     def _run_batch(args: tuple[int, list[dict]]) -> list[dict]:
         idx, batch = args
         batch_info = (idx + 1, n) if n > 1 else None
-        prompt = build_scene_prompt_for_shots(
+        sp_sys, sp_usr = build_scene_prompt_for_shots(
             batch, chapter_text, characters_profile, feedback, batch_info=batch_info,
             worldview=worldview, scenes_profile=scenes_profile,
         )
         return invoke_llm_json_array(
-            prompt, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]"
+            sp_sys, sp_usr, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]"
         )
 
     # 收集所有批次的 {anchor_id -> {subjects, scene_prompt}}；任一批抛错经 result() 重新抛出（不吞错）
@@ -766,8 +766,8 @@ def detect_new_characters_llm(state: dict) -> dict:
     chapter_text = read_group_text(member_paths)
 
     # ── Stage 1：轻量候选扫描（仅本组）──────────────────────────────
-    cand_prompt = build_candidate_scan_prompt(chapter_text, known_names, worldview=worldview)
-    candidates = invoke_llm_json_array(cand_prompt, node="detect_new_characters_llm", label="candidate_scan")
+    cand_sys, cand_usr = build_candidate_scan_prompt(chapter_text, known_names, worldview=worldview)
+    candidates = invoke_llm_json_array(cand_sys, cand_usr, node="detect_new_characters_llm", label="candidate_scan")
     candidates = [c for c in candidates if c.get("name") and c["name"] not in known_names]
     if not candidates:
         log.info("detect_new_characters_llm: 本组无新角色候选，跳过后瞻", chapter=ch_id)
@@ -787,8 +787,8 @@ def detect_new_characters_llm(state: dict) -> dict:
     log.info("detect_new_characters_llm: 触发后瞻增强", chapter=ch_id,
              candidates=len(candidates), lookahead_chapters=len(fwd_paths))
 
-    enrich_prompt = build_enrich_characters_prompt(window_text, candidates, characters_profile, worldview=worldview)
-    results = invoke_llm_json_array(enrich_prompt, node="detect_new_characters_llm", label="enrich_characters")
+    enrich_sys, enrich_usr = build_enrich_characters_prompt(window_text, candidates, characters_profile, worldview=worldview)
+    results = invoke_llm_json_array(enrich_sys, enrich_usr, node="detect_new_characters_llm", label="enrich_characters")
 
     # 分流：new → 校验六字段 + 归一 role + 规范 aliases 后入队；alias_of → 归并补丁
     new_chars: list[dict] = []
@@ -903,8 +903,8 @@ def detect_new_scenes_llm(state: dict) -> dict:
     chapter_text = read_group_text(member_paths)
 
     # ── Stage 1：轻量地点候选扫描（仅本组）──────────────────────────
-    cand_prompt = build_scene_candidate_scan_prompt(chapter_text, known_scenes, worldview=worldview)
-    candidates = invoke_llm_json_array(cand_prompt, node="detect_new_scenes_llm", label="scene_candidate_scan")
+    cand_sys, cand_usr = build_scene_candidate_scan_prompt(chapter_text, known_scenes, worldview=worldview)
+    candidates = invoke_llm_json_array(cand_sys, cand_usr, node="detect_new_scenes_llm", label="scene_candidate_scan")
     candidates = [c for c in candidates if c.get("name") and c["name"] not in known_scenes]
     if not candidates:
         log.info("detect_new_scenes_llm: 本组无新地点候选，跳过后瞻", chapter=ch_id)
@@ -923,8 +923,8 @@ def detect_new_scenes_llm(state: dict) -> dict:
     log.info("detect_new_scenes_llm: 触发后瞻收敛", chapter=ch_id,
              candidates=len(candidates), lookahead_chapters=len(fwd_paths))
 
-    reconcile_prompt = build_reconcile_scenes_prompt(window_text, candidates, scenes_profile, worldview=worldview)
-    results = invoke_llm_json_array(reconcile_prompt, node="detect_new_scenes_llm", label="reconcile_scenes")
+    recon_sys, recon_usr = build_reconcile_scenes_prompt(window_text, candidates, scenes_profile, worldview=worldview)
+    results = invoke_llm_json_array(recon_sys, recon_usr, node="detect_new_scenes_llm", label="reconcile_scenes")
 
     profile = {k2: (dict(v) if isinstance(v, dict) else v) for k2, v in scenes_profile.items()}
     alias_updates: list[tuple[str, str]] = []

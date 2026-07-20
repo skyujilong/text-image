@@ -6,6 +6,7 @@ from novel2media.prompts.init_prompts import _TRI_VIEW_PROMPT_RULE
 from novel2media.prompts.narration_schemes import (
     DEFAULT_SCHEME_KEY,
     NARRATION_SCHEMES,
+    render_split_template,
     render_template,
 )
 from novel2media_logging import get_logger
@@ -61,8 +62,12 @@ def build_adapt_script_prompt(
     worldview: str = "",
     learned_rules: str = "",
     perspective_tokens: dict[str, str] | None = None,
-) -> str:
+) -> tuple[str, str]:
     """构造有声漫剧单播脚本提示词（只出口播脚本，不含新角色检测）。
+
+    返回 (system, user) 双消息：system = 角色 + 核心任务 + 规则 + 输出格式 + 示例（来自 narration
+    scheme 模板 ===SPLIT=== 标记之前的部分），user = 用户反馈 + 世界观 + 自进化规则 + 章节原文
+    （===SPLIT=== 标记之后的部分）。模板无标记时退化为旧式（system=全文、user=空），逐字节兼容。
 
     新角色检测拆为独立节点 detect_new_characters_llm（放分镜之前）：合并到本节点会让单次
     输出过长撞 output token 上限被截断（实测长章节 finish_reason=length → JSON 断裂）。
@@ -81,11 +86,15 @@ def build_adapt_script_prompt(
     无 PERSP token，注入是 no-op（不影响其它方案，也不影响第三人称逐字节行为）。
     """
     names = "、".join(characters_profile.keys()) if characters_profile else "（暂无已知角色，按原文推断）"
-    feedback_block = f"上一版口播脚本的修改意见（请务必据此调整）：{feedback}\n" if feedback and feedback.strip() else ""
+    feedback_block = (
+        f"【用户审核修改意见 — 请务必优先据此调整你的输出】\n{feedback}\n"
+        if feedback and feedback.strip()
+        else ""
+    )
     worldview_block = _build_worldview_block(worldview)
     tmpl = template or NARRATION_SCHEMES[DEFAULT_SCHEME_KEY].adapt_script_template
     _warn_if_learned_rules_dropped(tmpl, learned_rules, "adapt_script")
-    return render_template(
+    return render_split_template(
         tmpl,
         {
             "CHARACTER_NAMES": names,
@@ -135,8 +144,11 @@ def build_scene_change_prompt(
     feedback: str = "",
     template: str | None = None,
     learned_rules: str = "",
-) -> str:
+) -> tuple[str, str]:
     """构造分镜第一步「换图点初筛」提示词。
+
+    返回 (system, user) 双消息：system = 角色 + 换图规则 + 输出格式（模板 ===SPLIT=== 之前），
+    user = 用户反馈 + 自进化规则 + 口播脚本 + 章节原文（===SPLIT=== 之后）。
 
     职责：只挑出哪些口播是「换图点」（需要换一张新图），不生成任何画面文案。
 
@@ -162,10 +174,14 @@ def build_scene_change_prompt(
         f"[画面:{item.get('action', '')}]"
         for i, item in enumerate(script)
     )
-    feedback_block = f"上一版分镜的修改意见（请务必据此调整换图密度）：{feedback}\n" if feedback and feedback.strip() else ""
+    feedback_block = (
+        f"【用户审核修改意见 — 请务必优先据此调整你的输出】\n{feedback}\n"
+        if feedback and feedback.strip()
+        else ""
+    )
     tmpl = template or NARRATION_SCHEMES[DEFAULT_SCHEME_KEY].scene_change_template
     _warn_if_learned_rules_dropped(tmpl, learned_rules, "scene_change")
-    return render_template(
+    return render_split_template(
         tmpl,
         {
             "LEARNED_RULES": learned_rules or "",
@@ -186,8 +202,11 @@ def build_scene_prompt_for_shots(
     batch_info: tuple[int, int] | None = None,
     worldview: str = "",
     scenes_profile: dict | None = None,
-) -> str:
+) -> tuple[str, str]:
     """构造分镜第二步「画面生成」提示词：只为换图点生成 subjects + scene_prompt。
+
+    返回 (system, user) 双消息：system = 角色 + 分镜规则 + 输出格式 + 示例（静态指令），
+    user = 用户反馈 + 世界观 + 角色花名册 + 地点花名册 + 换图点列表 + 章节原文（动态数据）。
 
     职责：第一步已确定哪些是换图点，这里只为这些换图点生成画面主体与画面描述（中文自然语言，
     供 Qwen-Image 生图）。非换图点不在此处理（下游复用前图、不读 scene_prompt），从源头省去无用输出。
@@ -212,25 +231,25 @@ def build_scene_prompt_for_shots(
     scene_names = _build_scene_roster(scenes_profile or {})
     shots_json = json.dumps(shots, ensure_ascii=False, indent=2)
     worldview_block = _build_worldview_block(worldview)
-    feedback_block = f"上一版分镜的修改意见（请务必据此调整画面）：{feedback}\n" if feedback and feedback.strip() else ""
+    feedback_block = (
+        f"【用户审核修改意见 — 请务必优先据此调整你的输出】\n{feedback}\n"
+        if feedback and feedback.strip()
+        else ""
+    )
     batch_block = (
         f"注意：以下换图点是整章换图点的第 {batch_info[0]}/{batch_info[1]} 批片段，"
         f"你只需为本片段的每个换图点生成画面，不要补整章其它内容。\n"
         if batch_info is not None
         else ""
     )
-    return f"""你是一个专业的静态漫画分镜师。本作是「小说改静态漫画 + AI 生图」：每个分镜只截最有张力的「一个关键瞬间」，不表现运动过程——这刚好适配 AI 生图的动作短板。
+    system = f"""你是一个专业的静态漫画分镜师。本作是「小说改静态漫画 + AI 生图」：每个分镜只截最有张力的「一个关键瞬间」，不表现运动过程——这刚好适配 AI 生图的动作短板。
 
 下游生图模型是 **Qwen-Image**（通义千问图像模型，DiT 架构 + 自然语言理解，不是关键词匹配模型）。它最擅长读懂**通顺连贯的自然语言画面描述**：像跟人讲一个画面那样、按「景别机位 → 主体角色与神态姿态 → 场景环境 → 光影氛围」的顺序写成完整句子，模型理解得最准。不要写成关键词堆砌、不要逗号割裂的标签流。
 
 下面是已选定的若干「换图点」，每个换图点需要生成一张静态漫画画面。为每个换图点生成 subjects（画面主体角色）与 scene_prompt（画面描述）。
 参考原始章节原文补充画面细节（景物、神态、动作细节），让画面更准。
 
-{worldview_block}已知角色（括号内「外观：」为该角色英文体貌特征 visual_trait（含性别与身高体型，不含服饰），「服饰：」为该角色标志性默认服饰 outfit；subjects 中列中文名，scene_prompt 中提到该角色时用其外观特征的**中文译述** + 该服饰、不写姓名）：{names}
-
-已知地点（括号内为该地点描述；为每个换图点从中挑一个 scene_id = 该镜发生的地点标准名，用于跨镜复用同一地点的参考背景图）：{scene_names}
-
-{feedback_block}{batch_block}要求：
+要求：
 1. 为输入的每个换图点生成一条结果，anchor_id 必须原样写回（用于对回），不得修改、不得遗漏、不得新增。
 2. scene_prompt：用**通顺的中文自然语言**写成一两句连贯的画面描述（如上所述，Qwen-Image 走中文语义理解），依次交代：景别与机位、画面主体角色（用外观特征而非姓名）及其定格姿态与表情（表情仅在正脸/侧脸入画时写，背对镜头不写，详见下）、场景环境、光影氛围。静态漫画只截「定格瞬间」，不写运动过程。
    - 用中文书写；若必须表达屏幕文字/标题/台词，用中文引号「」或书名号《》，严禁使用英文双引号。
@@ -290,6 +309,10 @@ def build_scene_prompt_for_shots(
   {{"anchor_id": 11, "subjects": ["林辰"], "scene_id": "后巷", "orientation": "landscape", "scene_prompt": "全身，侧面机位，高挑清瘦、金色卷发、戴圆框眼镜的青年男性迈出最大步幅狂奔，身体大幅前倾，四肢前后拉开，衣摆向后飘扬，昏暗巷道两侧墙壁延伸成透视线，冷青月光从巷口斜照，低调暗调，急迫压迫"}},
   {{"anchor_id": 14, "subjects": ["苏晚"], "scene_id": "后巷", "orientation": "portrait", "scene_prompt": "全身，侧面低角度机位，娇小黑长发大眼的年轻女性单脚蹬上矮墙墙沿、身体斜倾，双手刚攀住墙顶边缘，白色连衣裙裙摆随风扬起，墙根杂草稀疏，背后巷弄隐入暗部，冷白月光从左侧45度打亮轮廓，低调暗调，利落紧张"}}
 ]
+"""
+    user = f"""{feedback_block}{batch_block}{worldview_block}已知角色（括号内「外观：」为该角色英文体貌特征 visual_trait（含性别与身高体型，不含服饰），「服饰：」为该角色标志性默认服饰 outfit；subjects 中列中文名，scene_prompt 中提到该角色时用其外观特征的**中文译述** + 该服饰、不写姓名）：{names}
+
+已知地点（括号内为该地点描述；为每个换图点从中挑一个 scene_id = 该镜发生的地点标准名，用于跨镜复用同一地点的参考背景图）：{scene_names}
 
 换图点列表：
 {shots_json}
@@ -297,12 +320,15 @@ def build_scene_prompt_for_shots(
 原始章节原文（仅供补充画面细节，不要照搬原文）：
 {chapter_text}
 """
+    return system, user
 
 
 def build_candidate_scan_prompt(
     chapter_text: str, known_names: set[str], worldview: str = ""
-) -> str:
+) -> tuple[str, str]:
     """分镜前「新角色候选轻量扫描」（detect stage 1，只看本组原文，输出极小）。
+
+    返回 (system, user) 双消息：system = 角色 + 识别规则 + 输出格式，user = 世界观 + 已知角色 + 章节原文。
 
     只判定「本组是否出现了 known_names 之外的新指代」，不产完整档案——完整档案由 stage 2 的
     build_enrich_characters_prompt 结合后瞻窗口一次产出（省 token + 拿到更全外观/真名/别名）。
@@ -314,9 +340,7 @@ def build_candidate_scan_prompt(
     """
     existing = "、".join(sorted(known_names)) if known_names else "（无）"
     worldview_block = _build_worldview_block(worldview)
-    return f"""你是一个小说角色识别器。快速扫描下面的章节原文，只找出「本组新出现、且不在已知名单中」的角色候选。
-
-{worldview_block}已知角色（含别名，均视为已登记，不要列入候选）：{existing}
+    system = """你是一个小说角色识别器。快速扫描下面的章节原文，只找出「本组新出现、且不在已知名单中」的角色候选。
 
 要求：
 1. 只列本组新出现的具体角色候选（主要角色和龙套都算）：
@@ -329,10 +353,13 @@ def build_candidate_scan_prompt(
 
 输出格式示例：
 [{{"name": "李雷", "role": "minor", "note": "本章新登场的门卫，只出现两句"}}, {{"name": "陆沉", "role": "main", "note": "疑似已有角色帽兜男刚揭示的真名"}}]
+"""
+    user = f"""{worldview_block}已知角色（含别名，均视为已登记，不要列入候选）：{existing}
 
 章节原文：
 {chapter_text}
 """
+    return system, user
 
 
 def _build_reconcile_roster(characters_profile: dict) -> str:
@@ -367,8 +394,10 @@ def build_enrich_characters_prompt(
     candidates: list[dict],
     characters_profile: dict,
     worldview: str = "",
-) -> str:
+) -> tuple[str, str]:
     """分镜前「新角色增强 + 身份归并」（detect stage 2，读本组+后瞻若干章，仅在有候选时触发）。
+
+    返回 (system, user) 双消息：system = 角色 + 归并/建档规则 + 输出格式，user = 世界观 + 花名册 + 候选 + 原文。
 
     对 stage 1 的候选，结合后瞻窗口一次产出完整档案，并把「其实是已知角色的新称呼/真名」归并为别名：
     - resolution="new"：确为新角色 → 完整档案（含 aliases；窗口内已揭真名则用真名作 name、占位词入 aliases）。
@@ -386,13 +415,8 @@ def build_enrich_characters_prompt(
     worldview_block = _build_worldview_block(worldview)
     roster = _build_reconcile_roster(characters_profile)
     candidates_json = json.dumps(candidates, ensure_ascii=False)
-    return f"""你是一个小说角色档案师。下面给出「本组 + 后续若干章」的原文，以及本组扫描出的新角色候选和已知角色花名册。
+    system = f"""你是一个小说角色档案师。下面给出「本组 + 后续若干章」的原文，以及本组扫描出的新角色候选和已知角色花名册。
 请为每个候选判定「是新角色还是已知角色的另一种称呼」，并为新角色产出完整档案。
-
-{worldview_block}已知角色花名册（据此判断候选是否其实是这些角色之一的新称呼 / 刚揭示的真名 / 外号）：
-{roster}
-
-本组新角色候选（只处理这些，不要新增候选之外的角色）：{candidates_json}
 
 【第一步·身份归并】对每个候选，先判断它是不是上面某个已知角色的另一种称呼（外号、小名、刚在原文中揭示的真名、代称）：
 - 是 → 输出 {{"resolution": "alias_of", "canonical": 已知角色的标准名, "alias": 该候选的新称呼}}。这样后续无论原文用哪个名字，都归并到同一角色、同一张参考图，避免前后形象对不上或重复建档。
@@ -419,10 +443,16 @@ def build_enrich_characters_prompt(
   {{"resolution": "alias_of", "canonical": "帽兜男", "alias": "陆沉"}},
   {{"resolution": "new", "name": "李雷", "aliases": [], "appearance": "青年男性，高挑清瘦，金色卷发，戴圆框眼镜，穿白色衬衫，脚踩白色运动鞋", "character_trait": "高挑清瘦、金色卷发、戴圆框眼镜的青年男性", "visual_trait": "tall lanky young man with golden curly hair and round glasses", "tri_view_prompt": "Japanese anime style, anime art style, cel shading, cel shaded, character turnaround sheet, full body, head to toe, front view, side view, back view, detailed face, highly detailed facial features, young male, tall lanky build, golden curly hair, round glasses, white shirt, white sneakers, consistent outfit, hairstyle, footwear and body shape, plain white background, masterpiece, best quality, ultra detailed, highres", "tri_view_prompt_cn": "日系动漫画风，赛璐璐风格，角色三视图，从头到脚全身照，正面/侧面/背面，面部精细，青年男性，高挑清瘦身形，金色卷发，圆框眼镜，白色衬衫，白色运动鞋，服饰发型鞋子体型一致，纯白背景，杰作，最高画质，超高细节，高分辨率", "role": "minor", "outfit": "白色衬衫配白色运动鞋"}}
 ]
+"""
+    user = f"""{worldview_block}已知角色花名册（据此判断候选是否其实是这些角色之一的新称呼 / 刚揭示的真名 / 外号）：
+{roster}
+
+本组新角色候选（只处理这些，不要新增候选之外的角色）：{candidates_json}
 
 原文（当前组 + 后瞻章；后瞻章仅供补全外观 / 揭示真名，不要把后瞻章剧情当本组内容）：
 {window_text}
 """
+    return system, user
 
 
 # ─── 场景（地点）检测：收集 → 收敛（detect_new_scenes_llm，镜像角色检测两阶段）──────────────
@@ -430,8 +460,10 @@ def build_enrich_characters_prompt(
 
 def build_scene_candidate_scan_prompt(
     chapter_text: str, known_scenes: set[str], worldview: str = ""
-) -> str:
+) -> tuple[str, str]:
     """分镜前「新地点候选轻量扫描」（scene detect stage 1，只看本组原文，输出极小）。
+
+    返回 (system, user) 双消息：system = 角色 + 识别规则 + 输出格式，user = 世界观 + 已知地点 + 章节原文。
 
     只判定「本组是否出现了 known_scenes 之外的新地点」，不产完整档案 / 不建图——收敛与建档由
     stage 2 的 build_reconcile_scenes_prompt 结合后瞻窗口一次产出。无候选时下游跳过 stage 2
@@ -443,9 +475,7 @@ def build_scene_candidate_scan_prompt(
     """
     existing = "、".join(sorted(known_scenes)) if known_scenes else "（无）"
     worldview_block = _build_worldview_block(worldview)
-    return f"""你是一个小说场景（地点）识别器。快速扫描下面的章节原文，只找出「本组新出现、且不在已知地点名单中」的地点候选。
-
-{worldview_block}已知地点（含别名，均视为已登记，不要列入候选）：{existing}
+    system = """你是一个小说场景（地点）识别器。快速扫描下面的章节原文，只找出「本组新出现、且不在已知地点名单中」的地点候选。
 
 要求：
 1. 只列本组新出现的**具体地点/场所**候选（人物活动、剧情发生的空间）：如某人家中、办公室、地下停车场、宗祠、医院走廊、山间小径、废弃工厂等。
@@ -459,10 +489,13 @@ def build_scene_candidate_scan_prompt(
 
 输出格式示例：
 [{{"name": "陆家", "note": "主角家，本章多次出现的宅院"}}, {{"name": "地下停车场", "note": "疑似上一章'地库'的另一种叫法"}}]
+"""
+    user = f"""{worldview_block}已知地点（含别名，均视为已登记，不要列入候选）：{existing}
 
 章节原文：
 {chapter_text}
 """
+    return system, user
 
 
 def _build_scene_reconcile_roster(scenes_profile: dict) -> str:
@@ -490,8 +523,10 @@ def build_reconcile_scenes_prompt(
     candidates: list[dict],
     scenes_profile: dict,
     worldview: str = "",
-) -> str:
+) -> tuple[str, str]:
     """分镜前「新地点收敛 + 建档」（scene detect stage 2，读本组+后瞻若干章，仅在有候选时触发）。
+
+    返回 (system, user) 双消息：system = 角色 + 归并/建档规则 + 输出格式，user = 世界观 + 花名册 + 候选 + 原文。
 
     对 stage 1 的候选，结合后瞻窗口一次收敛：把「其实是已知地点的别称」归并为别名，为真新地点建档，
     并判定是否值得建参考图（频次过滤）：
@@ -507,13 +542,8 @@ def build_reconcile_scenes_prompt(
     worldview_block = _build_worldview_block(worldview)
     roster = _build_scene_reconcile_roster(scenes_profile)
     candidates_json = json.dumps(candidates, ensure_ascii=False)
-    return f"""你是一个小说场景（地点）档案师。下面给出「本组 + 后续若干章」的原文，以及本组扫描出的新地点候选和已知地点花名册。
+    system = """你是一个小说场景（地点）档案师。下面给出「本组 + 后续若干章」的原文，以及本组扫描出的新地点候选和已知地点花名册。
 请为每个候选判定「是新地点还是已知地点的另一种叫法」，为真新地点建档，并判定它是否值得建一张参考背景图。
-
-{worldview_block}已知地点花名册（据此判断候选是否其实是这些地点之一的别称 / 另一种叫法）：
-{roster}
-
-本组新地点候选（只处理这些，不要新增候选之外的地点）：{candidates_json}
 
 【第一步·同义归并】对每个候选，先判断它是不是上面某个已知地点的另一种叫法（别称、简称、跨章换了个说法）：
 - 是 → 输出 {{"resolution": "alias_of", "canonical": 已知地点的标准名, "alias": 该候选的新称呼}}。这样后续无论原文怎么叫，都归并到同一地点、同一张参考图，避免地点裂成一堆。
@@ -535,10 +565,16 @@ def build_reconcile_scenes_prompt(
   {{"resolution": "new", "name": "陆家", "description": "老式宅院的中式客厅，深色雕花木家具，供桌与八仙椅，昏黄暖光透过窗棂，陈旧压抑的氛围", "aliases": ["陆家客厅", "陆宅"], "build_asset": true}},
   {{"resolution": "new", "name": "巷口便利店", "description": "夜间街角的小便利店，冷白灯管，货架拥挤，玻璃门映着霓虹", "aliases": [], "build_asset": false}}
 ]
+"""
+    user = f"""{worldview_block}已知地点花名册（据此判断候选是否其实是这些地点之一的别称 / 另一种叫法）：
+{roster}
+
+本组新地点候选（只处理这些，不要新增候选之外的地点）：{candidates_json}
 
 原文（当前组 + 后瞻章；后瞻章仅供跨章判断同一地点 / 是否复现，不要把后瞻章剧情当本组内容）：
 {window_text}
 """
+    return system, user
 
 
 def _build_scene_roster(scenes_profile: dict) -> str:

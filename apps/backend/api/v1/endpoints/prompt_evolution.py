@@ -81,12 +81,12 @@ async def propose(req: ProposeRequest) -> dict:
     active = await db.list_rules(req.scheme_key, req.stage, "active")
     active_texts = [r["rule_text"] for r in active]
 
-    prompt = build_rule_synthesis_prompt(
+    sys_msg, usr_msg = build_rule_synthesis_prompt(
         req.stage, scheme.label, feedbacks, base_template, active_texts
     )
     # invoke_llm_json_array 是同步调用（内含解析+带反馈重试），丢线程池避免阻塞事件循环
     parsed = await asyncio.to_thread(
-        invoke_llm_json_array, prompt, node="rule_synthesis", label="rule_synthesis"
+        invoke_llm_json_array, sys_msg, usr_msg, node="rule_synthesis", label="rule_synthesis"
     )  # [{"rule","source"}]
 
     candidates: list[dict] = []

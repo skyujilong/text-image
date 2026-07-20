@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from novel2media.prompts._parse import parse_json_array, repair_json_array
 from novel2media_logging import get_logger
@@ -65,7 +66,8 @@ def get_llm(temperature: float = 0.8, *, json_mode: bool = False, max_tokens: in
 
 
 def invoke_llm(
-    prompt: str,
+    system: str,
+    user: str | None = None,
     *,
     node: str,
     temperature: float = 0.8,
@@ -79,6 +81,13 @@ def invoke_llm(
     以保证每次调用都有可观测性日志（耗时、Token 消耗、提示词规模），便于定位慢调用与
     成本异常。
 
+    双签名设计（system + user 分层）：
+    - 新签名 ``invoke_llm(system, user, *, node, ...)``：system → SystemMessage（角色 +
+      核心任务 + 输出格式 + 硬约束，最高优先级），user → HumanMessage（任务数据 + 参考上下文
+      + 用户反馈）。LLM 将 system 作为全局指令处理，不会被 user 中的大量数据淹没。
+    - 旧签名 ``invoke_llm(prompt, *, node, ...)``：user=None 时，system 被视为旧式裸 prompt，
+      全部放入 HumanMessage（与重构前行为逐字节一致，向后兼容）。
+
     - node：调用所在节点名，用于日志归类。
     - label：可选的子任务标签（如 "adapt_script"/"detect_new_characters"），区分同一节点
       内的多次调用。
@@ -90,13 +99,21 @@ def invoke_llm(
     回填）；缺失时不编造，日志显式标 None 以暴露问题。
     """
     model = os.environ.get("ARK_MODEL", "doubao-seed-2.0-lite")
-    # 提示词规模：字符数 + 估算 token（中文按 1 字 ≈ 1 token 粗估，仅用于日志直观对比，
-    # 不替代真实 usage）
-    prompt_chars = len(prompt)
-    prompt_tokens_est = max(prompt_chars // 3, len(prompt))  # 粗估下限兜底
+
+    # 构造 messages：user=None → 旧式裸 prompt（全放 HumanMessage）；否则 system + user 分层。
+    if not user:
+        messages: list = [HumanMessage(content=system)]
+        system_chars = 0
+        user_chars = len(system)
+    else:
+        messages = [SystemMessage(content=system), HumanMessage(content=user)]
+        system_chars = len(system)
+        user_chars = len(user)
+    prompt_chars = system_chars + user_chars
+    prompt_tokens_est = max(prompt_chars // 3, len(system) + len(user) if user else len(system))
 
     started = time.perf_counter()
-    resp = get_llm(temperature=temperature, json_mode=json_mode, max_tokens=max_tokens).invoke(prompt)
+    resp = get_llm(temperature=temperature, json_mode=json_mode, max_tokens=max_tokens).invoke(messages)
     elapsed = time.perf_counter() - started
 
     usage = getattr(resp, "usage_metadata", None) or {}
@@ -117,6 +134,8 @@ def invoke_llm(
         label=label,
         model=model,
         elapsed_ms=round(elapsed * 1000, 1),
+        system_chars=system_chars,
+        user_chars=user_chars,
         prompt_chars=prompt_chars,
         prompt_tokens_est=prompt_tokens_est,
         input_tokens=input_tokens,
@@ -152,7 +171,8 @@ def _build_json_repair_prompt(bad_output: str, error: str) -> str:
 
 
 def invoke_llm_json_array(
-    prompt: str,
+    system: str,
+    user: str | None = None,
     *,
     node: str,
     label: str | None = None,
@@ -160,6 +180,12 @@ def invoke_llm_json_array(
     max_parse_retries: int = 2,
 ) -> list:
     """调用 LLM 并把输出解析为 JSON 数组；两级容错：先本地确定性修复，修不动再带反馈重试。
+
+    双签名设计与 invoke_llm 一致：``invoke_llm_json_array(system, user, *, ...)`` 分层，
+    ``invoke_llm_json_array(prompt, *, ...)`` 旧式兼容（user=None）。
+
+    L3 修复重试时：system 保持不变（角色 + 输出格式约束在修复时仍然有效），
+    user 替换为修复 prompt（告知上次输出非法 + 报错 + 常见成因）。
 
     为什么需要：json_object 模式偶尔仍漏出非法 JSON（最常见是字符串值里混入英文双引号，
     如「绣"林"字」）。这类是内容层语法错、不是网络/超时，openai SDK 内建重试兜不住，
@@ -179,17 +205,28 @@ def invoke_llm_json_array(
     - finish_reason=length 截断类失败重试也修不好（那是拆短输出的职责），此处会重试到
       耗尽再抛，把错误暴露给调用方。
     """
-    attempt_prompt = prompt
+    # 旧式兼容：user=None → system 是旧式裸 prompt，修复时也走旧式。
+    attempt_system = system if user else None
+    attempt_user = user if user else system
     attempt_temp = temperature
     last_error: ValueError | None = None
     for attempt in range(max_parse_retries + 1):
-        resp = invoke_llm(
-            attempt_prompt,
-            node=node,
-            label=label,
-            temperature=attempt_temp,
-            json_mode=True,
-        )
+        if attempt_system is not None:
+            resp = invoke_llm(
+                attempt_system, attempt_user,
+                node=node,
+                label=label,
+                temperature=attempt_temp,
+                json_mode=True,
+            )
+        else:
+            resp = invoke_llm(
+                attempt_user,
+                node=node,
+                label=label,
+                temperature=attempt_temp,
+                json_mode=True,
+            )
         try:
             return parse_json_array(resp)
         except ValueError as err:
@@ -219,7 +256,8 @@ def invoke_llm_json_array(
                 response_chars=len(raw),
                 finish_reason=finish_reason,
             )
-            attempt_prompt = _build_json_repair_prompt(raw, str(err))
+            # L3 修复：system 保持不变，user 替换为修复 prompt（旧式则替换裸 prompt）。
+            attempt_user = _build_json_repair_prompt(raw, str(err))
             attempt_temp = 0.3
     assert last_error is not None
     raise last_error
