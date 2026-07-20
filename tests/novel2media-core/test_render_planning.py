@@ -21,6 +21,18 @@ def test_build_shot_specs_t2i_when_no_subjects():
     assert specs[0]["ref_images"] == []
 
 
+def test_build_shot_specs_carries_orientation_and_edit_model():
+    """spec 带上 LLM 决定的 orientation（缺省回落 square）与默认 edit_model=4step。"""
+    sb = [
+        {"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": [], "orientation": "landscape"},
+        {"storyboard_id": 2, "scene_change": True, "scene_prompt": "q", "subjects": []},  # 无 orientation
+    ]
+    specs = render_planning.build_shot_specs(sb, {}, "/tmp/novel")
+    assert specs[0]["orientation"] == "landscape"
+    assert specs[0]["edit_model"] == "4step"
+    assert specs[1]["orientation"] == "square"  # 缺省回落
+
+
 def test_build_shot_specs_edit_with_tri_view():
     """有 tri_view 的主体 → qwen_edit + 参考图绝对路径。"""
     sb = [{"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": ["A"]}]

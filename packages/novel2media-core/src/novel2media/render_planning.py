@@ -14,6 +14,8 @@ from pathlib import Path
   - subjects 为空，或所有 subject 都无 tri_view（空串/缺省）→ qwen_t2i（纯文生图）。
   - subjects 有至少 1 个带 tri_view 的角色 → qwen_edit（参考图生图），
     参考图取这些角色的 tri_view（最多 2 张，与人物一致性上限一致）。
+- edit 支持 3 张参考图：前 2 槽给角色 tri_view，第 3 槽固定留给该地点的空景背景板
+  （由渲染层 _apply_scene 补位，本模块只填角色 ref）。
 """
 
 
@@ -53,8 +55,11 @@ def build_shot_specs(
     {
       "storyboard_id": int,
       "workflow": "qwen_t2i" | "qwen_edit",
+      "edit_model": "4step" | "8step", # edit 底模档位；自动批量默认 4step（快），手动 reroll 可切 8step
+      "orientation": "square" | "landscape" | "portrait",  # 图片朝向，决定固定尺寸
       "prompt": str,                 # scene_prompt（已含画风触发词）
-      "ref_images": [abs_path, ...], # qwen_edit 的参考图绝对路径（最多 2），t2i 为空
+      "ref_images": [abs_path, ...], # qwen_edit 的角色参考图绝对路径（最多 2），t2i 为空；
+                                     # 第 3 槽的空景背景板由渲染层 _apply_scene 补位，不在此填
       "subjects": [name, ...],       # 画面主体角色名（展示用）
     }
     仅返回 scene_change=True 的镜头（非换图点不出图）。
@@ -89,6 +94,10 @@ def build_shot_specs(
             {
                 "storyboard_id": sid,
                 "workflow": workflow,
+                # 自动批量默认走 4-step 轻量编辑底模（快）；用户在渲染看板手动 reroll 时可切 8-step（精）。
+                "edit_model": "4step",
+                # 图片朝向（横/纵/方）由分镜 LLM 决定，渲染时映射成固定尺寸；缺省/异常回落方形。
+                "orientation": entry.get("orientation", "square") or "square",
                 "prompt": prompt,
                 "ref_images": ref_images,
                 "subjects": subjects,

@@ -1,10 +1,24 @@
 import { useEffect, useState, useMemo } from 'react'
 import { RotateCcw, Check, Loader2, AlertCircle, Play, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { api, fileUrl, type RenderShot } from '@/api/client'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { api, fileUrl, type RenderShot, type Orientation, type EditModel } from '@/api/client'
 import { useRunStore } from '@/store/runStore'
 import { cn } from '@/lib/utils'
 import { groupLabel } from '@/lib/chapterLabel'
+
+/** 画幅朝向下拉选项。 */
+const ORIENTATION_OPTIONS: { value: Orientation; label: string }[] = [
+  { value: 'square', label: '方形' },
+  { value: 'landscape', label: '横向' },
+  { value: 'portrait', label: '纵向' },
+]
+
+/** edit 底模档位下拉选项（仅参考图 shot 可选）。 */
+const EDIT_MODEL_OPTIONS: { value: EditModel; label: string }[] = [
+  { value: '4step', label: '4步·快' },
+  { value: '8step', label: '8步·精' },
+]
 
 interface StoryboardShot {
   storyboard_id?: number
@@ -277,26 +291,48 @@ function ShotCard({
   onToggleExpand: () => void
 }) {
   const [prompt, setPrompt] = useState(shot?.prompt ?? fallbackPrompt)
+  const [orientation, setOrientation] = useState<Orientation>(shot?.orientation ?? 'square')
+  const [editModel, setEditModel] = useState<EditModel>(shot?.edit_model ?? '4step')
   const [edited, setEdited] = useState(false)
   const [rerolling, setRerolling] = useState(false)
   const { upsertRenderShot } = useRunStore()
 
-  useEffect(() => {
-    if (!edited && shot?.prompt) setPrompt(shot.prompt)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shot?.prompt])
+  // 未手动改动时，跟随后端最新值（SSE/轮询回来的 shot）同步提示词/朝向/底模档；已改动则保住用户输入。
+  // 用「上次同步的 shot 值」在 render 期比对调整，而非 effect 内 setState——避免级联渲染
+  // （React 官方 adjusting-state-when-a-prop-changes 模式）。
+  const [lastSynced, setLastSynced] = useState({
+    prompt: shot?.prompt,
+    orientation: shot?.orientation,
+    edit_model: shot?.edit_model,
+  })
+  if (
+    !edited &&
+    (shot?.prompt !== lastSynced.prompt ||
+      shot?.orientation !== lastSynced.orientation ||
+      shot?.edit_model !== lastSynced.edit_model)
+  ) {
+    setLastSynced({ prompt: shot?.prompt, orientation: shot?.orientation, edit_model: shot?.edit_model })
+    if (shot?.prompt) setPrompt(shot.prompt)
+    if (shot?.orientation) setOrientation(shot.orientation)
+    if (shot?.edit_model) setEditModel(shot.edit_model)
+  }
 
   const status = shot?.status ?? 'pending'
+  const isEdit = shot?.workflow === 'qwen_edit'
 
   const handleReroll = async () => {
     if (!renderStarted) return
     try {
       setRerolling(true)
       if (shot) {
-        // 乐观更新：立即更新状态和提示词
-        upsertRenderShot(chapterId, { ...shot, status: 'rendering', prompt })
+        // 乐观更新：立即更新状态 + 提示词/朝向/底模档
+        upsertRenderShot(chapterId, { ...shot, status: 'rendering', prompt, orientation, edit_model: editModel })
       }
-      await api.rerollShot(runId, shotId, chapterId, edited ? prompt : undefined)
+      await api.rerollShot(runId, shotId, chapterId, {
+        prompt: edited ? prompt : undefined,
+        orientation,
+        editModel: isEdit ? editModel : undefined,
+      })
       setEdited(false)
     } catch (e) {
       console.error('重新抽卡失败', e)
@@ -441,6 +477,50 @@ function ShotCard({
           placeholder="等待渲染启动..."
         />
 
+        {/* 画幅朝向 / edit 底模档（底模档仅参考图 shot 可选） */}
+        <div className="flex items-center gap-2">
+          <Select
+            value={orientation}
+            onValueChange={(v) => {
+              setOrientation(v as Orientation)
+              setEdited(true)
+            }}
+            disabled={!renderStarted}
+          >
+            <SelectTrigger className="h-7 text-xs flex-1">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ORIENTATION_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value} className="text-xs">
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {isEdit && (
+            <Select
+              value={editModel}
+              onValueChange={(v) => {
+                setEditModel(v as EditModel)
+                setEdited(true)
+              }}
+              disabled={!renderStarted}
+            >
+              <SelectTrigger className="h-7 text-xs flex-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EDIT_MODEL_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value} className="text-xs">
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
+
         {/* Actions */}
         <div className="flex items-center justify-between mt-auto">
           {shot?.subjects && shot.subjects.length > 0 && (
@@ -456,6 +536,8 @@ function ShotCard({
                 className="h-7 text-xs px-2"
                 onClick={() => {
                   setPrompt(shot?.prompt ?? fallbackPrompt)
+                  setOrientation(shot?.orientation ?? 'square')
+                  setEditModel(shot?.edit_model ?? '4step')
                   setEdited(false)
                 }}
                 disabled={status === 'rendering' || rerolling}

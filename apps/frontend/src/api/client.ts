@@ -64,10 +64,18 @@ export interface RenderCandidate {
   url: string
 }
 
+/** 图片画幅朝向：横向长方形 / 纵向长方形 / 方形。 */
+export type Orientation = 'landscape' | 'portrait' | 'square'
+
+/** edit 底模档位：4step（快，默认）/ 8step（精）。 */
+export type EditModel = '4step' | '8step'
+
 /** 渲染看板单个换图点 shot。 */
 export interface RenderShot {
   storyboard_id: number
   workflow: 'qwen_t2i' | 'qwen_edit'
+  edit_model: EditModel
+  orientation: Orientation
   prompt: string
   subjects: string[]
   status: 'pending' | 'rendering' | 'done' | 'error'
@@ -413,11 +421,22 @@ export const api = {
   getRenderState: (runId: string, chapterId: string) =>
     request<RenderBoard>(`/runs/${runId}/render/chapter/${chapterId}/state`),
 
-  // 改词重抽单张：prompt 为空则沿用旧提示词；新候选追加，旧候选保留
-  rerollShot: (runId: string, shotId: number, chapterId: string, prompt?: string) =>
+  // 改词重抽单张：prompt/orientation/edit_model 为空则各自沿用旧值；新候选追加，旧候选保留
+  rerollShot: (
+    runId: string,
+    shotId: number,
+    chapterId: string,
+    opts?: { prompt?: string; orientation?: Orientation; editModel?: EditModel },
+  ) =>
     request<{ ok: boolean }>(`/runs/${runId}/render/reroll`, {
       method: 'POST',
-      body: JSON.stringify({ shot_id: shotId, chapter_id: chapterId, prompt: prompt ?? null }),
+      body: JSON.stringify({
+        shot_id: shotId,
+        chapter_id: chapterId,
+        prompt: opts?.prompt ?? null,
+        orientation: opts?.orientation ?? null,
+        edit_model: opts?.editModel ?? null,
+      }),
     }),
 
   // 选定某候选为该 shot 的终图

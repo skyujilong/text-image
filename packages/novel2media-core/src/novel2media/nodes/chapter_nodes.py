@@ -646,6 +646,9 @@ def generate_storyboard(state: dict) -> dict:
         scene_id = shot.get("scene_id")
         if isinstance(scene_id, str) and scene_id.strip():
             entry["scene_id"] = scene_id.strip()
+        # 画幅朝向：LLM 决定横/纵/方；非法或缺省一律回落方形（渲染层据此映射固定尺寸）
+        orientation = shot.get("orientation")
+        entry["orientation"] = orientation if orientation in ("landscape", "portrait", "square") else "square"
         raw_prompt = (shot.get("scene_prompt") or "").strip()
         if not raw_prompt:
             # 换图点拿到结果但画面描述为空：记录暴露，不拼成只有触发词的退化 prompt 蒙混生图
@@ -1201,12 +1204,17 @@ def render_generate_images(
         if same_shot:
             existing["subjects"] = spec["subjects"]
             existing["scene_id"] = spec.get("scene_id", "")  # 场景归属可随重规划刷新（不参与内容指纹，不触发重出）
+            # orientation/edit_model 用 setdefault 只补默认、不覆盖：保住用户手动 reroll 时改过的朝向/底模档
+            existing.setdefault("orientation", spec.get("orientation", "square"))
+            existing.setdefault("edit_model", spec.get("edit_model", "4step"))
             new_shots[sid] = existing
             reused += 1
         else:
             new_shots[sid] = {
                 "storyboard_id": spec["storyboard_id"],
                 "workflow": spec["workflow"],
+                "edit_model": spec.get("edit_model", "4step"),  # 自动批量默认 4step
+                "orientation": spec.get("orientation", "square"),
                 "prompt": spec["prompt"],
                 "ref_images": spec["ref_images"],
                 "subjects": spec["subjects"],

@@ -19,8 +19,10 @@ from pathlib import Path
     "<storyboard_id>": {
       "storyboard_id": int,
       "workflow": "qwen_t2i" | "qwen_edit",
+      "edit_model": "4step" | "8step",  # edit 底模档位（默认 4step；手动 reroll 可切 8step）；t2i 忽略
+      "orientation": "square" | "landscape" | "portrait",  # 画幅朝向 → 固定尺寸
       "prompt": str,                  # 画面提示词（scene_prompt，已含画风触发词）
-      "ref_images": [abs_path, ...],  # qwen_edit 的参考图绝对路径（tri_view 展开，最多 2）
+      "ref_images": [abs_path, ...],  # qwen_edit 的角色参考图绝对路径（tri_view 展开，最多 2；第 3 槽空景板由 worker 补）
       "subjects": [name, ...],        # 画面主体角色名（展示用）
       "candidates": [abs_path, ...],  # 已生成候选图绝对路径（reroll 追加，旧的保留）
       "selected": abs_path | null,    # 选定终图（首张生成后默认选候选 0，用户可改）

@@ -248,6 +248,7 @@ async def test_apply_scene_upgrades_t2i_to_edit_when_no_chars(tmp_path, monkeypa
     await session._apply_scene(job)
 
     assert job["workflow"] == "qwen_edit"
+    assert job["edit_model"] == "4step"  # 升级来的 edit 补默认底模档
     assert len(job["ref_images"]) == 1
     assert job["ref_images"][0].endswith("/scenes/陆家.png")
 
@@ -268,15 +269,33 @@ async def test_apply_scene_char_first_scene_fills_second_slot(tmp_path, monkeypa
     assert job["ref_images"][1].endswith("/scenes/陆家.png")  # 场景补 slot2
 
 
-async def test_apply_scene_no_slot_when_two_chars(tmp_path, monkeypatch):
-    """2 角色镜头：2 图预算用尽 → 本期不补场景（等扩到第 3 张参考图）。"""
+async def test_apply_scene_two_chars_fills_third_slot(tmp_path, monkeypatch):
+    """2 角色镜头：扩到三图参考后，场景锚点补第 3 槽（本期解锁的能力）。"""
     session, novel_dir = _make_session(tmp_path, monkeypatch)
     _seed_scene_plate(novel_dir)
 
     job = {"storyboard_id": 2, "workflow": "qwen_edit", "ref_images": ["/a.png", "/b.png"], "scene_id": "陆家"}
     await session._apply_scene(job)
 
-    assert job["ref_images"] == ["/a.png", "/b.png"]  # 不变
+    assert len(job["ref_images"]) == 3
+    assert job["ref_images"][:2] == ["/a.png", "/b.png"]  # 角色仍占前两槽
+    assert job["ref_images"][2].endswith("/scenes/陆家.png")  # 场景补第 3 槽
+
+
+async def test_apply_scene_no_slot_when_three_refs(tmp_path, monkeypatch):
+    """3 图预算用尽（2 角色 + 1 场景板，或 3 角色）：不再补场景。"""
+    session, novel_dir = _make_session(tmp_path, monkeypatch)
+    _seed_scene_plate(novel_dir)
+
+    job = {
+        "storyboard_id": 3,
+        "workflow": "qwen_edit",
+        "ref_images": ["/a.png", "/b.png", "/c.png"],
+        "scene_id": "陆家",
+    }
+    await session._apply_scene(job)
+
+    assert job["ref_images"] == ["/a.png", "/b.png", "/c.png"]  # 不变
 
 
 async def test_apply_scene_skips_non_build_asset(tmp_path, monkeypatch):
@@ -329,3 +348,91 @@ async def test_commit_candidate_increments_index_and_default_selects(tmp_path, m
     assert shot["candidates"] == [p0, p1]
     assert shot["selected"] == p0
     assert shot["status"] == "done"
+
+
+# ─── edit workflow 1/2/3 图连线 + 底模档选择 ────────────────────────────
+
+
+def test_build_edit_workflow_single_ref_degrades_and_deletes_switches():
+    """1 图：image2/image3 都退化接 183；删除 231/232/302/303；尺寸/steps 生效。"""
+    import services.render_session as rs
+
+    wf = rs._build_edit_workflow(
+        "p", "img1.png", None, None, 7, "pre", edit_model="4step", width=1472, height=1140
+    )
+    assert wf["78"]["inputs"]["image"] == "img1.png"
+    for enc in ("110", "111"):
+        assert wf[enc]["inputs"]["image2"] == ["183", 0]
+        assert wf[enc]["inputs"]["image3"] == ["183", 0]
+    for dead in ("231", "232", "302", "303"):
+        assert dead not in wf
+    assert wf["211"]["inputs"]["value"] == 1472
+    assert wf["230"]["inputs"]["value"] == 1140
+    assert wf["3"]["inputs"]["steps"] == 4  # 4step 模板
+
+
+def test_build_edit_workflow_two_refs_wires_186():
+    """2 图：image2 接 186（图2缩放），image3 退化到 image2 的解析结果（186）。"""
+    import services.render_session as rs
+
+    wf = rs._build_edit_workflow("p", "a.png", "b.png", None, 7, "pre")
+    assert wf["187"]["inputs"]["image"] == "b.png"
+    for enc in ("110", "111"):
+        assert wf[enc]["inputs"]["image2"] == ["186", 0]
+        assert wf[enc]["inputs"]["image3"] == ["186", 0]
+
+
+def test_build_edit_workflow_three_refs_wires_301():
+    """3 图：image2 接 186、image3 接 301（图3缩放）。"""
+    import services.render_session as rs
+
+    wf = rs._build_edit_workflow("p", "a.png", "b.png", "c.png", 7, "pre")
+    assert wf["300"]["inputs"]["image"] == "c.png"
+    for enc in ("110", "111"):
+        assert wf[enc]["inputs"]["image2"] == ["186", 0]
+        assert wf[enc]["inputs"]["image3"] == ["301", 0]
+
+
+def test_build_edit_workflow_8step_selects_gguf_template():
+    """edit_model=8step → 用 GGUF 8-step 模板（steps=8）。"""
+    import services.render_session as rs
+
+    wf = rs._build_edit_workflow("p", "a.png", None, None, 7, "pre", edit_model="8step")
+    assert wf["3"]["inputs"]["steps"] == 8
+    assert wf["177"]["class_type"] == "UnetLoaderGGUF"
+
+
+def test_enqueue_reroll_persists_orientation_and_edit_model(tmp_path, monkeypatch):
+    """reroll 改朝向/底模档 → 回写 render_state，并带进入队 spec。"""
+    session, novel_dir = _make_session(tmp_path, monkeypatch)
+    render_state.save(
+        novel_dir,
+        "ch1",
+        {
+            "chapter_id": "ch1",
+            "shots": {
+                "0": {
+                    "storyboard_id": 0,
+                    "workflow": "qwen_edit",
+                    "edit_model": "4step",
+                    "orientation": "square",
+                    "prompt": "p",
+                    "ref_images": ["/x.png"],
+                    "subjects": [],
+                    "candidates": ["/a.png"],
+                    "selected": "/a.png",
+                    "status": "done",
+                    "error": None,
+                }
+            },
+        },
+    )
+
+    session.enqueue_reroll(0, prompt=None, orientation="portrait", edit_model="8step")
+
+    data = render_state.load(novel_dir, "ch1")
+    assert data["shots"]["0"]["orientation"] == "portrait"
+    assert data["shots"]["0"]["edit_model"] == "8step"
+    spec = session._queue[0]
+    assert spec["orientation"] == "portrait"
+    assert spec["edit_model"] == "8step"

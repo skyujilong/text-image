@@ -19,6 +19,8 @@ class RerollRequest(BaseModel):
     shot_id: int
     chapter_id: str | None = None  # 可选，优先用前端传的，不依赖 active_interaction
     prompt: str | None = None  # 为空则沿用该 shot 旧提示词
+    orientation: str | None = None  # 画幅朝向 landscape/portrait/square；为空沿用旧值（非法值忽略）
+    edit_model: str | None = None  # edit 底模档 4step/8step；为空沿用旧值（非法值忽略）
 
 
 class SelectRequest(BaseModel):
@@ -45,6 +47,8 @@ def _build_board(novel_dir: str, chapter_id: str) -> dict:
             {
                 "storyboard_id": shot.get("storyboard_id", int(sid)),
                 "workflow": shot.get("workflow"),
+                "edit_model": shot.get("edit_model", "4step"),
+                "orientation": shot.get("orientation", "square"),
                 "prompt": shot.get("prompt", ""),
                 "subjects": shot.get("subjects", []),
                 "status": shot.get("status", "pending"),
@@ -144,7 +148,10 @@ async def _ensure_render_session(run_id: str, chapter_id: str | None = None):
                             "storyboard_id": int(sid),
                             "prompt": shot.get("prompt", ""),
                             "workflow": shot.get("workflow", "qwen_t2i"),
+                            "edit_model": shot.get("edit_model", "4step"),
+                            "orientation": shot.get("orientation", "square"),
                             "ref_images": shot.get("ref_images", []),
+                            "scene_id": shot.get("scene_id", ""),
                         }
                     )
                 log.info(
@@ -269,7 +276,7 @@ async def reroll_shot(run_id: str, req: RerollRequest):
     if session is None:
         raise HTTPException(status_code=409, detail="渲染会话不存在（run 未在渲染阶段）")
     try:
-        session.enqueue_reroll(req.shot_id, req.prompt)
+        session.enqueue_reroll(req.shot_id, req.prompt, req.orientation, req.edit_model)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True}
@@ -442,6 +449,8 @@ async def get_render_preview(run_id: str, ch_id: str):
             {
                 "storyboard_id": spec.get("storyboard_id"),
                 "workflow": spec.get("workflow"),
+                "edit_model": spec.get("edit_model", "4step"),
+                "orientation": spec.get("orientation", "square"),
                 "prompt": spec.get("prompt", ""),
                 "subjects": spec.get("subjects", []),
                 "status": "pending",

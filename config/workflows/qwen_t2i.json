@@ -42,7 +42,7 @@
       "lora_2": {
         "on": true,
         "lora": "qwen-anime.safetensors",
-        "strength": 0.9
+        "strength": 0.4
       },
       "lora_3": {
         "on": true,
