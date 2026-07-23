@@ -159,6 +159,7 @@ def test_configure_chapter_grouping_payload_exposes_schemes(monkeypatch):
         "romance_sweet",
         "general",
         "plain_narration",
+        "plain_paragraph",
     ]
 
 
@@ -288,8 +289,8 @@ def test_parse_characters_llm_passes_review_feedback_to_prompt(tmp_path, monkeyp
         "_init_characters_feedback": "漏了重要角色、外观太简略",
     }
     result = parse_characters_llm(state)
-    prompt = mock.call_args.args[0]
-    assert "漏了重要角色、外观太简略" in prompt
+    user_msg = mock.call_args.args[1]
+    assert "漏了重要角色、外观太简略" in user_msg
     assert result["_init_characters_feedback"] == ""
 
 

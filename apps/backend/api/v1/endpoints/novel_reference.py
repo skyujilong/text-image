@@ -22,6 +22,7 @@ from novel2media.chapters import (
     list_chapter_files,
     read_group_text,
 )
+from novel2media.nodes.setup_nodes import read_scenes_profile
 
 router = APIRouter()
 
@@ -108,6 +109,39 @@ async def list_characters(run_id: str) -> list[dict]:
                 "tri_view_prompt_cn": prof.get("tri_view_prompt_cn") or "",
                 "tri_view_prompt": prof.get("tri_view_prompt") or "",
                 "portrait_path": portrait_path,
+            }
+        )
+    return result
+
+
+@router.get("/runs/{run_id}/scenes")
+async def list_scenes(run_id: str) -> list[dict]:
+    """返回本 run 场景（地点）资产列表（detect_new_scenes_llm 收敛写入 + 渲染 worker 生成的空景板）。
+
+    读盘 `scenes/scenes_profile.json`——渲染 worker 生成的空景板 `ref_image` 只落盘不进 checkpoint，
+    磁盘 json 才是含最新空景板路径的单一真相。附 `plate_path`：空景板绝对路径（ref_image
+    相对 novel_dir 解析且文件存在时），供前端用 /files 服务展示；未生成/一次性地点则为 null。
+    """
+    novel_dir = await _novel_dir(run_id)
+    profiles = read_scenes_profile(novel_dir)
+
+    result: list[dict] = []
+    for name, prof in profiles.items():
+        if not isinstance(prof, dict):
+            continue
+        ref = (prof.get("ref_image") or "").strip()
+        plate_path: str | None = None
+        if ref:
+            abs_path = (Path(novel_dir) / ref).resolve()
+            if abs_path.is_file():
+                plate_path = str(abs_path)
+        result.append(
+            {
+                "name": prof.get("name") or name,
+                "description": prof.get("description") or "",
+                "aliases": prof.get("aliases") or [],
+                "build_asset": bool(prof.get("build_asset", False)),
+                "plate_path": plate_path,
             }
         )
     return result

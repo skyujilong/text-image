@@ -27,7 +27,9 @@
     "target_loudness_lufs": -16
   },
   "llm_context": {
-    "prev_chapters_for_script": 3
+    "prev_chapters_for_script": 3,
+    "lookahead_chapters_for_detection": 3,
+    "lookahead_chapters_for_scenes": 3
   },
   "pose_images": {
     "standing": "poses/standing_512x768.png",

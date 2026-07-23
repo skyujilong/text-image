@@ -244,8 +244,8 @@ def parse_characters_llm(state: dict) -> dict:
         return {"pending_new_characters": []}
 
     feedback = state.get("_init_characters_feedback", "") or ""
-    prompt = build_parse_initial_characters_prompt(raw, state.get("worldview", ""), feedback)
-    parsed = invoke_llm_json_array(prompt, node="parse_characters_llm")  # [{name, appearance, tri_view_prompt}]
+    sys_msg, usr_msg = build_parse_initial_characters_prompt(raw, state.get("worldview", ""), feedback)
+    parsed = invoke_llm_json_array(sys_msg, usr_msg, node="parse_characters_llm")  # [{name, appearance, tri_view_prompt}]
 
     seen: set[str] = set()
     for c in parsed:

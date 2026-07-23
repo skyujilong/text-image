@@ -4,13 +4,14 @@ from novel2media.prompts.rule_synthesis import build_rule_synthesis_prompt
 
 
 def test_prompt_contains_feedback_active_and_base():
-    p = build_rule_synthesis_prompt(
+    sys_msg, usr_msg = build_rule_synthesis_prompt(
         "scene_change",
         "恐怖悬疑解说",
         feedbacks=["换图太密", "旁白配错画面"],
         base_template="基座提示词内容",
         active_rules=["说话人切换即换图"],
     )
+    p = sys_msg + usr_msg
     assert "恐怖悬疑解说" in p
     assert "换图太密" in p and "旁白配错画面" in p
     assert "说话人切换即换图" in p  # active 规则用于去重
@@ -20,7 +21,8 @@ def test_prompt_contains_feedback_active_and_base():
 
 
 def test_prompt_empty_active_and_base():
-    p = build_rule_synthesis_prompt("adapt_script", "通用中性解说", feedbacks=["旁白太长"])
+    sys_msg, usr_msg = build_rule_synthesis_prompt("adapt_script", "通用中性解说", feedbacks=["旁白太长"])
+    p = sys_msg + usr_msg
     assert "旁白太长" in p
     assert "（暂无）" in p  # 无 active 规则时的占位
     # 无基座模板时不注入基座段

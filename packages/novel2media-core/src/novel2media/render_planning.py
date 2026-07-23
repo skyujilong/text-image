@@ -14,12 +14,34 @@ from pathlib import Path
   - subjects 为空，或所有 subject 都无 tri_view（空串/缺省）→ qwen_t2i（纯文生图）。
   - subjects 有至少 1 个带 tri_view 的角色 → qwen_edit（参考图生图），
     参考图取这些角色的 tri_view（最多 2 张，与人物一致性上限一致）。
+- edit 支持 3 张参考图：前 2 槽给角色 tri_view，第 3 槽固定留给该地点的空景背景板
+  （由渲染层 _apply_scene 补位，本模块只填角色 ref）。
 """
 
 
 def _resolve_tri_view(novel_dir: str | Path, tri_view: str) -> str:
     """tri_view 相对路径（相对 novel_dir）→ 绝对路径字符串。"""
     return str((Path(novel_dir) / tri_view).resolve())
+
+
+def _build_alias_index(characters_profile: dict) -> dict[str, str]:
+    """别名/角色名 → 标准 key（角色名）的归一索引。
+
+    解「早期占位名（帽兜男）后续揭真名（陆沉）」：storyboard subjects 无论输出真名还是外号，
+    都能归一回同一角色 key，取到那张一次性上传的 tri_view，跨镜参考图一致。
+    - 标准名（characters_profile 的 key）永远指向自身。
+    - 各档案 aliases 补进索引，用 setdefault 让「已是某角色标准名」的词不被别名覆盖（标准名优先）。
+    """
+    index: dict[str, str] = {}
+    for cname in characters_profile:
+        index[cname] = cname
+    for cname, cprofile in characters_profile.items():
+        if not isinstance(cprofile, dict):
+            continue
+        for alias in cprofile.get("aliases", []) or []:
+            if alias:
+                index.setdefault(alias, cname)
+    return index
 
 
 def build_shot_specs(
@@ -33,12 +55,16 @@ def build_shot_specs(
     {
       "storyboard_id": int,
       "workflow": "qwen_t2i" | "qwen_edit",
+      "edit_model": "4step" | "8step", # edit 底模档位；自动批量默认 4step（快），手动 reroll 可切 8step
+      "orientation": "square" | "landscape" | "portrait",  # 图片朝向，决定固定尺寸
       "prompt": str,                 # scene_prompt（已含画风触发词）
-      "ref_images": [abs_path, ...], # qwen_edit 的参考图绝对路径（最多 2），t2i 为空
+      "ref_images": [abs_path, ...], # qwen_edit 的角色参考图绝对路径（最多 2），t2i 为空；
+                                     # 第 3 槽的空景背景板由渲染层 _apply_scene 补位，不在此填
       "subjects": [name, ...],       # 画面主体角色名（展示用）
     }
     仅返回 scene_change=True 的镜头（非换图点不出图）。
     """
+    alias_index = _build_alias_index(characters_profile)
     specs: list[dict] = []
     for entry in storyboard:
         if not entry.get("scene_change"):
@@ -50,7 +76,9 @@ def build_shot_specs(
         # 收集带 tri_view（非空路径）的主体角色参考图，最多 2 张
         ref_images: list[str] = []
         for name in subjects:
-            char = characters_profile.get(name)
+            # 先按别名归一到标准角色 key，再取档案：subjects 里若是别名/揭示后的真名也能命中同一张立绘
+            canonical = alias_index.get(name, name)
+            char = characters_profile.get(canonical)
             if not char:
                 continue
             tri_view = char.get("tri_view")
@@ -66,9 +94,16 @@ def build_shot_specs(
             {
                 "storyboard_id": sid,
                 "workflow": workflow,
+                # 自动批量默认走 4-step 轻量编辑底模（快）；用户在渲染看板手动 reroll 时可切 8-step（精）。
+                "edit_model": "4step",
+                # 图片朝向（横/纵/方）由分镜 LLM 决定，渲染时映射成固定尺寸；缺省/异常回落方形。
+                "orientation": entry.get("orientation", "square") or "square",
                 "prompt": prompt,
                 "ref_images": ref_images,
                 "subjects": subjects,
+                # 该镜归属地点（storyboard 挑的标准 scene_id）。渲染 worker 据此补该地点的空景
+                # 背景板作参考图（角色 ref 填满后仍有槽位时补位；0 角色则 t2i→edit 升级）。
+                "scene_id": entry.get("scene_id", "") or "",
             }
         )
     return specs

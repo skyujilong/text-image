@@ -178,6 +178,9 @@ export function useRunStream(runId: string | null) {
         upsertRenderShot(chapterId, {
           storyboard_id: shotId,
           workflow: prev?.workflow ?? 'qwen_t2i',
+          // render_image 事件不带 orientation/edit_model，沿用已有值（避免增量更新丢字段）
+          edit_model: prev?.edit_model ?? '4step',
+          orientation: prev?.orientation ?? 'square',
           prompt: (event.prompt as string | undefined) ?? prev?.prompt ?? '',
           subjects: prev?.subjects ?? [],
           status,

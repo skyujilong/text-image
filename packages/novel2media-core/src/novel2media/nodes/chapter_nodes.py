@@ -9,6 +9,7 @@ from langgraph.types import interrupt
 from novel2media.chapters import (
     chapter_pad_width,
     chapter_sort_key,
+    forward_chapter_paths,
     group_id_for,
     read_group_text,
 )
@@ -17,7 +18,10 @@ from novel2media.nodes.init_nodes import _REQUIRED_CHAR_FIELDS, _normalize_char_
 from novel2media.prompts.chapter_prompts import (
     _SCENE_STYLE_TRIGGER,
     build_adapt_script_prompt,
-    build_detect_new_characters_prompt,
+    build_candidate_scan_prompt,
+    build_enrich_characters_prompt,
+    build_reconcile_scenes_prompt,
+    build_scene_candidate_scan_prompt,
     build_scene_change_prompt,
     build_scene_prompt_for_shots,
 )
@@ -273,7 +277,7 @@ def adapt_script(state: dict) -> dict:
     # 有 override 才用 override。详见 _resolve_narration_template。
     # 提示词自进化：已采纳校正规则注入块（web 层按 scheme 载入，随委派进 plan 子图）；缺省不注入。
     learned_rules_text = state.get("learned_rules_text") or {}
-    prompt = build_adapt_script_prompt(
+    sys_msg, usr_msg = build_adapt_script_prompt(
         chapter_text,
         characters_profile,
         feedback,
@@ -285,7 +289,7 @@ def adapt_script(state: dict) -> dict:
             state.get("narration_scheme"), state.get("narration_perspective")
         ),
     )
-    script = invoke_llm_json_array(prompt, node="adapt_script", label="adapt_script")  # [{"text","action","speaker"}]
+    script = invoke_llm_json_array(sys_msg, usr_msg, node="adapt_script", label="adapt_script")  # [{"text","action","speaker"}]
 
     # feedback 记录原文（便于核对 revise 意见是否真拼进 prompt）
     log.info("adapt_script: 完成", chapter=ch_id, lines=len(script), feedback=feedback)
@@ -453,11 +457,41 @@ def _write_storyboard_debug(novel_dir: str, chapter_id: str, payload: dict) -> N
     )
 
 
+def _segment_change_indices(script: list[dict]) -> set[int]:
+    """段落驱动换图：按 adapt 打的 seg 段号算「换图点」下标集（纯函数、不调 LLM）。
+
+    换图点 = seg 相对上一条发生变化的那一条（每个配图段的第一条）。seg 由 adapt_script
+    的段落方案模板逐条输出：同一原文自然段共享一个 seg，长段就地切细、开篇钩子逐条各占一段。
+    缺失/非法 seg（非 int 或 bool）不新起段、沿用上一段，避免因个别漏字段而错切；全缺时返回
+    空集（首条换图由下游 skeleton[0]["scene_change"]=True 兜底），并打 warning 暴露。
+    """
+    changes: set[int] = set()
+    prev: int | None = None
+    missing = 0
+    for i, item in enumerate(script):
+        seg = item.get("seg")
+        if not isinstance(seg, int) or isinstance(seg, bool):
+            missing += 1  # 缺/非法 seg → 沿用上一段，不新起段
+            continue
+        if seg != prev:
+            changes.add(i)
+            prev = seg
+    if missing:
+        log.warning(
+            "segment_change: 部分口播缺 seg 段号，按沿用前段处理",
+            missing=missing,
+            total=len(script),
+        )
+    return changes
+
+
 def generate_storyboard(state: dict) -> dict:
     """LLM 两步生成分镜 → current_storyboard（不落盘，稿件由 commit_chapter 收入 render_batch）。
 
     两步法（避免一次性生成全部 scene_prompt 导致输出 token 截断）：
-    - 第一步「初筛」：LLM 只判定每条口播是否换图点（输出布尔数组，输出量极小，串行单次）。
+    - 第一步「确定换图点」：按 narration_scheme 分两种模式——段落驱动方案（segment_driven_change，
+      如 plain_paragraph）纯代码按 adapt 打的 seg 段号切、不调 LLM；其余方案由 LLM 初筛
+      （只判定哪些口播是换图点，输出下标列表，输出量极小，串行单次）。
     - 第二步「画面生成」：只为换图点生成 subjects + scene_prompt（非换图点下游复用前图、
       不读 scene_prompt，从源头省去无用输出）；换图点过多时按批并行兜底。
 
@@ -473,6 +507,7 @@ def generate_storyboard(state: dict) -> dict:
         state.get("current_chapter_member_paths") or [state["current_chapter_text_path"]]
     )
     characters_profile = state.get("characters_profile", {})
+    scenes_profile = state.get("scenes_profile", {}) or {}
     feedback = state.get("_storyboard_review_feedback", "") or ""
     worldview = state.get("worldview", "")
 
@@ -480,39 +515,51 @@ def generate_storyboard(state: dict) -> dict:
         log.info("generate_storyboard: 空脚本，跳过", chapter=ch_id)
         return {"current_storyboard": [], "_storyboard_review_feedback": ""}
 
-    # ---- 第一步：初筛换图点（串行单次，输出换图点下标列表）----
-    # 换图点节奏密度默认按 narration_scheme 现取源码（改 .py 即时生效）；用户手改 / 旧 checkpoint
-    # 有 override 才用 override。详见 _resolve_narration_template。
-    # 提示词自进化：换图点阶段的已采纳校正规则注入块；缺省不注入。
-    learned_rules_text = state.get("learned_rules_text") or {}
-    sc_prompt = build_scene_change_prompt(
-        script, chapter_text, feedback,
-        template=_resolve_narration_template(state, "scene_change"),
-        learned_rules=learned_rules_text.get("scene_change", ""),
-    )
-    raw_indices = invoke_llm_json_array(sc_prompt, node="generate_storyboard", label="storyboard_scene_change")
+    # ---- 第一步：确定换图点 ----
+    # 按 narration_scheme 分两种模式：
+    #   ① 段落驱动（segment_driven_change=True，如 plain_paragraph）：换图点由 adapt 打的 seg
+    #      段号纯代码判定（_segment_change_indices），不调 LLM、零漂移——同一原文自然段共用一张图。
+    #   ② LLM 初筛（现状，其余方案）：LLM 只判定哪些口播是换图点（输出下标列表，输出量极小，串行单次）。
+    # 模板/密度默认按 narration_scheme 现取源码（改 .py 即时生效）；用户手改 / 旧 checkpoint 有 override 才用。
+    scheme = get_scheme(state.get("narration_scheme"))
     n_script = len(script)
-    # 输出已从「等长布尔数组」改为「换图点下标列表」：模型不再需要逐条铺满 N 个 bool，
-    # 从根上消除「数组长度对不上」的崩溃。这里只校验下标合法性（整数、在范围内），
-    # 越界/非整数直接抛错暴露，不静默丢弃（否则会与 script 错位、污染音频/字幕对齐）。
-    # 兼容两种输出格式：① 纯下标整数（多数解说方案）；② {"i": 下标, "trigger": 触发类别}
-    # （horror 方案要求每个换图点标注命中的触发类别，用"说得出理由才换"压掉虚假切换，
-    # trigger 分布也进观测日志便于诊断）。两种都归一到下标集合，dict 顺带收集触发标注。
     change_set: set[int] = set()
     change_triggers: dict[int, str] = {}
-    for v in raw_indices:
-        if isinstance(v, dict):
-            idx = v.get("i")
-            trigger = v.get("trigger")
-        else:
-            idx, trigger = v, None
-        if not isinstance(idx, int) or isinstance(idx, bool):
-            raise ValueError(f"换图点初筛结果含非整数下标: {idx!r}（原始元素 {v!r}，应为 0~{n_script - 1} 的整数）")
-        if idx < 0 or idx >= n_script:
-            raise ValueError(f"换图点初筛结果下标越界: {idx}（口播共 {n_script} 条，合法范围 0~{n_script - 1}）")
-        change_set.add(idx)
-        if isinstance(trigger, str) and trigger.strip():
-            change_triggers[idx] = trigger.strip()
+
+    if scheme.segment_driven_change:
+        # ① 段落驱动：纯代码按 seg 段号切换图点，不调 scene_change LLM。
+        change_set = _segment_change_indices(script)
+        change_mode = "segment"
+    else:
+        # ② LLM 初筛换图点（串行单次，输出换图点下标列表）。
+        # 提示词自进化：换图点阶段的已采纳校正规则注入块；缺省不注入。
+        learned_rules_text = state.get("learned_rules_text") or {}
+        sc_sys, sc_usr = build_scene_change_prompt(
+            script, chapter_text, feedback,
+            template=_resolve_narration_template(state, "scene_change"),
+            learned_rules=learned_rules_text.get("scene_change", ""),
+        )
+        raw_indices = invoke_llm_json_array(sc_sys, sc_usr, node="generate_storyboard", label="storyboard_scene_change")
+        # 输出已从「等长布尔数组」改为「换图点下标列表」：模型不再需要逐条铺满 N 个 bool，
+        # 从根上消除「数组长度对不上」的崩溃。这里只校验下标合法性（整数、在范围内），
+        # 越界/非整数直接抛错暴露，不静默丢弃（否则会与 script 错位、污染音频/字幕对齐）。
+        # 兼容两种输出格式：① 纯下标整数（多数解说方案）；② {"i": 下标, "trigger": 触发类别}
+        # （horror 方案要求每个换图点标注命中的触发类别，用"说得出理由才换"压掉虚假切换，
+        # trigger 分布也进观测日志便于诊断）。两种都归一到下标集合，dict 顺带收集触发标注。
+        for v in raw_indices:
+            if isinstance(v, dict):
+                idx = v.get("i")
+                trigger = v.get("trigger")
+            else:
+                idx, trigger = v, None
+            if not isinstance(idx, int) or isinstance(idx, bool):
+                raise ValueError(f"换图点初筛结果含非整数下标: {idx!r}（原始元素 {v!r}，应为 0~{n_script - 1} 的整数）")
+            if idx < 0 or idx >= n_script:
+                raise ValueError(f"换图点初筛结果下标越界: {idx}（口播共 {n_script} 条，合法范围 0~{n_script - 1}）")
+            change_set.add(idx)
+            if isinstance(trigger, str) and trigger.strip():
+                change_triggers[idx] = trigger.strip()
+        change_mode = "llm"
 
     # ---- 组装骨架：text/speaker 从 script 对位填充，scene_change 取初筛下标集 ----
     skeleton: list[dict] = []
@@ -534,10 +581,12 @@ def generate_storyboard(state: dict) -> dict:
     trigger_dist: dict[str, int] = {}
     for _trig in change_triggers.values():
         trigger_dist[_trig] = trigger_dist.get(_trig, 0) + 1
-    # 观测（不改行为）：LLM 判定的换图点 vs 强制首条后的最终换图点，看强制项影响
+    # 观测（不改行为）：初筛的换图点 vs 强制首条后的最终换图点，看强制项影响。
+    # mode=segment 时 change_set 是代码按 seg 段号算出的换图点（llm_change_points 即此值）。
     log.info(
         "generate_storyboard.scene_change",
         chapter=ch_id,
+        mode=change_mode,
         lines=n_script,
         llm_change_points=len(change_set),
         forced_first=0 not in change_set,
@@ -554,11 +603,12 @@ def generate_storyboard(state: dict) -> dict:
     def _run_batch(args: tuple[int, list[dict]]) -> list[dict]:
         idx, batch = args
         batch_info = (idx + 1, n) if n > 1 else None
-        prompt = build_scene_prompt_for_shots(
-            batch, chapter_text, characters_profile, feedback, batch_info=batch_info, worldview=worldview
+        sp_sys, sp_usr = build_scene_prompt_for_shots(
+            batch, chapter_text, characters_profile, feedback, batch_info=batch_info,
+            worldview=worldview, scenes_profile=scenes_profile,
         )
         return invoke_llm_json_array(
-            prompt, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]"
+            sp_sys, sp_usr, node="generate_storyboard", label=f"storyboard_scene_prompt[{idx + 1}/{n}]"
         )
 
     # 收集所有批次的 {anchor_id -> {subjects, scene_prompt}}；任一批抛错经 result() 重新抛出（不吞错）
@@ -592,6 +642,13 @@ def generate_storyboard(state: dict) -> dict:
             )
             subjects = subjects[:2]
         entry["subjects"] = subjects
+        # 场景锚点：该换图点归属的地点标准名（渲染 worker 据此补空景背景板；空/未知则不补、走文本背景）
+        scene_id = shot.get("scene_id")
+        if isinstance(scene_id, str) and scene_id.strip():
+            entry["scene_id"] = scene_id.strip()
+        # 画幅朝向：LLM 决定横/纵/方；非法或缺省一律回落方形（渲染层据此映射固定尺寸）
+        orientation = shot.get("orientation")
+        entry["orientation"] = orientation if orientation in ("landscape", "portrait", "square") else "square"
         raw_prompt = (shot.get("scene_prompt") or "").strip()
         if not raw_prompt:
             # 换图点拿到结果但画面描述为空：记录暴露，不拼成只有触发词的退化 prompt 蒙混生图
@@ -629,8 +686,58 @@ def generate_storyboard(state: dict) -> dict:
     return {"current_storyboard": skeleton, "_storyboard_review_feedback": ""}
 
 
+def _collect_known_names(characters_profile: dict) -> set[str]:
+    """已登记名字集 = 标准名 ∪ 全部别名（别名感知排除）。"""
+    known: set[str] = set(characters_profile.keys())
+    for cp in characters_profile.values():
+        if isinstance(cp, dict):
+            known.update(a for a in (cp.get("aliases") or []) if a)
+    return known
+
+
+def _apply_alias_updates(
+    characters_profile: dict,
+    alias_updates: list[tuple[str, str]],
+    ch_id: str,
+) -> dict | None:
+    """把 (canonical, alias) 归并补丁应用到既有档案的 aliases。
+
+    返回打过补丁的新 characters_profile（有实际变更时）或 None（无变更）。防御性守则：
+    - canonical 先经「别名/标准名 → 标准名」反查归一到真正的档案 key；查不到 → 跳过（不新建）。
+    - alias 为空 / 等于标准名 / 已是另一角色的标准名（避免劫持）→ 跳过。
+    """
+    owner_of: dict[str, str] = {}
+    for cname, cp in characters_profile.items():
+        owner_of[cname] = cname
+        if isinstance(cp, dict):
+            for a in cp.get("aliases") or []:
+                if a:
+                    owner_of.setdefault(a, cname)
+
+    patched = {k: (dict(v) if isinstance(v, dict) else v) for k, v in characters_profile.items()}
+    changed = False
+    for canonical, alias in alias_updates:
+        owner = owner_of.get(canonical)
+        if owner is None or not isinstance(patched.get(owner), dict):
+            log.warning("detect_new_characters_llm: alias_of 的 canonical 非已知角色，已跳过",
+                        chapter=ch_id, canonical=canonical, alias=alias)
+            continue
+        if not alias or alias == owner:
+            continue
+        if alias in patched and alias != owner:
+            log.warning("detect_new_characters_llm: alias 与另一角色标准名冲突，已跳过",
+                        chapter=ch_id, alias=alias, owner=owner)
+            continue
+        cur = list(patched[owner].get("aliases") or [])
+        if alias not in cur:
+            cur.append(alias)
+            patched[owner]["aliases"] = cur
+            changed = True
+    return patched if changed else None
+
+
 def detect_new_characters_llm(state: dict) -> dict:
-    """LLM 检测本章新角色 → 直接写 setup_queue（独立节点，放分镜之前）。
+    """LLM 两阶段检测本组新角色 → 写 setup_queue + 别名归并（独立节点，放分镜之前）。
 
     单独成节点而非并入 adapt_script：合并后单次输出过长撞 output token 上限被截断
     （实测长章节 finish_reason=length → JSON 断裂）。故拆开各自保持输出小。
@@ -639,39 +746,223 @@ def detect_new_characters_llm(state: dict) -> dict:
     由 character_setup_subgraph 上传三视图（无单独人工审阅），在分镜前备好 visual_trait，
     避免后期图生图角色对不上。
 
-    读章节原文 + 现有 characters_profile 的 name 集（作排除名单）。每个新角色必须含
-    六字段（_REQUIRED_CHAR_FIELDS，与 init parse_characters_llm 角色模型一致），缺则抛错；
-    role（main/minor）经 _normalize_char_role 归一（缺省/非法落 main，不抛错），
-    前端三视图面板对 minor 默认勾选跳过。防御性剔除名字已在已知花名册中的角色。
+    两阶段（新角色触发式后瞻，token 花在刀刃上）：
+    - Stage 1：仅本组原文的轻量候选扫描（输出极小）。排除集 = 标准名 ∪ 全部别名。无候选 → 直接
+      返回空队列、跳过后瞻（中后期常见，零额外 token）。
+    - Stage 2（仅有候选时）：读本组 + 后瞻 K 章（cfg.lookahead_chapters），一次产出：
+      · resolution="new" 的完整档案（六必填字段 + role 归一 + aliases）→ setup_queue；
+      · resolution="alias_of" 的归并记录 → 补进既有角色 aliases（解「早期占位名后续揭真名」前后
+        形象对不上/重复建档），直接落盘 characters_profile.json（即使本组无 new 角色也持久化）。
 
-    setup_queue 无 reducer（覆盖语义）：review_script revise 回环 → adapt_script → 本节点
-    重跑时整体覆盖，不会重复累积/残留旧批新角色。
+    setup_queue 无 reducer（覆盖语义）：review_script revise 回环重跑时整体覆盖，不残留旧批。
     """
     ch_id = state["current_chapter_id"]
+    worldview = state.get("worldview", "")
+    characters_profile = state.get("characters_profile", {}) or {}
+    known_names = _collect_known_names(characters_profile)
+
     # 整组拼接原文喂 LLM（兜底：member 缺失时退回单文件，兼容旧 checkpoint）
-    chapter_text = read_group_text(
-        state.get("current_chapter_member_paths") or [state["current_chapter_text_path"]]
-    )
-    existing_names = set(state.get("characters_profile", {}).keys())
+    member_paths = state.get("current_chapter_member_paths") or [state["current_chapter_text_path"]]
+    chapter_text = read_group_text(member_paths)
 
-    prompt = build_detect_new_characters_prompt(chapter_text, existing_names, worldview=state.get("worldview", ""))
-    detected = invoke_llm_json_array(prompt, node="detect_new_characters_llm", label="detect_new_characters")  # [{"name","appearance","character_trait","visual_trait","tri_view_prompt","tri_view_prompt_cn","role"}]
+    # ── Stage 1：轻量候选扫描（仅本组）──────────────────────────────
+    cand_sys, cand_usr = build_candidate_scan_prompt(chapter_text, known_names, worldview=worldview)
+    candidates = invoke_llm_json_array(cand_sys, cand_usr, node="detect_new_characters_llm", label="candidate_scan")
+    candidates = [c for c in candidates if c.get("name") and c["name"] not in known_names]
+    if not candidates:
+        log.info("detect_new_characters_llm: 本组无新角色候选，跳过后瞻", chapter=ch_id)
+        return {"setup_queue": []}
 
-    # 校验六字段（与 init parse_characters_llm 同一真相），剔除已知角色 + 归一 role 后写 setup_queue
-    validated: list[dict] = []
-    for c in detected:
-        name = c.get("name")
-        if name in existing_names:
-            # 防御性剔除：已知角色不应再被当新角色（LLM 偶发重复），跳过不入队
-            log.warning("detect_new_characters_llm: LLM 误报已知角色为新角色，已剔除", chapter=ch_id, name=name)
+    # ── Stage 2：触发式后瞻增强 + 身份归并 ─────────────────────────
+    from novel2media.nodes.image_nodes import _load_config
+    from novel2media.nodes.setup_nodes import write_characters_profile
+
+    k = getattr(_load_config(state), "lookahead_chapters", 3)
+    current_members = [Path(p).stem for p in member_paths]
+    # 全书有序 stem 优先由 shared 的 chapter_groups 展平（chapter_files/order 不进 plan 子图）
+    chapter_groups = state.get("chapter_groups") or {}
+    ordered_stems = [stem for members in chapter_groups.values() for stem in members] or None
+    fwd_paths = forward_chapter_paths(state["novel_dir"], current_members, k, ordered_stems=ordered_stems)
+    window_text = read_group_text(member_paths + fwd_paths) if fwd_paths else chapter_text
+    log.info("detect_new_characters_llm: 触发后瞻增强", chapter=ch_id,
+             candidates=len(candidates), lookahead_chapters=len(fwd_paths))
+
+    enrich_sys, enrich_usr = build_enrich_characters_prompt(window_text, candidates, characters_profile, worldview=worldview)
+    results = invoke_llm_json_array(enrich_sys, enrich_usr, node="detect_new_characters_llm", label="enrich_characters")
+
+    # 分流：new → 校验六字段 + 归一 role + 规范 aliases 后入队；alias_of → 归并补丁
+    new_chars: list[dict] = []
+    alias_updates: list[tuple[str, str]] = []
+    for r in results:
+        if str(r.get("resolution") or "").strip() == "alias_of":
+            canonical, alias = r.get("canonical"), r.get("alias")
+            if canonical and alias:
+                alias_updates.append((canonical, alias))
+            else:
+                log.warning("detect_new_characters_llm: alias_of 记录缺 canonical/alias，已跳过", chapter=ch_id, record=r)
+            continue
+        # 其余按 new 处理（resolution 缺省/其它值也当 new：宁多建档，不静默丢角色）
+        name = r.get("name")
+        if not name or name in known_names:
+            log.warning("detect_new_characters_llm: new 角色名缺失或已登记，已跳过", chapter=ch_id, name=name)
             continue
         for field in _REQUIRED_CHAR_FIELDS:
-            if not c.get(field):
-                raise ValueError(f"detect_new_characters_llm: 新角色缺 {field} 字段: {c}")
-        validated.append(_normalize_char_role(c, "detect_new_characters_llm"))
+            if not r.get(field):
+                raise ValueError(f"detect_new_characters_llm: 新角色缺 {field} 字段: {r}")
+        char = _normalize_char_role(r, "detect_new_characters_llm")
+        char.pop("resolution", None)  # resolution 是分流标签，不进档案
+        char["aliases"] = [a for a in (char.get("aliases") or []) if a and a != name]
+        new_chars.append(char)
 
-    log.info("detect_new_characters_llm: 完成", chapter=ch_id, new_characters=len(validated))
-    return {"setup_queue": validated}
+    updates: dict = {"setup_queue": new_chars}
+    if alias_updates:
+        patched = _apply_alias_updates(characters_profile, alias_updates, ch_id)
+        if patched is not None:
+            write_characters_profile(state["novel_dir"], patched)
+            updates["characters_profile"] = patched
+
+    log.info("detect_new_characters_llm: 完成", chapter=ch_id,
+             new_characters=len(new_chars), alias_updates=len(alias_updates))
+    return updates
+
+
+# ─── 场景（地点）检测：收集 → 收敛（镜像 detect_new_characters_llm 两阶段 + 触发式后瞻）────────
+
+
+def _collect_known_scenes(scenes_profile: dict) -> set[str]:
+    """已登记地点名集 = 标准名 ∪ 全部别名（别名感知排除）。"""
+    known: set[str] = set(scenes_profile.keys())
+    for sp in scenes_profile.values():
+        if isinstance(sp, dict):
+            known.update(a for a in (sp.get("aliases") or []) if a)
+    return known
+
+
+def _apply_scene_alias_updates(
+    scenes_profile: dict,
+    alias_updates: list[tuple[str, str]],
+    ch_id: str,
+) -> dict | None:
+    """把 (canonical, alias) 归并补丁应用到既有场景的 aliases（镜像 _apply_alias_updates）。
+
+    返回打过补丁的新 scenes_profile（有实际变更时）或 None（无变更）。防御性：canonical 先经
+    「别名/标准名 → 标准名」反查归一；查不到 / alias 为空 / 等于标准名 / 已是另一地点标准名 → 跳过。
+    """
+    owner_of: dict[str, str] = {}
+    for sname, sp in scenes_profile.items():
+        owner_of[sname] = sname
+        if isinstance(sp, dict):
+            for a in sp.get("aliases") or []:
+                if a:
+                    owner_of.setdefault(a, sname)
+
+    patched = {k: (dict(v) if isinstance(v, dict) else v) for k, v in scenes_profile.items()}
+    changed = False
+    for canonical, alias in alias_updates:
+        owner = owner_of.get(canonical)
+        if owner is None or not isinstance(patched.get(owner), dict):
+            log.warning("detect_new_scenes_llm: alias_of 的 canonical 非已知地点，已跳过",
+                        chapter=ch_id, canonical=canonical, alias=alias)
+            continue
+        if not alias or alias == owner:
+            continue
+        if alias in patched and alias != owner:
+            log.warning("detect_new_scenes_llm: alias 与另一地点标准名冲突，已跳过",
+                        chapter=ch_id, alias=alias, owner=owner)
+            continue
+        cur = list(patched[owner].get("aliases") or [])
+        if alias not in cur:
+            cur.append(alias)
+            patched[owner]["aliases"] = cur
+            changed = True
+    return patched if changed else None
+
+
+def detect_new_scenes_llm(state: dict) -> dict:
+    """LLM 两阶段检测本组新地点 → 收敛写 scenes_profile（独立节点，放分镜之前）。
+
+    镜像 detect_new_characters_llm（两阶段 + 触发式后瞻），产出「收敛过的地点清单」供 storyboard
+    挑 scene_id、供渲染 worker 生成空景背景板锚点。收敛四手段全在此：同义归一（aliases）+
+    粗粒度大场所命名 + 频次过滤（build_asset）+ 多章覆盖提炼（后瞻窗口）。
+
+    - Stage 1：仅本组原文的轻量地点候选扫描。排除集 = 标准名 ∪ 全部别名。无候选 → 直接返回、
+      跳过后瞻（零额外 token）。
+    - Stage 2（仅有候选时）：读本组 + 后瞻 K 章（cfg.lookahead_chapters_for_scenes）一次收敛：
+      · resolution="new" → 新场景建档（description/aliases/build_asset，ref_image 待渲染 worker 生成）；
+      · resolution="alias_of" → 归并进既有场景 aliases。
+      有实际变更时落盘 scenes_profile.json（即使本组无 new 也持久化别名归并）。
+
+    不改 setup_queue（场景不走人工上传子图）；场景参考图由渲染 worker 自动生成空景板。
+    """
+    ch_id = state["current_chapter_id"]
+    worldview = state.get("worldview", "")
+    scenes_profile = state.get("scenes_profile", {}) or {}
+    known_scenes = _collect_known_scenes(scenes_profile)
+
+    member_paths = state.get("current_chapter_member_paths") or [state["current_chapter_text_path"]]
+    chapter_text = read_group_text(member_paths)
+
+    # ── Stage 1：轻量地点候选扫描（仅本组）──────────────────────────
+    cand_sys, cand_usr = build_scene_candidate_scan_prompt(chapter_text, known_scenes, worldview=worldview)
+    candidates = invoke_llm_json_array(cand_sys, cand_usr, node="detect_new_scenes_llm", label="scene_candidate_scan")
+    candidates = [c for c in candidates if c.get("name") and c["name"] not in known_scenes]
+    if not candidates:
+        log.info("detect_new_scenes_llm: 本组无新地点候选，跳过后瞻", chapter=ch_id)
+        return {}
+
+    # ── Stage 2：触发式后瞻收敛（同义归一 + 建档 + 频次判定）────────
+    from novel2media.nodes.image_nodes import _load_config
+    from novel2media.nodes.setup_nodes import write_scenes_profile
+
+    k = getattr(_load_config(state), "lookahead_chapters_for_scenes", 3)
+    current_members = [Path(p).stem for p in member_paths]
+    chapter_groups = state.get("chapter_groups") or {}
+    ordered_stems = [stem for members in chapter_groups.values() for stem in members] or None
+    fwd_paths = forward_chapter_paths(state["novel_dir"], current_members, k, ordered_stems=ordered_stems)
+    window_text = read_group_text(member_paths + fwd_paths) if fwd_paths else chapter_text
+    log.info("detect_new_scenes_llm: 触发后瞻收敛", chapter=ch_id,
+             candidates=len(candidates), lookahead_chapters=len(fwd_paths))
+
+    recon_sys, recon_usr = build_reconcile_scenes_prompt(window_text, candidates, scenes_profile, worldview=worldview)
+    results = invoke_llm_json_array(recon_sys, recon_usr, node="detect_new_scenes_llm", label="reconcile_scenes")
+
+    profile = {k2: (dict(v) if isinstance(v, dict) else v) for k2, v in scenes_profile.items()}
+    alias_updates: list[tuple[str, str]] = []
+    new_scenes = 0
+    for r in results:
+        if str(r.get("resolution") or "").strip() == "alias_of":
+            canonical, alias = r.get("canonical"), r.get("alias")
+            if canonical and alias:
+                alias_updates.append((canonical, alias))
+            else:
+                log.warning("detect_new_scenes_llm: alias_of 记录缺 canonical/alias，已跳过", chapter=ch_id, record=r)
+            continue
+        # 其余按 new 处理（resolution 缺省/其它值也当 new：宁多建档，不静默丢地点）
+        name = r.get("name")
+        if not name or name in known_scenes or name in profile:
+            log.warning("detect_new_scenes_llm: new 地点名缺失或已登记，已跳过", chapter=ch_id, name=name)
+            continue
+        description = (r.get("description") or "").strip()
+        profile[name] = {
+            "name": name,
+            "description": description or name,  # 缺描述兜底用地点名（空景板 prompt 仍可生图）
+            "aliases": [a for a in (r.get("aliases") or []) if a and a != name],
+            "build_asset": bool(r.get("build_asset", True)),
+            "ref_image": "",  # 空景板待渲染 worker 生成
+        }
+        new_scenes += 1
+
+    if alias_updates:
+        patched = _apply_scene_alias_updates(profile, alias_updates, ch_id)
+        if patched is not None:
+            profile = patched
+
+    log.info("detect_new_scenes_llm: 完成", chapter=ch_id,
+             new_scenes=new_scenes, alias_updates=len(alias_updates))
+    if profile != scenes_profile:
+        write_scenes_profile(state["novel_dir"], profile)
+        return {"scenes_profile": profile}
+    return {}
 
 
 def review_chapter(state: dict) -> dict:
@@ -912,15 +1203,22 @@ def render_generate_images(
         )
         if same_shot:
             existing["subjects"] = spec["subjects"]
+            existing["scene_id"] = spec.get("scene_id", "")  # 场景归属可随重规划刷新（不参与内容指纹，不触发重出）
+            # orientation/edit_model 用 setdefault 只补默认、不覆盖：保住用户手动 reroll 时改过的朝向/底模档
+            existing.setdefault("orientation", spec.get("orientation", "square"))
+            existing.setdefault("edit_model", spec.get("edit_model", "4step"))
             new_shots[sid] = existing
             reused += 1
         else:
             new_shots[sid] = {
                 "storyboard_id": spec["storyboard_id"],
                 "workflow": spec["workflow"],
+                "edit_model": spec.get("edit_model", "4step"),  # 自动批量默认 4step
+                "orientation": spec.get("orientation", "square"),
                 "prompt": spec["prompt"],
                 "ref_images": spec["ref_images"],
                 "subjects": spec["subjects"],
+                "scene_id": spec.get("scene_id", ""),  # 渲染 worker 据此补空景背景板
                 "candidates": [],
                 "selected": None,
                 "status": "pending",

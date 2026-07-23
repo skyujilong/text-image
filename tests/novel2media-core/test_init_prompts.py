@@ -5,7 +5,8 @@ from novel2media.prompts.init_prompts import build_parse_initial_characters_prom
 
 def test_parse_initial_characters_prompt_extracts_minor_and_alias():
     """解析 prompt：主次角色都提取，龙套标 role=minor；无名指代用指代作 name；泛指仍排除。"""
-    prompt = build_parse_initial_characters_prompt("胖子：矮胖油腻的中年男人", worldview="无限恐怖")
+    sys_msg, usr_msg = build_parse_initial_characters_prompt("胖子：矮胖油腻的中年男人", worldview="无限恐怖")
+    prompt = sys_msg + usr_msg
     # 放宽后龙套也提取（不再「只提取贯穿全书的主要角色」）
     assert "龙套" in prompt
     assert "只提取贯穿全书的主要角色" not in prompt
@@ -29,13 +30,15 @@ def test_parse_initial_characters_prompt_extracts_minor_and_alias():
 
 def test_parse_initial_characters_prompt_rule_numbers_contiguous():
     """规则编号连续（role=8、outfit=9，尾部规则顺延为 10/11/12，无重号/断号）。"""
-    prompt = build_parse_initial_characters_prompt("角色设定", worldview="")
+    sys_msg, usr_msg = build_parse_initial_characters_prompt("角色设定", worldview="")
+    prompt = sys_msg + usr_msg
     for n in range(1, 13):  # 规则 1~12
         assert f"{n}. " in prompt
 
 
 def test_parse_initial_characters_prompt_injects_feedback():
     """revise 回环：feedback 非空时拼入修改意见段。"""
-    prompt = build_parse_initial_characters_prompt("x", worldview="", feedback="把胖子标为主要角色")
+    sys_msg, usr_msg = build_parse_initial_characters_prompt("x", worldview="", feedback="把胖子标为主要角色")
+    prompt = sys_msg + usr_msg
     assert "把胖子标为主要角色" in prompt
     assert "修改意见" in prompt

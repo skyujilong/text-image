@@ -21,6 +21,18 @@ def test_build_shot_specs_t2i_when_no_subjects():
     assert specs[0]["ref_images"] == []
 
 
+def test_build_shot_specs_carries_orientation_and_edit_model():
+    """spec 带上 LLM 决定的 orientation（缺省回落 square）与默认 edit_model=4step。"""
+    sb = [
+        {"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": [], "orientation": "landscape"},
+        {"storyboard_id": 2, "scene_change": True, "scene_prompt": "q", "subjects": []},  # 无 orientation
+    ]
+    specs = render_planning.build_shot_specs(sb, {}, "/tmp/novel")
+    assert specs[0]["orientation"] == "landscape"
+    assert specs[0]["edit_model"] == "4step"
+    assert specs[1]["orientation"] == "square"  # 缺省回落
+
+
 def test_build_shot_specs_edit_with_tri_view():
     """有 tri_view 的主体 → qwen_edit + 参考图绝对路径。"""
     sb = [{"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": ["A"]}]
@@ -51,6 +63,45 @@ def test_build_shot_specs_caps_at_two_ref_images():
     }
     specs = render_planning.build_shot_specs(sb, cp, "/tmp/novel")
     assert len(specs[0]["ref_images"]) == 2
+
+
+def test_build_shot_specs_resolves_alias_to_same_tri_view():
+    """subjects 用别名（后续揭示的真名）→ 归一到标准角色 key，命中同一张 tri_view（不退化 t2i）。"""
+    sb = [{"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": ["陆沉"]}]
+    # 档案 key 是「帽兜男」，别名含「陆沉」
+    cp = {"帽兜男": {"name": "帽兜男", "tri_view": "characters/hood.png", "aliases": ["陆沉"]}}
+    specs = render_planning.build_shot_specs(sb, cp, "/tmp/novel")
+    assert specs[0]["workflow"] == "qwen_edit"
+    assert specs[0]["ref_images"][0].endswith("/novel/characters/hood.png")
+
+
+def test_build_shot_specs_alias_index_standard_name_wins():
+    """别名与另一角色标准名冲突时，标准名优先（setdefault 不被别名覆盖）。"""
+    # 「B」既是角色 B 的标准名，又被 A 误列为别名 → 归一到 B 自身，取 B 的图
+    cp = {
+        "A": {"name": "A", "tri_view": "characters/a.png", "aliases": ["B"]},
+        "B": {"name": "B", "tri_view": "characters/b.png"},
+    }
+    index = render_planning._build_alias_index(cp)
+    assert index["B"] == "B"  # 标准名优先，不被 A 的别名劫持
+    assert index["A"] == "A"
+    sb = [{"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": ["B"]}]
+    specs = render_planning.build_shot_specs(sb, cp, "/tmp/novel")
+    assert specs[0]["ref_images"][0].endswith("/novel/characters/b.png")
+
+
+def test_build_shot_specs_passes_scene_id_through():
+    """scene_id 从 storyboard entry 透传进 shot spec（供渲染 worker 补空景背景板）。"""
+    sb = [{"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": [], "scene_id": "陆家"}]
+    specs = render_planning.build_shot_specs(sb, {}, "/tmp/novel")
+    assert specs[0]["scene_id"] == "陆家"
+
+
+def test_build_shot_specs_scene_id_defaults_empty():
+    """storyboard entry 无 scene_id（老稿件兼容）→ spec scene_id 为空串。"""
+    sb = [{"storyboard_id": 0, "scene_change": True, "scene_prompt": "p", "subjects": []}]
+    specs = render_planning.build_shot_specs(sb, {}, "/tmp/novel")
+    assert specs[0]["scene_id"] == ""
 
 
 # ─── render_planning.expand_image_map ──────────────────────────────

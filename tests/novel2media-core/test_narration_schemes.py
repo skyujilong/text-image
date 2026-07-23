@@ -45,6 +45,7 @@ def test_builtin_schemes_registered():
         "romance_sweet",
         "general",
         "plain_narration",
+        "plain_paragraph",
     ]
     assert DEFAULT_SCHEME_KEY == "horror_suspense"
 
@@ -57,6 +58,7 @@ def test_list_scheme_presets_shape():
         "romance_sweet",
         "general",
         "plain_narration",
+        "plain_paragraph",
     ]
     for p in presets:
         assert set(p) == {
@@ -117,25 +119,27 @@ def test_validate_templates_rejects_invalid(bad):
 
 def test_builders_render_custom_template():
     """两个 builder 传入自定义模板时渲染该模板（而非默认预设）。"""
-    a = build_adapt_script_prompt("原文", {}, template="自定义口播 %%CHAPTER_TEXT%%")
-    assert a == "自定义口播 原文"
+    a_sys, a_usr = build_adapt_script_prompt("原文", {}, template="自定义口播 %%CHAPTER_TEXT%%")
+    assert a_sys + a_usr == "自定义口播 原文"
 
-    s = build_scene_change_prompt(
+    s_sys, s_usr = build_scene_change_prompt(
         [{"text": "一"}],
         "原文",
         template="共%%LINE_COUNT%%条 0~%%MAX_INDEX%% | %%SCRIPT_LINES%%",
     )
+    s = s_sys + s_usr
     # 行含说话人（缺省回退旁白）+ 画面描述（缺省空），供正反打换图 / 画面变更判定
     assert s == "共1条 0~0 | 0. [说话人:旁白] 一 [画面:]"
 
 
 def test_builders_default_to_horror_preset():
     """template=None → 用恐怖悬疑默认预设（行为不变的兜底）。"""
-    default_a = build_adapt_script_prompt("XX", {"林辰": {}})
-    assert default_a == build_adapt_script_prompt(
+    default_a_sys, default_a_usr = build_adapt_script_prompt("XX", {"林辰": {}})
+    custom_a_sys, custom_a_usr = build_adapt_script_prompt(
         "XX", {"林辰": {}}, template=NARRATION_SCHEMES["horror_suspense"].adapt_script_template
     )
-    assert "声临其境" in default_a
+    assert (default_a_sys, default_a_usr) == (custom_a_sys, custom_a_usr)
+    assert "声临其境" in default_a_sys + default_a_usr
 
 
 def test_plain_narration_keeps_hooks_but_lightens_body():
@@ -151,6 +155,28 @@ def test_plain_narration_keeps_hooks_but_lightens_body():
     assert "轻量改编" in scheme.adapt_script_template
     # 换图从正反打改成解说配图节奏
     assert "不走正反打" in scheme.scene_change_template
+
+
+def test_plain_paragraph_registered_and_segment_driven():
+    """逐段配图方案：段落驱动换图、仅第三人称、必需占位符齐、头尾钩子 + seg 段号约定在。"""
+    scheme = NARRATION_SCHEMES["plain_paragraph"]
+    # 段落驱动换图（换图点由 adapt 打的 seg 段号纯代码判定，不调 scene_change LLM）
+    assert scheme.segment_driven_change is True
+    # 仅第三人称（不提供人称槽）
+    assert scheme.perspective_slots is None
+    assert scheme_perspectives(scheme) == []
+    # 必需占位符（两个 builder 渲染所依赖）
+    assert "%%CHAPTER_TEXT%%" in scheme.adapt_script_template
+    assert "%%SCRIPT_LINES%%" in scheme.scene_change_template
+    # 头尾钩子保留（开篇钩子 + 拉回过渡）
+    assert "开篇钩子" in scheme.adapt_script_template
+    assert "拉回过渡" in scheme.adapt_script_template
+    # seg 段号约定写进 adapt 模板 + seg 作为输出字段
+    assert "seg" in scheme.adapt_script_template
+    assert "段号" in scheme.adapt_script_template
+    # 其余方案默认非段落驱动（默认值 False，旧 checkpoint 行为不变）
+    assert NARRATION_SCHEMES["horror_suspense"].segment_driven_change is False
+    assert NARRATION_SCHEMES["plain_narration"].segment_driven_change is False
 
 
 # ── 人称视角（narration perspective）─────────────────────────────────────────
@@ -182,11 +208,12 @@ def test_horror_viral_template_person_words_are_tokenized():
 def test_first_person_full_render():
     """完全第一人称：出现主角「我」自述，且不含第三人称排他句、无残留 token。"""
     tokens = resolve_perspective_tokens("horror_viral", "first_person_full")
-    rendered = build_adapt_script_prompt(
+    sys_msg, usr_msg = build_adapt_script_prompt(
         "原文", {"陈默": {}},
         template=NARRATION_SCHEMES["horror_viral"].adapt_script_template,
         perspective_tokens=tokens,
     )
+    rendered = sys_msg + usr_msg
     assert "「我」" in rendered
     # 排他的第三人称指令不应残留（否则与第一人称矛盾）
     assert "不第一人称独白" not in rendered
@@ -197,11 +224,12 @@ def test_first_person_full_render():
 def test_first_person_semi_render():
     """半第一人称：旁白仍第三人称，但主角内心独白改第一人称「我」。"""
     tokens = resolve_perspective_tokens("horror_viral", "first_person_semi")
-    rendered = build_adapt_script_prompt(
+    sys_msg, usr_msg = build_adapt_script_prompt(
         "原文", {"陈默": {}},
         template=NARRATION_SCHEMES["horror_viral"].adapt_script_template,
         perspective_tokens=tokens,
     )
+    rendered = sys_msg + usr_msg
     # 旁白视角保留第三人称
     assert "以第三人称旁白推进剧情" in rendered
     # 主角心声第一人称
@@ -258,12 +286,12 @@ def test_resolve_perspective_tokens():
 
 def test_non_horror_viral_scheme_unaffected_by_perspective():
     """其它方案模板不含 PERSP token：传任意 perspective_tokens 都不改变渲染（no-op）。"""
-    base = build_adapt_script_prompt(
+    base_sys, base_usr = build_adapt_script_prompt(
         "XX", {"林辰": {}}, template=NARRATION_SCHEMES["general"].adapt_script_template
     )
-    with_tokens = build_adapt_script_prompt(
+    wt_sys, wt_usr = build_adapt_script_prompt(
         "XX", {"林辰": {}},
         template=NARRATION_SCHEMES["general"].adapt_script_template,
         perspective_tokens=resolve_perspective_tokens("horror_viral", "first_person_full"),
     )
-    assert base == with_tokens
+    assert (base_sys, base_usr) == (wt_sys, wt_usr)

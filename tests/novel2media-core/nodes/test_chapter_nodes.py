@@ -9,6 +9,7 @@ from novel2media.nodes.chapter_nodes import (
     chapter_advance_decision,
     commit_chapter,
     detect_new_characters_llm,
+    detect_new_scenes_llm,
     export_to_jianying,
     final_decision,
     generate_storyboard,
@@ -23,6 +24,7 @@ from novel2media.nodes.chapter_nodes import (
 from novel2media.nodes.chapter_nodes import (  # 分镜观测辅助（纯函数）
     _resolve_narration_template,
     _scan_scene_prompt,
+    _segment_change_indices,
     _storyboard_change_stats,
 )
 from novel2media.prompts.narration_schemes import DEFAULT_SCHEME_KEY, get_scheme
@@ -282,7 +284,7 @@ def test_adapt_script_writes_script_to_current(tmp_path, monkeypatch):
     # adapt_script 不再写 setup_queue（新角色检测拆到独立节点）
     assert "setup_queue" not in result
     # 无 feedback 时 prompt 不含修改意见段
-    assert "修改意见" not in mock.call_args.args[0]
+    assert "修改意见" not in mock.call_args.args[1]
     # 用完清空 feedback，避免串到下一章
     assert result["_script_review_feedback"] == ""
     # 不落盘：<ch>/script.json 不应存在
@@ -299,8 +301,8 @@ def test_adapt_script_passes_review_feedback_to_prompt(tmp_path, monkeypatch):
 
     result = adapt_script(state)
 
-    prompt = mock.call_args.args[0]
-    assert "对白太书面、节奏太快" in prompt
+    user_msg = mock.call_args.args[1]
+    assert "对白太书面、节奏太快" in user_msg
     assert result["_script_review_feedback"] == ""
 
 
@@ -353,7 +355,8 @@ def test_adapt_script_uses_override_when_present(tmp_path, monkeypatch):
 
     adapt_script(state)
 
-    prompt = mock.call_args.args[0]
+    args = mock.call_args.args
+    prompt = args[0] + (args[1] if len(args) > 1 else "")
     assert "MARKER_XYZ" in prompt  # 用了 override
     # 未带 override 的源码默认模板特征串不应出现（确认没走源码回落）
     assert "覆盖版改编模板" in prompt
@@ -385,7 +388,8 @@ def test_adapt_script_concatenates_whole_group(tmp_path, monkeypatch):
 
     adapt_script(state)
 
-    prompt = mock.call_args.args[0]
+    args = mock.call_args.args
+    prompt = args[0] + (args[1] if len(args) > 1 else "")
     # 两章原文都拼进了 prompt（整组一次喂 LLM）
     assert "第一章独有文本ALPHA" in prompt
     assert "第二章独有文本BETA" in prompt
@@ -399,7 +403,8 @@ def test_adapt_script_falls_back_to_single_file_for_old_checkpoint(tmp_path, mon
 
     adapt_script(state)
 
-    prompt = mock.call_args.args[0]
+    args = mock.call_args.args
+    prompt = args[0] + (args[1] if len(args) > 1 else "")
     assert "旧checkpoint单文件文本GAMMA" in prompt
 
 
@@ -418,7 +423,8 @@ def test_adapt_script_long_group_token_observation(tmp_path, monkeypatch, caplog
     with caplog.at_level(logging.INFO):
         adapt_script(state)
 
-    prompt = mock.call_args.args[0]
+    args = mock.call_args.args
+    prompt = args[0] + (args[1] if len(args) > 1 else "")
     # 5 章全部拼进 prompt（整组一次喂 LLM）：拼接后长度 >= 5 章原文之和
     concatenated_len = len(per_chapter) * 5 + len("\n\n") * 4
     assert prompt.count("长章节内容") == 200 * 5
@@ -440,30 +446,44 @@ def _full_new_char(name="李雷", role="minor"):
     }
 
 
+def _enrich_new(char):
+    """把「完整新角色」包成 stage2 的 resolution=new 记录。"""
+    return {**char, "resolution": "new"}
+
+
 def test_detect_new_characters_writes_setup_queue(tmp_path, monkeypatch):
-    """detect_new_characters_llm：检测到的新角色（六字段齐全）直接写 setup_queue（无单独审阅）。"""
+    """两阶段：stage1 出候选 → stage2 增强产完整档案（六字段齐全）直接写 setup_queue。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {}})
-    new_char = _full_new_char()
-    _mock_llm(monkeypatch, [new_char])
+    candidates = [{"name": "李雷", "role": "minor", "note": "新登场龙套"}]
+    enriched = [_enrich_new(_full_new_char())]
+    _mock_llm_steps(monkeypatch, [candidates, enriched])
 
     result = detect_new_characters_llm(state)
 
-    assert result["setup_queue"] == [new_char]
-    assert result["setup_queue"][0]["role"] == "minor"  # LLM 显式给出的 role 原样透传
-    assert result["setup_queue"][0]["outfit"] == "黑色夹克配牛仔裤"  # outfit 透传进 setup_queue
-    assert "id" not in result["setup_queue"][0]
-    # 不再写 pending_new_characters（直接进 setup_queue）
+    assert len(result["setup_queue"]) == 1
+    char = result["setup_queue"][0]
+    assert char["name"] == "李雷"
+    assert char["role"] == "minor"  # LLM 显式给出的 role 原样透传
+    assert char["outfit"] == "黑色夹克配牛仔裤"  # outfit 透传进 setup_queue
+    assert char["aliases"] == []  # 无别名 → 规范化为空数组
+    assert "id" not in char
+    assert "resolution" not in char  # 分流标签不进档案
     assert "pending_new_characters" not in result
 
 
 def test_detect_new_characters_normalizes_role(tmp_path, monkeypatch):
     """role 缺省/非法 → 归一为 main（不炸 run，前端默认不勾跳过）；合法值原样保留。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {}})
-    no_role = _full_new_char("张三")
+    candidates = [
+        {"name": "张三", "role": "main", "note": ""},
+        {"name": "李四", "role": "minor", "note": ""},
+        {"name": "王五", "role": "minor", "note": ""},
+    ]
+    no_role = _enrich_new(_full_new_char("张三"))
     del no_role["role"]  # LLM 漏输出 role
-    bad_role = _full_new_char("李四", role="extra")  # 非法枚举值
-    good_minor = _full_new_char("王五", role="Minor")  # 大小写 → 归一小写
-    _mock_llm(monkeypatch, [no_role, bad_role, good_minor])
+    bad_role = _enrich_new(_full_new_char("李四", role="extra"))  # 非法枚举值
+    good_minor = _enrich_new(_full_new_char("王五", role="Minor"))  # 大小写 → 归一小写
+    _mock_llm_steps(monkeypatch, [candidates, [no_role, bad_role, good_minor]])
 
     queue = detect_new_characters_llm(state)["setup_queue"]
 
@@ -473,9 +493,10 @@ def test_detect_new_characters_normalizes_role(tmp_path, monkeypatch):
 
 
 def test_detect_new_characters_raises_on_missing_field(tmp_path, monkeypatch):
-    """新角色缺六字段任一 → 抛错暴露（不静默接受）。"""
+    """stage2 的 new 角色缺六字段任一 → 抛错暴露（不静默接受）。"""
     state = _make_chapter_state(tmp_path)
-    _mock_llm(monkeypatch, [{"name": "李雷", "appearance": "黑发"}])
+    candidates = [{"name": "李雷", "role": "minor", "note": ""}]
+    _mock_llm_steps(monkeypatch, [candidates, [{"resolution": "new", "name": "李雷", "appearance": "黑发"}]])
     try:
         detect_new_characters_llm(state)
     except ValueError:
@@ -483,26 +504,197 @@ def test_detect_new_characters_raises_on_missing_field(tmp_path, monkeypatch):
     raise AssertionError("应抛 ValueError（新角色缺必填字段）")
 
 
-def test_detect_new_characters_excludes_known(tmp_path, monkeypatch):
-    """LLM 误报已知角色为新角色时，防御性剔除、不入 setup_queue。"""
-    state = _make_chapter_state(tmp_path, profile={"主角": {"visual_trait": "hero"}})
-    # LLM 把已知「主角」也当新角色返回（缺字段也无妨，应在校验前被剔除）
-    known_dup = {"name": "主角", "appearance": "x"}
-    new_char = _full_new_char("李雷")
-    _mock_llm(monkeypatch, [known_dup, new_char])
+def test_detect_new_characters_excludes_known_alias(tmp_path, monkeypatch):
+    """stage1 别名感知排除：LLM 把已知角色的别名当新候选 → 过滤后无候选 → 跳过 stage2、空队列。"""
+    state = _make_chapter_state(tmp_path, profile={"帽兜男": {"visual_trait": "hooded man", "aliases": ["陆沉"]}})
+    # LLM 把已知「帽兜男」的别名「陆沉」当新角色返回 → 应被排除集（含别名）过滤掉
+    _mock_llm(monkeypatch, [{"name": "陆沉", "role": "main", "note": "帽兜男的别名"}])
 
     result = detect_new_characters_llm(state)
 
-    # 已知角色被剔除，只保留真正的新角色
-    assert result["setup_queue"] == [new_char]
+    assert result["setup_queue"] == []
+    assert "characters_profile" not in result  # 无候选，未触发归并/落盘
+
+
+def test_detect_new_characters_alias_reconcile(tmp_path, monkeypatch):
+    """stage2 归并：候选其实是已知角色的真名 → alias_of 补进既有档案 aliases + 落盘，不重复建档。"""
+    profile = {"帽兜男": {"visual_trait": "hooded man", "character_trait": "黑袍兜帽男", "aliases": []}}
+    state = _make_chapter_state(tmp_path, profile=profile)
+    candidates = [{"name": "陆沉", "role": "main", "note": "疑似帽兜男真名"}]
+    reconciled = [{"resolution": "alias_of", "canonical": "帽兜男", "alias": "陆沉"}]
+    _mock_llm_steps(monkeypatch, [candidates, reconciled])
+
+    result = detect_new_characters_llm(state)
+
+    assert result["setup_queue"] == []  # 无新角色（归并到已有）
+    assert result["characters_profile"]["帽兜男"]["aliases"] == ["陆沉"]
+    # 落盘：characters_profile.json 已写入别名
+    out_file = tmp_path / "novel" / "characters" / "characters_profile.json"
+    assert out_file.exists()
+    assert "陆沉" in out_file.read_text(encoding="utf-8")
+
+
+def test_detect_new_characters_new_carries_aliases(tmp_path, monkeypatch):
+    """stage2 的 new 角色带 aliases（窗口内收集的其它称呼）→ 规范化后进 setup_queue。"""
+    state = _make_chapter_state(tmp_path, profile={"主角": {}})
+    candidates = [{"name": "陆沉", "role": "main", "note": ""}]
+    enriched = [{**_full_new_char("陆沉", role="main"), "resolution": "new", "aliases": ["帽兜男", "陆沉", ""]}]
+    _mock_llm_steps(monkeypatch, [candidates, enriched])
+
+    char = detect_new_characters_llm(state)["setup_queue"][0]
+
+    assert char["name"] == "陆沉"
+    # 去空、去与 name 重复项
+    assert char["aliases"] == ["帽兜男"]
 
 
 def test_detect_new_characters_empty_when_none(tmp_path, monkeypatch):
-    """本章无新角色 → setup_queue 为空（路由将直接进 generate_storyboard）。"""
+    """本组无新角色候选 → 跳过 stage2、setup_queue 为空（路由直接进 generate_storyboard）。"""
     state = _make_chapter_state(tmp_path, profile={"主角": {}})
-    _mock_llm(monkeypatch, [])
+    _mock_llm(monkeypatch, [])  # stage1 空候选 → 只一次调用
     result = detect_new_characters_llm(state)
     assert result["setup_queue"] == []
+
+
+# ── 场景检测 detect_new_scenes_llm（两阶段 + 触发式后瞻，镜像角色检测）───────────
+
+
+def _scene_state(tmp_path, text="原文内容", scenes=None):
+    """场景检测用 state：单章 + scenes_profile。"""
+    state = _make_chapter_state(tmp_path, text=text)
+    state["scenes_profile"] = scenes or {}
+    return state
+
+
+def test_detect_new_scenes_empty_when_none(tmp_path, monkeypatch):
+    """本组无新地点候选 → 跳过 stage2、返回 {}（不写 scenes_profile）。"""
+    state = _scene_state(tmp_path)
+    _mock_llm(monkeypatch, [])  # stage1 空候选 → 只一次调用
+    assert detect_new_scenes_llm(state) == {}
+
+
+def test_detect_new_scenes_writes_profile(tmp_path, monkeypatch):
+    """两阶段：stage1 出候选 → stage2 建档（build_asset/aliases/ref_image 空）写 scenes_profile + 落盘。"""
+    state = _scene_state(tmp_path)
+    candidates = [{"name": "陆家", "note": "主角家"}]
+    reconciled = [{"resolution": "new", "name": "陆家", "description": "中式老宅客厅",
+                   "aliases": ["陆家客厅", "陆家", ""], "build_asset": True}]
+    _mock_llm_steps(monkeypatch, [candidates, reconciled])
+
+    prof = detect_new_scenes_llm(state)["scenes_profile"]["陆家"]
+
+    assert prof["description"] == "中式老宅客厅"
+    assert prof["aliases"] == ["陆家客厅"]  # 去空、去与 name 重复项
+    assert prof["build_asset"] is True
+    assert prof["ref_image"] == ""  # 空景板待渲染 worker 生成
+    out = tmp_path / "novel" / "scenes" / "scenes_profile.json"
+    assert out.exists() and "陆家" in out.read_text(encoding="utf-8")
+
+
+def test_detect_new_scenes_excludes_known_alias(tmp_path, monkeypatch):
+    """stage1 别名感知排除：已知地点的别称被当新候选 → 过滤后无候选 → 跳过 stage2、返回 {}。"""
+    scenes = {"地下停车场": {"name": "地下停车场", "aliases": ["地库"], "build_asset": True, "ref_image": ""}}
+    state = _scene_state(tmp_path, scenes=scenes)
+    _mock_llm(monkeypatch, [{"name": "地库", "note": "地下停车场的别称"}])
+    assert detect_new_scenes_llm(state) == {}
+
+
+def test_detect_new_scenes_alias_reconcile(tmp_path, monkeypatch):
+    """stage2 同义归并：候选其实是已知地点的别称 → alias_of 补进 aliases + 落盘，不重复建档。"""
+    scenes = {"地下停车场": {"name": "地下停车场", "aliases": [], "build_asset": True, "ref_image": ""}}
+    state = _scene_state(tmp_path, scenes=scenes)
+    candidates = [{"name": "地库", "note": "疑似地下停车场"}]
+    reconciled = [{"resolution": "alias_of", "canonical": "地下停车场", "alias": "地库"}]
+    _mock_llm_steps(monkeypatch, [candidates, reconciled])
+
+    result = detect_new_scenes_llm(state)
+
+    assert result["scenes_profile"]["地下停车场"]["aliases"] == ["地库"]
+    out = tmp_path / "novel" / "scenes" / "scenes_profile.json"
+    assert out.exists() and "地库" in out.read_text(encoding="utf-8")
+
+
+def test_detect_new_scenes_build_asset_false_for_one_off(tmp_path, monkeypatch):
+    """频次过滤：一次性过场地点 build_asset=False（渲染走文本背景、不建空景板）。"""
+    state = _scene_state(tmp_path)
+    candidates = [{"name": "巷口便利店", "note": "只出现一次"}]
+    reconciled = [{"resolution": "new", "name": "巷口便利店", "description": "街角便利店", "build_asset": False}]
+    _mock_llm_steps(monkeypatch, [candidates, reconciled])
+
+    assert detect_new_scenes_llm(state)["scenes_profile"]["巷口便利店"]["build_asset"] is False
+
+
+# ── 段落驱动换图（segment_driven_change，如 plain_paragraph）─────────────────
+
+
+def test_segment_change_indices_normal_seg():
+    """正常 seg 段号：换图点＝每个配图段的第一条（seg 相对上一条变化的那条）。"""
+    script = [
+        {"seg": 0},  # 0 → 起段，换图
+        {"seg": 0},  # 1 → 同段，沿用
+        {"seg": 1},  # 2 → 新段，换图
+        {"seg": 2},  # 3 → 新段，换图
+        {"seg": 2},  # 4 → 同段，沿用
+    ]
+    assert _segment_change_indices(script) == {0, 2, 3}
+
+
+def test_segment_change_indices_missing_seg_reuses_prev():
+    """部分口播缺 seg：缺条沿用前段、不新起段（不因个别漏字段错切）。"""
+    script = [
+        {"seg": 0},  # 0 → 换图
+        {},          # 1 → 缺 seg，沿用前段
+        {"seg": 0},  # 2 → 与 prev(0) 相同，沿用（不换）
+        {"seg": 1},  # 3 → 新段，换图
+    ]
+    assert _segment_change_indices(script) == {0, 3}
+
+
+def test_segment_change_indices_all_missing_returns_empty():
+    """全章 seg 缺失/无效 → 空集（下游 skeleton[0] 强制首条兜底），bool 不当整数。"""
+    assert _segment_change_indices([{}, {}, {}]) == set()
+    # seg 为 bool 视为无效（isinstance(True, int) 为真，须显式排除）
+    assert _segment_change_indices([{"seg": True}, {"seg": False}]) == set()
+
+
+def test_generate_storyboard_segment_driven_skips_llm_scene_change(tmp_path, monkeypatch):
+    """段落驱动方案：换图点按 adapt 打的 seg 段号纯代码切，不调 scene_change LLM。
+
+    只 mock 一次 LLM（第二步生图）；若第一步误调 scene_change LLM，call_count 会变 2 或
+    side_effect 提前耗尽而报错——以此锁死"段落驱动不走 LLM 初筛"。
+    """
+    state = _make_chapter_state(tmp_path)
+    state["narration_scheme"] = "plain_paragraph"
+    # seg：0（钩子）| 1（桥）| 2,2（同一自然段两条共图）| 3（下一段）
+    state["current_script"] = [
+        {"text": "钩子句", "action": "定场", "speaker": "旁白", "seg": 0},
+        {"text": "而这一切要从头说起", "action": "回拉", "speaker": "旁白", "seg": 1},
+        {"text": "正文第一段首句", "action": "画面a", "speaker": "旁白", "seg": 2},
+        {"text": "正文第一段次句", "action": "画面a续", "speaker": "旁白", "seg": 2},
+        {"text": "正文第二段", "action": "画面b", "speaker": "旁白", "seg": 3},
+    ]
+    # 只需一次 LLM 调用（第二步为 4 个换图点 anchor 0/1/2/4 生图）；第一步不调 LLM
+    mock = _mock_llm_steps(
+        monkeypatch,
+        [
+            [
+                {"anchor_id": 0, "subjects": [], "scene_prompt": "s0"},
+                {"anchor_id": 1, "subjects": [], "scene_prompt": "s1"},
+                {"anchor_id": 2, "subjects": [], "scene_prompt": "s2"},
+                {"anchor_id": 4, "subjects": [], "scene_prompt": "s4"},
+            ],
+        ],
+    )
+
+    result = generate_storyboard(state)
+
+    storyboard = result["current_storyboard"]
+    # 换图点落在 seg 边界：0(段0)、1(段1)、2(段2 首条)、4(段3)；idx3 与 idx2 同段 → 沿用不换
+    assert [e["scene_change"] for e in storyboard] == [True, True, True, False, True]
+    # idx3 非换图点：scene_prompt 留空（下游复用前图）
+    assert storyboard[3]["scene_prompt"] == ""
+    # 关键：只调了一次 LLM（第二步生图）；scene_change 初筛 LLM 未被调用
+    assert mock.call_count == 1
 
 
 def test_generate_storyboard_forces_first_scene_change(tmp_path, monkeypatch):
@@ -788,9 +980,11 @@ def test_generate_storyboard_passes_review_feedback_to_prompt(tmp_path, monkeypa
 
     result = generate_storyboard(state)
 
-    # feedback 应拼进第一步与第二步两个 prompt
-    first_prompt = mock.call_args_list[0].args[0]
-    second_prompt = mock.call_args_list[1].args[0]
+    # feedback 应拼进第一步与第二步两个 prompt（user message = args[1]，无 split 时退化为 args[0]）
+    first_args = mock.call_args_list[0].args
+    second_args = mock.call_args_list[1].args
+    first_prompt = first_args[0] + (first_args[1] if len(first_args) > 1 else "")
+    second_prompt = second_args[0] + (second_args[1] if len(second_args) > 1 else "")
     assert "分镜太碎、scene_prompt 太简单" in first_prompt
     assert "分镜太碎、scene_prompt 太简单" in second_prompt
     assert result["_storyboard_review_feedback"] == ""

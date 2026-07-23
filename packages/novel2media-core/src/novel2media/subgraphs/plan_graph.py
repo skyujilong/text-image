@@ -6,6 +6,7 @@ from novel2media.nodes.chapter_nodes import (
     chapter_advance_decision,
     commit_chapter,
     detect_new_characters_llm,
+    detect_new_scenes_llm,
     generate_storyboard,
     load_chapter,
     review_script,
@@ -75,6 +76,7 @@ def build_plan_graph(checkpointer=None):
     builder.add_node("adapt_script", adapt_script)
     builder.add_node("review_script", review_script)
     builder.add_node("detect_new_characters_llm", detect_new_characters_llm)
+    builder.add_node("detect_new_scenes_llm", detect_new_scenes_llm)
     builder.add_node("generate_storyboard", generate_storyboard)
     builder.add_node("review_storyboard", review_storyboard)
     builder.add_node("commit_chapter", commit_chapter)
@@ -93,8 +95,10 @@ def build_plan_graph(checkpointer=None):
         _route_review_script,
         {"adapt_script": "adapt_script", "detect_new_characters_llm": "detect_new_characters_llm"},
     )
+    # 新角色检测后先检测本组新地点（收敛写 scenes_profile），再按有无新角色路由
+    builder.add_edge("detect_new_characters_llm", "detect_new_scenes_llm")
     builder.add_conditional_edges(
-        "detect_new_characters_llm",
+        "detect_new_scenes_llm",
         _route_after_detect,
         {
             "character_setup_subgraph": "character_setup_subgraph",

@@ -64,10 +64,18 @@ export interface RenderCandidate {
   url: string
 }
 
+/** 图片画幅朝向：横向长方形 / 纵向长方形 / 方形。 */
+export type Orientation = 'landscape' | 'portrait' | 'square'
+
+/** edit 底模档位：4step（快，默认）/ 8step（精）。 */
+export type EditModel = '4step' | '8step'
+
 /** 渲染看板单个换图点 shot。 */
 export interface RenderShot {
   storyboard_id: number
   workflow: 'qwen_t2i' | 'qwen_edit'
+  edit_model: EditModel
+  orientation: Orientation
   prompt: string
   subjects: string[]
   status: 'pending' | 'rendering' | 'done' | 'error'
@@ -119,6 +127,17 @@ export interface CharacterInfo {
   tri_view_prompt_cn: string
   tri_view_prompt: string
   portrait_path: string | null
+}
+
+/** 场景（地点）资产（GET /runs/{id}/scenes）：收敛后的地点清单 + 空景背景板。 */
+export interface SceneInfo {
+  name: string
+  description: string
+  aliases: string[]
+  /** 是否建了参考背景图（复现地点=true；一次性地点=false 走文本背景）。 */
+  build_asset: boolean
+  /** 空景背景板绝对路径（已生成且文件存在时非空，供 /files 服务展示）。 */
+  plate_path: string | null
 }
 
 /** 音频合成状态（GET /runs/{id}/render/chapter/{ch_id}/audio）。 */
@@ -402,11 +421,22 @@ export const api = {
   getRenderState: (runId: string, chapterId: string) =>
     request<RenderBoard>(`/runs/${runId}/render/chapter/${chapterId}/state`),
 
-  // 改词重抽单张：prompt 为空则沿用旧提示词；新候选追加，旧候选保留
-  rerollShot: (runId: string, shotId: number, chapterId: string, prompt?: string) =>
+  // 改词重抽单张：prompt/orientation/edit_model 为空则各自沿用旧值；新候选追加，旧候选保留
+  rerollShot: (
+    runId: string,
+    shotId: number,
+    chapterId: string,
+    opts?: { prompt?: string; orientation?: Orientation; editModel?: EditModel },
+  ) =>
     request<{ ok: boolean }>(`/runs/${runId}/render/reroll`, {
       method: 'POST',
-      body: JSON.stringify({ shot_id: shotId, chapter_id: chapterId, prompt: prompt ?? null }),
+      body: JSON.stringify({
+        shot_id: shotId,
+        chapter_id: chapterId,
+        prompt: opts?.prompt ?? null,
+        orientation: opts?.orientation ?? null,
+        edit_model: opts?.editModel ?? null,
+      }),
     }),
 
   // 选定某候选为该 shot 的终图
@@ -432,6 +462,10 @@ export const api = {
   // 人物档案列表
   getRunCharacters: (runId: string) =>
     request<CharacterInfo[]>(`/runs/${runId}/characters`),
+
+  // 场景（地点）资产列表
+  getRunScenes: (runId: string) =>
+    request<SceneInfo[]>(`/runs/${runId}/scenes`),
 
   // ─── 渲染工作台 ─────────────────────────────────────────────
   // 章节列表 + 渲染状态（后端返回 {chapters: [...]}，解包为裸数组）
